@@ -64,24 +64,27 @@ function ConfidenceBadge({ score }: { score: number | null }) {
 function AssignSelect({
   productId,
   canonicalItems,
-  value,
+  placeholder = 'Assign manually',
   disabled,
   onAssign,
 }: {
   productId: number
   canonicalItems: CanonicalOption[]
-  value?: number | null
+  placeholder?: string
   disabled?: boolean
   onAssign: (productId: number, canonicalItemId: number) => void
 }) {
   return (
+    // value is intentionally uncontrolled: the dropdown is an action trigger
+    // for (re)assignment, and the current canonical item is shown elsewhere in
+    // the row. This avoids Radix rendering the raw id before the menu opens.
     <Select
       disabled={disabled}
-      value={value ? String(value) : undefined}
+      value=""
       onValueChange={(v) => onAssign(productId, Number(v))}
     >
       <SelectTrigger className="h-8 w-44 text-xs">
-        <SelectValue placeholder="Assign manually" />
+        <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent>
         {canonicalItems.map((c) => (
@@ -229,7 +232,7 @@ export function MatchingView({
                           <AssignSelect
                             productId={r.productId}
                             canonicalItems={canonicalItems}
-                            value={r.canonicalItemId}
+                            placeholder="Reassign…"
                             disabled={isPending}
                             onAssign={(id, cid) => run(() => assignMatch(id, cid))}
                           />

@@ -74,14 +74,6 @@ export async function generateSuggestions() {
     category: i.category,
   }))
 
-  console.log(
-    '[v0] generateSuggestions',
-    'products=',
-    prods.length,
-    'canonical=',
-    candidates.length,
-  )
-
   let suggested = 0
   for (const p of prods) {
     if (p.matchStatus === 'confirmed' || p.matchStatus === 'rejected') continue
