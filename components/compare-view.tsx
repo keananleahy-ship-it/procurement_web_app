@@ -15,7 +15,13 @@ import {
 import { Card } from '@/components/ui/card'
 import { EmptyState } from '@/components/empty-state'
 import { formatCurrency } from '@/lib/format'
-import { ArrowDownNarrowWide, GitCompareArrows, Search, TrendingDown } from 'lucide-react'
+import {
+  ArrowDownNarrowWide,
+  GitCompareArrows,
+  Layers,
+  Search,
+  TrendingDown,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 export function CompareView({
@@ -30,8 +36,9 @@ export function CompareView({
     if (!q) return comparisons
     return comparisons.filter(
       (c) =>
-        c.productName.toLowerCase().includes(q) ||
-        (c.category ?? '').toLowerCase().includes(q),
+        c.displayName.toLowerCase().includes(q) ||
+        (c.category ?? '').toLowerCase().includes(q) ||
+        c.offers.some((o) => o.vendorName.toLowerCase().includes(q)),
     )
   }, [comparisons, query])
 
@@ -61,13 +68,22 @@ export function CompareView({
 
       <div className="flex flex-col gap-6">
         {filtered.map((c) => (
-          <Card key={c.productId} className="overflow-hidden p-0">
+          <Card key={c.key} className="overflow-hidden p-0">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <h3 className="text-base font-semibold text-foreground">
-                    {c.productName}
+                    {c.displayName}
                   </h3>
+                  {c.isCanonical && (
+                    <Badge
+                      variant="outline"
+                      className="gap-1 border-primary/30 text-primary"
+                    >
+                      <Layers className="size-3" />
+                      Canonical
+                    </Badge>
+                  )}
                   {c.category && (
                     <Badge variant="secondary">{c.category}</Badge>
                   )}
@@ -113,6 +129,12 @@ export function CompareView({
                     >
                       <TableCell className="font-medium text-foreground">
                         {o.vendorName}
+                        {c.isCanonical &&
+                          o.productName !== c.displayName && (
+                            <span className="block text-xs font-normal text-muted-foreground">
+                              {o.productName}
+                            </span>
+                          )}
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {o.locationName ?? '—'}

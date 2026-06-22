@@ -2,7 +2,13 @@
 
 import { auth } from '@/lib/auth'
 import { db } from '@/lib/db'
-import { locations, products, vendorPrices, vendors } from '@/lib/db/schema'
+import {
+  canonicalItems,
+  locations,
+  products,
+  vendorPrices,
+  vendors,
+} from '@/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { headers } from 'next/headers'
 
@@ -30,13 +36,23 @@ export type PriceRow = {
   landedUnitCost: number
   // total acquisition cost to fulfill the minimum order
   acquisitionCost: number
+  // canonical matching context
+  canonicalItemId: number | null
+  matchStatus: string
+  canonicalItemName: string | null
 }
 
 export type ProductComparison = {
+  key: string
+  displayName: string
+  // kept for backwards compatibility with existing callers
   productId: number
   productName: string
   category: string | null
   unit: string | null
+  // true when this group represents a confirmed canonical item spanning
+  // potentially multiple vendor products
+  isCanonical: boolean
   offers: PriceRow[]
   best: PriceRow | null
   worst: PriceRow | null
@@ -66,11 +82,15 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
       productName: products.name,
       category: products.category,
       unit: products.unit,
+      canonicalItemId: products.canonicalItemId,
+      matchStatus: products.matchStatus,
+      canonicalItemName: canonicalItems.name,
       vendorName: vendors.name,
       locationName: locations.name,
     })
     .from(vendorPrices)
     .leftJoin(products, eq(products.id, vendorPrices.productId))
+    .leftJoin(canonicalItems, eq(canonicalItems.id, products.canonicalItemId))
     .leftJoin(vendors, eq(vendors.id, vendorPrices.vendorId))
     .leftJoin(locations, eq(locations.id, vendorPrices.locationId))
     .where(eq(vendorPrices.userId, userId))
@@ -97,6 +117,9 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
       currency: r.currency,
       landedUnitCost,
       acquisitionCost,
+      canonicalItemId: r.canonicalItemId,
+      matchStatus: r.matchStatus ?? 'unmatched',
+      canonicalItemName: r.canonicalItemName,
     }
   })
 }
@@ -105,26 +128,41 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
   const userId = await getUserId()
   const rows = await getAllRows(userId)
 
-  const byProduct = new Map<number, PriceRow[]>()
+  // Group offers by their comparison key: products with a confirmed canonical
+  // match collapse under that canonical item (so differently-named vendor
+  // products compare as one); everything else groups by its own product.
+  const byKey = new Map<string, PriceRow[]>()
   for (const row of rows) {
-    const list = byProduct.get(row.productId) ?? []
+    const key =
+      row.matchStatus === 'confirmed' && row.canonicalItemId !== null
+        ? `c${row.canonicalItemId}`
+        : `p${row.productId}`
+    const list = byKey.get(key) ?? []
     list.push(row)
-    byProduct.set(row.productId, list)
+    byKey.set(key, list)
   }
 
   const comparisons: ProductComparison[] = []
-  for (const [productId, offers] of byProduct) {
+  for (const [key, offers] of byKey) {
     const sorted = [...offers].sort(
       (a, b) => a.landedUnitCost - b.landedUnitCost,
     )
     const best = sorted[0] ?? null
     const worst = sorted[sorted.length - 1] ?? null
     const vendorIds = new Set(offers.map((o) => o.vendorId))
+    const isCanonical = key.startsWith('c')
+    const displayName = isCanonical
+      ? (offers.find((o) => o.canonicalItemName)?.canonicalItemName ??
+        'Canonical item')
+      : offers[0].productName
     comparisons.push({
-      productId,
-      productName: offers[0].productName,
+      key,
+      displayName,
+      productId: offers[0].productId,
+      productName: displayName,
       category: offers[0].category,
       unit: offers[0].unit,
+      isCanonical,
       offers: sorted,
       best,
       worst,

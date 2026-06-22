@@ -81,6 +81,15 @@ export const vendors = pgTable('vendors', {
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 
+export const canonicalItems = pgTable('canonical_items', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  name: text('name').notNull(),
+  category: text('category'),
+  unit: text('unit'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
 export const products = pgTable('products', {
   id: serial('id').primaryKey(),
   userId: text('userId').notNull(),
@@ -88,6 +97,11 @@ export const products = pgTable('products', {
   category: text('category'),
   sku: text('sku'),
   unit: text('unit'),
+  // Fuzzy-matching to a canonical item. matchStatus is one of:
+  // 'unmatched' | 'suggested' | 'confirmed' | 'rejected'.
+  canonicalItemId: integer('canonicalItemId'),
+  matchStatus: text('matchStatus').notNull().default('unmatched'),
+  matchScore: numeric('matchScore', { precision: 5, scale: 4 }),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 

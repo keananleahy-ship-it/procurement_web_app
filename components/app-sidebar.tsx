@@ -12,11 +12,15 @@ import {
   Tags,
   LogOut,
   GitCompareArrows,
+  Layers,
+  ListChecks,
 } from 'lucide-react'
 
 const nav = [
   { href: '/', label: 'Overview', icon: LayoutDashboard },
   { href: '/compare', label: 'Compare Products', icon: GitCompareArrows },
+  { href: '/matching', label: 'Match Verification', icon: ListChecks },
+  { href: '/canonical', label: 'Canonical Items', icon: Layers },
   { href: '/prices', label: 'Price Entries', icon: Tags },
   { href: '/products', label: 'Products', icon: Package },
   { href: '/vendors', label: 'Vendors', icon: Store },
