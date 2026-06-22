@@ -30,6 +30,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Plus, Trash2, Tags } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { EmptyState } from '@/components/empty-state'
 import { formatCurrency } from '@/lib/format'
 
@@ -41,8 +42,16 @@ type PriceRecord = {
   locationName: string | null
   unitPrice: number
   shippingCost: number
+  freightTerms: string
+  deliveredPrice: number | null
   minOrderQty: number
   currency: string
+}
+
+const FREIGHT_LABELS: Record<string, string> = {
+  fob: 'FOB origin',
+  delivered: 'Delivered',
+  both: 'FOB + Delivered',
 }
 
 export function PricesView({
@@ -60,9 +69,12 @@ export function PricesView({
   const [productId, setProductId] = useState('')
   const [vendorId, setVendorId] = useState('')
   const [locationId, setLocationId] = useState('')
+  const [freightTerms, setFreightTerms] = useState('fob')
   const [isPending, startTransition] = useTransition()
 
   const canAdd = products.length > 0 && vendors.length > 0
+  const showShipping = freightTerms === 'fob' || freightTerms === 'both'
+  const showDelivered = freightTerms === 'both'
 
   async function handleCreate(formData: FormData) {
     await createPrice(formData)
@@ -70,17 +82,16 @@ export function PricesView({
     setProductId('')
     setVendorId('')
     setLocationId('')
+    setFreightTerms('fob')
   }
 
   return (
     <div className="p-6">
       <div className="mb-4 flex justify-end">
         <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button disabled={!canAdd}>
-              <Plus className="size-4" />
-              Add price
-            </Button>
+          <DialogTrigger render={<Button disabled={!canAdd} />}>
+            <Plus className="size-4" />
+            Add price
           </DialogTrigger>
           <DialogContent>
             <form action={handleCreate}>
@@ -139,9 +150,50 @@ export function PricesView({
                     </SelectContent>
                   </Select>
                 </div>
+                <div className="flex flex-col gap-2">
+                  <Label>Freight terms</Label>
+                  <input
+                    type="hidden"
+                    name="freightTerms"
+                    value={freightTerms}
+                  />
+                  <Select
+                    value={freightTerms}
+                    onValueChange={setFreightTerms}
+                  >
+                    <SelectTrigger>
+                      <SelectValue>
+                        {(value: string) => FREIGHT_LABELS[value] ?? value}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="fob">
+                        FOB origin — buyer pays freight
+                      </SelectItem>
+                      <SelectItem value="delivered">
+                        Delivered — price includes freight
+                      </SelectItem>
+                      <SelectItem value="both">
+                        Both — FOB price and a delivered price
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    {freightTerms === 'fob' &&
+                      'Freight is added on top of the unit price, spread across the minimum order.'}
+                    {freightTerms === 'delivered' &&
+                      'The unit price is all-in; no freight is added in the analysis.'}
+                    {freightTerms === 'both' &&
+                      'We compare the FOB landed cost against the delivered price and use whichever is cheaper.'}
+                  </p>
+                </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="flex flex-col gap-2">
-                    <Label htmlFor="unitPrice">Unit price</Label>
+                    <Label htmlFor="unitPrice">
+                      {freightTerms === 'delivered'
+                        ? 'Delivered unit price'
+                        : 'FOB unit price'}
+                    </Label>
                     <Input
                       id="unitPrice"
                       name="unitPrice"
@@ -152,17 +204,35 @@ export function PricesView({
                       placeholder="0.00"
                     />
                   </div>
-                  <div className="flex flex-col gap-2">
-                    <Label htmlFor="shippingCost">Shipping cost</Label>
-                    <Input
-                      id="shippingCost"
-                      name="shippingCost"
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      defaultValue="0"
-                    />
-                  </div>
+                  {showShipping && (
+                    <div className="flex flex-col gap-2">
+                      <Label htmlFor="shippingCost">Freight cost</Label>
+                      <Input
+                        id="shippingCost"
+                        name="shippingCost"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        defaultValue="0"
+                        placeholder="Total per order"
+                      />
+                    </div>
+                  )}
+                  {showDelivered && (
+                    <div className="flex flex-col gap-2">
+                      <Label htmlFor="deliveredPrice">
+                        Delivered unit price
+                      </Label>
+                      <Input
+                        id="deliveredPrice"
+                        name="deliveredPrice"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        placeholder="0.00"
+                      />
+                    </div>
+                  )}
                   <div className="flex flex-col gap-2">
                     <Label htmlFor="minOrderQty">Min order qty</Label>
                     <Input
@@ -209,8 +279,9 @@ export function PricesView({
                 <TableHead>Product</TableHead>
                 <TableHead>Vendor</TableHead>
                 <TableHead>Location</TableHead>
+                <TableHead>Freight</TableHead>
                 <TableHead className="text-right">Unit price</TableHead>
-                <TableHead className="text-right">Shipping</TableHead>
+                <TableHead className="text-right">Freight cost</TableHead>
                 <TableHead className="text-right">Min qty</TableHead>
                 <TableHead className="w-12" />
               </TableRow>
@@ -227,11 +298,24 @@ export function PricesView({
                   <TableCell className="text-muted-foreground">
                     {p.locationName ?? '—'}
                   </TableCell>
+                  <TableCell>
+                    <Badge variant="secondary" className="font-normal">
+                      {FREIGHT_LABELS[p.freightTerms] ?? p.freightTerms}
+                    </Badge>
+                  </TableCell>
                   <TableCell className="text-right tabular-nums text-foreground">
                     {formatCurrency(p.unitPrice, p.currency)}
+                    {p.freightTerms === 'both' &&
+                      p.deliveredPrice !== null && (
+                        <span className="block text-xs font-normal text-muted-foreground">
+                          {formatCurrency(p.deliveredPrice, p.currency)} delv.
+                        </span>
+                      )}
                   </TableCell>
                   <TableCell className="text-right tabular-nums text-muted-foreground">
-                    {formatCurrency(p.shippingCost, p.currency)}
+                    {p.freightTerms === 'delivered'
+                      ? 'incl.'
+                      : formatCurrency(p.shippingCost, p.currency)}
                   </TableCell>
                   <TableCell className="text-right tabular-nums text-muted-foreground">
                     {p.minOrderQty}

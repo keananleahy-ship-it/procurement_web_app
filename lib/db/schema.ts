@@ -115,6 +115,13 @@ export const vendorPrices = pgTable('vendor_prices', {
   shippingCost: numeric('shippingCost', { precision: 12, scale: 2 })
     .notNull()
     .default('0'),
+  // Freight basis for this quote:
+  //  'fob'       -> unitPrice is FOB origin; buyer adds shippingCost (freight)
+  //  'delivered' -> unitPrice is the all-in delivered price; freight ignored
+  //  'both'      -> vendor offers FOB (unitPrice + shippingCost) AND a
+  //                 delivered alternative stored in deliveredPrice
+  freightTerms: text('freightTerms').notNull().default('fob'),
+  deliveredPrice: numeric('deliveredPrice', { precision: 12, scale: 2 }),
   minOrderQty: integer('minOrderQty').notNull().default(1),
   currency: text('currency').notNull().default('USD'),
   createdAt: timestamp('createdAt').notNull().defaultNow(),

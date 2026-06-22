@@ -106,8 +106,9 @@ export function CompareView({
                 <TableRow>
                   <TableHead>Vendor</TableHead>
                   <TableHead>Location</TableHead>
+                  <TableHead>Freight</TableHead>
                   <TableHead className="text-right">Unit price</TableHead>
-                  <TableHead className="text-right">Shipping</TableHead>
+                  <TableHead className="text-right">Freight cost</TableHead>
                   <TableHead className="text-right">
                     <span className="inline-flex items-center gap-1">
                       <ArrowDownNarrowWide className="size-3.5" />
@@ -139,11 +140,41 @@ export function CompareView({
                       <TableCell className="text-muted-foreground">
                         {o.locationName ?? '—'}
                       </TableCell>
-                      <TableCell className="text-right tabular-nums text-muted-foreground">
-                        {formatCurrency(o.unitPrice, o.currency)}
+                      <TableCell>
+                        <Badge
+                          variant="secondary"
+                          className="font-normal"
+                          title={
+                            o.freightTerms === 'both'
+                              ? `Vendor quoted both; using ${
+                                  o.effectiveBasis === 'fob'
+                                    ? 'FOB'
+                                    : 'delivered'
+                                } (cheaper)`
+                              : undefined
+                          }
+                        >
+                          {o.effectiveBasis === 'fob' ? 'FOB' : 'Delivered'}
+                          {o.freightTerms === 'both' && (
+                            <span className="ml-1 text-muted-foreground">
+                              (of both)
+                            </span>
+                          )}
+                        </Badge>
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">
-                        {formatCurrency(o.shippingCost, o.currency)}
+                        {formatCurrency(
+                          o.effectiveBasis === 'delivered' &&
+                            o.deliveredPrice !== null
+                            ? o.deliveredPrice
+                            : o.unitPrice,
+                          o.currency,
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {o.effectiveBasis === 'delivered'
+                          ? 'incl.'
+                          : formatCurrency(o.shippingCost, o.currency)}
                       </TableCell>
                       <TableCell
                         className={cn(

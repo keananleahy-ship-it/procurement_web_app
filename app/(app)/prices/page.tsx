@@ -24,6 +24,9 @@ export default async function PricesPage() {
     locationName: p.locationId ? (locationMap.get(p.locationId) ?? null) : null,
     unitPrice: Number(p.unitPrice),
     shippingCost: Number(p.shippingCost),
+    freightTerms: p.freightTerms,
+    deliveredPrice:
+      p.deliveredPrice !== null ? Number(p.deliveredPrice) : null,
     minOrderQty: p.minOrderQty,
     currency: p.currency,
   }))

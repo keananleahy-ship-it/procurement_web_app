@@ -49,11 +49,9 @@ export function ProductsView({ products }: { products: Product[] }) {
     <div className="p-6">
       <div className="mb-4 flex justify-end">
         <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="size-4" />
-              Add product
-            </Button>
+          <DialogTrigger render={<Button />}>
+            <Plus className="size-4" />
+            Add product
           </DialogTrigger>
           <DialogContent>
             <form action={handleCreate}>

@@ -45,11 +45,9 @@ export function VendorsView({ vendors }: { vendors: Vendor[] }) {
     <div className="p-6">
       <div className="mb-4 flex justify-end">
         <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="size-4" />
-              Add vendor
-            </Button>
+          <DialogTrigger render={<Button />}>
+            <Plus className="size-4" />
+            Add vendor
           </DialogTrigger>
           <DialogContent>
             <form action={handleCreate}>

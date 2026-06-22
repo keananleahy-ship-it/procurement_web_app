@@ -32,7 +32,12 @@ export type PriceRow = {
   shippingCost: number
   minOrderQty: number
   currency: string
-  // landed cost per unit = unitPrice + shipping spread across the min order
+  // freight basis: 'fob' | 'delivered' | 'both'
+  freightTerms: string
+  deliveredPrice: number | null
+  // which basis was used to compute the landed cost below ('fob' | 'delivered')
+  effectiveBasis: 'fob' | 'delivered'
+  // landed cost per unit, freight-adjusted for the basis above
   landedUnitCost: number
   // total acquisition cost to fulfill the minimum order
   acquisitionCost: number
@@ -77,6 +82,8 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
       locationId: vendorPrices.locationId,
       unitPrice: vendorPrices.unitPrice,
       shippingCost: vendorPrices.shippingCost,
+      freightTerms: vendorPrices.freightTerms,
+      deliveredPrice: vendorPrices.deliveredPrice,
       minOrderQty: vendorPrices.minOrderQty,
       currency: vendorPrices.currency,
       productName: products.name,
@@ -99,8 +106,44 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
     const unitPrice = Number(r.unitPrice ?? 0)
     const shippingCost = Number(r.shippingCost ?? 0)
     const minOrderQty = Number(r.minOrderQty ?? 1) || 1
-    const landedUnitCost = unitPrice + shippingCost / minOrderQty
-    const acquisitionCost = unitPrice * minOrderQty + shippingCost
+    const freightTerms = r.freightTerms ?? 'fob'
+    const deliveredPrice =
+      r.deliveredPrice !== null && r.deliveredPrice !== undefined
+        ? Number(r.deliveredPrice)
+        : null
+
+    // FOB landed cost spreads freight across the minimum order quantity.
+    const fobLandedUnitCost = unitPrice + shippingCost / minOrderQty
+    // Delivered landed cost is freight-inclusive, so freight is never added.
+    // For 'delivered' terms the all-in price lives in unitPrice; for 'both'
+    // it lives in deliveredPrice alongside the FOB unitPrice.
+    const deliveredLandedUnitCost =
+      freightTerms === 'delivered' ? unitPrice : (deliveredPrice ?? Infinity)
+
+    let landedUnitCost: number
+    let effectiveBasis: 'fob' | 'delivered'
+    if (freightTerms === 'delivered') {
+      landedUnitCost = deliveredLandedUnitCost
+      effectiveBasis = 'delivered'
+    } else if (freightTerms === 'both') {
+      // Pick whichever freight arrangement is cheaper per unit.
+      if (deliveredLandedUnitCost <= fobLandedUnitCost) {
+        landedUnitCost = deliveredLandedUnitCost
+        effectiveBasis = 'delivered'
+      } else {
+        landedUnitCost = fobLandedUnitCost
+        effectiveBasis = 'fob'
+      }
+    } else {
+      landedUnitCost = fobLandedUnitCost
+      effectiveBasis = 'fob'
+    }
+
+    const acquisitionCost =
+      effectiveBasis === 'delivered'
+        ? landedUnitCost * minOrderQty
+        : unitPrice * minOrderQty + shippingCost
+
     return {
       priceId: r.priceId,
       productId: r.productId,
@@ -115,6 +158,9 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
       shippingCost,
       minOrderQty,
       currency: r.currency,
+      freightTerms,
+      deliveredPrice,
+      effectiveBasis,
       landedUnitCost,
       acquisitionCost,
       canonicalItemId: r.canonicalItemId,

@@ -44,11 +44,9 @@ export function LocationsView({ locations }: { locations: Location[] }) {
     <div className="p-6">
       <div className="mb-4 flex justify-end">
         <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="size-4" />
-              Add location
-            </Button>
+          <DialogTrigger render={<Button />}>
+            <Plus className="size-4" />
+            Add location
           </DialogTrigger>
           <DialogContent>
             <form action={handleCreate}>

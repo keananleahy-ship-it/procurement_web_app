@@ -50,11 +50,9 @@ export function CanonicalView({ items }: { items: CanonicalItem[] }) {
     <div className="p-6">
       <div className="mb-4 flex justify-end">
         <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="size-4" />
-              Add canonical item
-            </Button>
+          <DialogTrigger render={<Button />}>
+            <Plus className="size-4" />
+            Add canonical item
           </DialogTrigger>
           <DialogContent>
             <form action={handleCreate}>
