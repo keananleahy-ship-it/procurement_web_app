@@ -41,8 +41,14 @@ export type PriceRow = {
   landedUnitCost: number
   // base units contained in one selling unit (e.g. box of 100 => 100)
   packSize: number
-  // base unit of measure for the normalized price (e.g. 'each', 'litre')
+  // this offer's own base unit of measure (e.g. 'each', 'litre')
   baseUnit: string | null
+  // the canonical item's base unit, when this offer belongs to a canonical
+  // group; used to detect when an offer can't be compared apples-to-apples
+  canonicalBaseUnit: string | null
+  // true when this offer's base unit differs from its group's base unit, so it
+  // is excluded from best/worst ranking (e.g. priced per 'each' vs per 'pair')
+  unitMismatch: boolean
   // landed cost per BASE unit = landedUnitCost / packSize. This is the
   // apples-to-apples figure used to rank offers across pack sizes.
   pricePerBaseUnit: number
@@ -71,6 +77,9 @@ export type ProductComparison = {
   baseUnit: string | null
   // true when offers in this group have differing pack sizes
   mixedPackSizes: boolean
+  // true when one or more offers use a base unit that doesn't match the
+  // group's base unit and were therefore excluded from ranking
+  hasUnitMismatch: boolean
   offers: PriceRow[]
   best: PriceRow | null
   worst: PriceRow | null
@@ -190,7 +199,9 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
       effectiveBasis,
       landedUnitCost,
       packSize,
-      baseUnit: r.baseUnit ?? r.canonicalBaseUnit ?? r.unit ?? null,
+      baseUnit: r.baseUnit ?? r.unit ?? null,
+      canonicalBaseUnit: r.canonicalBaseUnit ?? null,
+      unitMismatch: false,
       pricePerBaseUnit,
       acquisitionCost,
       effectiveDate:
@@ -225,14 +236,11 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
     byKey.set(key, list)
   }
 
+  const norm = (u: string | null | undefined) =>
+    u?.trim().toLowerCase() || null
+
   const comparisons: ProductComparison[] = []
   for (const [key, offers] of byKey) {
-    // Rank by normalized per-base-unit cost so pack sizes compare fairly.
-    const sorted = [...offers].sort(
-      (a, b) => a.pricePerBaseUnit - b.pricePerBaseUnit,
-    )
-    const best = sorted[0] ?? null
-    const worst = sorted[sorted.length - 1] ?? null
     const vendorIds = new Set(offers.map((o) => o.vendorId))
     const latestEffectiveDate =
       offers
@@ -245,10 +253,38 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
       ? (offers.find((o) => o.canonicalItemName)?.canonicalItemName ??
         'Canonical item')
       : offers[0].productName
+
+    // The group's base unit anchors comparison. For canonical groups prefer the
+    // canonical item's declared base unit; otherwise fall back to the offers'.
     const baseUnit =
-      offers.find((o) => o.baseUnit)?.baseUnit ?? offers[0].unit ?? null
+      (isCanonical
+        ? offers.find((o) => o.canonicalBaseUnit)?.canonicalBaseUnit
+        : null) ??
+      offers.find((o) => o.baseUnit)?.baseUnit ??
+      offers[0].unit ??
+      null
+
+    // Flag offers whose own base unit differs from the group's base unit; these
+    // can't be compared apples-to-apples (e.g. priced per 'each' vs per 'pair').
+    const groupUnit = norm(baseUnit)
+    const flagged = offers.map((o) => ({
+      ...o,
+      unitMismatch:
+        !!groupUnit && !!norm(o.baseUnit) && norm(o.baseUnit) !== groupUnit,
+    }))
+
+    // Rank only comparable offers by normalized per-base-unit cost. Mismatched
+    // offers still display, but sort after and never win best/worst.
+    const comparable = flagged
+      .filter((o) => !o.unitMismatch)
+      .sort((a, b) => a.pricePerBaseUnit - b.pricePerBaseUnit)
+    const mismatched = flagged.filter((o) => o.unitMismatch)
+    const offersSorted = [...comparable, ...mismatched]
+    const best = comparable[0] ?? null
+    const worst = comparable[comparable.length - 1] ?? null
     const mixedPackSizes =
-      new Set(offers.map((o) => o.packSize)).size > 1
+      new Set(comparable.map((o) => o.packSize)).size > 1
+
     comparisons.push({
       key,
       displayName,
@@ -259,7 +295,8 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
       isCanonical,
       baseUnit,
       mixedPackSizes,
-      offers: sorted,
+      hasUnitMismatch: mismatched.length > 0,
+      offers: offersSorted,
       best,
       worst,
       vendorCount: vendorIds.size,

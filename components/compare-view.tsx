@@ -22,6 +22,7 @@ import {
   Layers,
   Search,
   TrendingDown,
+  TriangleAlert,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -100,6 +101,12 @@ export function CompareView({
                       Mixed pack sizes — normalized
                     </span>
                   )}
+                  {c.hasUnitMismatch && (
+                    <span className="inline-flex items-center gap-1 text-warning">
+                      <TriangleAlert className="size-3.5" />
+                      Some offers use a different unit — excluded from ranking
+                    </span>
+                  )}
                   {c.latestEffectiveDate && (
                     <span className="inline-flex items-center gap-1">
                       <CalendarClock className="size-3.5" />
@@ -140,11 +147,16 @@ export function CompareView({
                 {c.offers.map((o) => {
                   const isBest = o.priceId === c.best?.priceId
                   const isWorst =
-                    c.offers.length > 1 && o.priceId === c.worst?.priceId
+                    !o.unitMismatch &&
+                    c.best?.priceId !== c.worst?.priceId &&
+                    o.priceId === c.worst?.priceId
                   return (
                     <TableRow
                       key={o.priceId}
-                      className={cn(isBest && 'bg-success/5')}
+                      className={cn(
+                        isBest && 'bg-success/5',
+                        o.unitMismatch && 'opacity-70',
+                      )}
                     >
                       <TableCell className="font-medium text-foreground">
                         {o.vendorName}
@@ -209,16 +221,40 @@ export function CompareView({
                       <TableCell
                         className={cn(
                           'text-right font-semibold tabular-nums',
-                          isBest ? 'text-success' : 'text-foreground',
+                          o.unitMismatch
+                            ? 'text-muted-foreground'
+                            : isBest
+                              ? 'text-success'
+                              : 'text-foreground',
                         )}
                       >
-                        {formatCurrency(o.pricePerBaseUnit, o.currency)}
+                        {o.unitMismatch ? (
+                          <span
+                            title={`Priced per ${o.baseUnit ?? 'unit'}, not per ${c.baseUnit ?? 'base unit'} — not directly comparable`}
+                          >
+                            {formatCurrency(o.pricePerBaseUnit, o.currency)}
+                            <span className="ml-1 text-xs font-normal">
+                              /{o.baseUnit ?? 'unit'}
+                            </span>
+                          </span>
+                        ) : (
+                          formatCurrency(o.pricePerBaseUnit, o.currency)
+                        )}
                       </TableCell>
                       <TableCell className="text-muted-foreground tabular-nums">
                         {formatDate(o.effectiveDate)}
                       </TableCell>
                       <TableCell className="text-right">
-                        {isBest ? (
+                        {o.unitMismatch ? (
+                          <Badge
+                            variant="outline"
+                            className="gap-1 border-warning/40 text-warning"
+                            title={`This offer is priced per ${o.baseUnit ?? 'a different unit'}, so it can't be ranked against per-${c.baseUnit ?? 'base-unit'} offers`}
+                          >
+                            <TriangleAlert className="size-3" />
+                            Unit mismatch
+                          </Badge>
+                        ) : isBest ? (
                           <Badge className="bg-success text-success-foreground hover:bg-success">
                             Best price
                           </Badge>
