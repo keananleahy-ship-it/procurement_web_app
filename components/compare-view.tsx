@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/table'
 import { Card } from '@/components/ui/card'
 import { EmptyState } from '@/components/empty-state'
+import { useCanEdit } from '@/components/role-provider'
 import { formatCurrency, formatDate } from '@/lib/format'
 import {
   ArrowDownNarrowWide,
@@ -323,6 +324,7 @@ function FreightEstimateEditor({ offer }: { offer: PriceRow }) {
   const [open, setOpen] = useState(false)
   const [value, setValue] = useState('')
   const [isPending, startTransition] = useTransition()
+  const canEdit = useCanEdit()
 
   function submit() {
     const num = Number(value)
@@ -334,6 +336,11 @@ function FreightEstimateEditor({ offer }: { offer: PriceRow }) {
       await setFreightEstimate(offer.priceId, num)
       setOpen(false)
     })
+  }
+
+  // Viewers can't supply estimates; show the missing-freight state instead.
+  if (!canEdit) {
+    return <span className="text-xs text-warning">no freight</span>
   }
 
   if (!open) {

@@ -28,6 +28,7 @@ import {
 } from '@/components/ui/dialog'
 import { Plus, Trash2, Layers } from 'lucide-react'
 import { EmptyState } from '@/components/empty-state'
+import { useCanEdit } from '@/components/role-provider'
 
 type CanonicalItem = {
   id: number
@@ -41,6 +42,7 @@ type CanonicalItem = {
 export function CanonicalView({ items }: { items: CanonicalItem[] }) {
   const [open, setOpen] = useState(false)
   const [isPending, startTransition] = useTransition()
+  const canEdit = useCanEdit()
 
   async function handleCreate(formData: FormData) {
     await createCanonicalItem(formData)
@@ -49,6 +51,7 @@ export function CanonicalView({ items }: { items: CanonicalItem[] }) {
 
   return (
     <div className="p-6">
+      {canEdit && (
       <div className="mb-4 flex justify-end">
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger render={<Button />}>
@@ -105,6 +108,7 @@ export function CanonicalView({ items }: { items: CanonicalItem[] }) {
           </DialogContent>
         </Dialog>
       </div>
+      )}
 
       {items.length === 0 ? (
         <EmptyState
@@ -122,7 +126,7 @@ export function CanonicalView({ items }: { items: CanonicalItem[] }) {
                 <TableHead>Selling unit</TableHead>
                 <TableHead>Base unit</TableHead>
                 <TableHead className="text-right">Matched products</TableHead>
-                <TableHead className="w-12" />
+                {canEdit && <TableHead className="w-12" />}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -153,21 +157,23 @@ export function CanonicalView({ items }: { items: CanonicalItem[] }) {
                       <span className="text-muted-foreground">0</span>
                     )}
                   </TableCell>
-                  <TableCell>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={`Delete ${it.name}`}
-                      disabled={isPending}
-                      onClick={() =>
-                        startTransition(() => {
-                          void deleteCanonicalItem(it.id)
-                        })
-                      }
-                    >
-                      <Trash2 className="size-4 text-muted-foreground" />
-                    </Button>
-                  </TableCell>
+                  {canEdit && (
+                    <TableCell>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Delete ${it.name}`}
+                        disabled={isPending}
+                        onClick={() =>
+                          startTransition(() => {
+                            void deleteCanonicalItem(it.id)
+                          })
+                        }
+                      >
+                        <Trash2 className="size-4 text-muted-foreground" />
+                      </Button>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
