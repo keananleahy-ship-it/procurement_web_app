@@ -25,6 +25,7 @@ import {
 } from '@/components/ui/dialog'
 import { Plus, Trash2, Package } from 'lucide-react'
 import { EmptyState } from '@/components/empty-state'
+import { useCanEdit } from '@/components/role-provider'
 
 type Product = {
   id: number
@@ -39,6 +40,7 @@ type Product = {
 export function ProductsView({ products }: { products: Product[] }) {
   const [open, setOpen] = useState(false)
   const [isPending, startTransition] = useTransition()
+  const canEdit = useCanEdit()
 
   async function handleCreate(formData: FormData) {
     await createProduct(formData)
@@ -47,6 +49,7 @@ export function ProductsView({ products }: { products: Product[] }) {
 
   return (
     <div className="p-6">
+      {canEdit && (
       <div className="mb-4 flex justify-end">
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger render={<Button />}>
@@ -94,6 +97,7 @@ export function ProductsView({ products }: { products: Product[] }) {
           </DialogContent>
         </Dialog>
       </div>
+      )}
 
       {products.length === 0 ? (
         <EmptyState
@@ -111,7 +115,7 @@ export function ProductsView({ products }: { products: Product[] }) {
                 <TableHead>Unit</TableHead>
                 <TableHead>SKU</TableHead>
                 <TableHead>Canonical match</TableHead>
-                <TableHead className="w-12" />
+                {canEdit && <TableHead className="w-12" />}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -151,21 +155,23 @@ export function ProductsView({ products }: { products: Product[] }) {
                       <span className="text-muted-foreground">—</span>
                     )}
                   </TableCell>
-                  <TableCell>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={`Delete ${p.name}`}
-                      disabled={isPending}
-                      onClick={() =>
-                        startTransition(() => {
-                          void deleteProduct(p.id)
-                        })
-                      }
-                    >
-                      <Trash2 className="size-4 text-muted-foreground" />
-                    </Button>
-                  </TableCell>
+                  {canEdit && (
+                    <TableCell>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Delete ${p.name}`}
+                        disabled={isPending}
+                        onClick={() =>
+                          startTransition(() => {
+                            void deleteProduct(p.id)
+                          })
+                        }
+                      >
+                        <Trash2 className="size-4 text-muted-foreground" />
+                      </Button>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>

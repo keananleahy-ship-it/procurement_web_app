@@ -33,6 +33,7 @@ import { Plus, Trash2, Tags } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { EmptyState } from '@/components/empty-state'
 import { formatCurrency, formatDate } from '@/lib/format'
+import { useCanEdit } from '@/components/role-provider'
 
 type Option = { id: number; name: string }
 type PriceRecord = {
@@ -72,8 +73,9 @@ export function PricesView({
   const [locationId, setLocationId] = useState('')
   const [freightTerms, setFreightTerms] = useState('fob')
   const [isPending, startTransition] = useTransition()
+  const canEdit = useCanEdit()
 
-  const canAdd = products.length > 0 && vendors.length > 0
+  const canAdd = canEdit && products.length > 0 && vendors.length > 0
   const showShipping = freightTerms === 'fob' || freightTerms === 'both'
   const showDelivered = freightTerms === 'both'
 
@@ -88,6 +90,7 @@ export function PricesView({
 
   return (
     <div className="p-6">
+      {canEdit && (
       <div className="mb-4 flex justify-end">
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger render={<Button disabled={!canAdd} />}>
@@ -259,8 +262,9 @@ export function PricesView({
           </DialogContent>
         </Dialog>
       </div>
+      )}
 
-      {!canAdd && (
+      {canEdit && !canAdd && (
         <p className="mb-4 rounded-md border border-border bg-muted/50 px-4 py-3 text-sm text-muted-foreground">
           Add at least one product and one vendor before recording prices.
         </p>
@@ -282,10 +286,10 @@ export function PricesView({
                 <TableHead>Location</TableHead>
                 <TableHead>Freight</TableHead>
                 <TableHead className="text-right">Unit price</TableHead>
-                <TableHead className="text-right">Freight cost</TableHead>
+                <TableHead className="text-right">Freight / unit</TableHead>
                 <TableHead className="text-right">Min qty</TableHead>
                 <TableHead>Effective</TableHead>
-                <TableHead className="w-12" />
+                {canEdit && <TableHead className="w-12" />}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -325,21 +329,23 @@ export function PricesView({
                   <TableCell className="tabular-nums text-muted-foreground">
                     {formatDate(p.effectiveDate)}
                   </TableCell>
-                  <TableCell>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label="Delete price entry"
-                      disabled={isPending}
-                      onClick={() =>
-                        startTransition(() => {
-                          void deletePrice(p.id)
-                        })
-                      }
-                    >
-                      <Trash2 className="size-4 text-muted-foreground" />
-                    </Button>
-                  </TableCell>
+                  {canEdit && (
+                    <TableCell>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="Delete price entry"
+                        disabled={isPending}
+                        onClick={() =>
+                          startTransition(() => {
+                            void deletePrice(p.id)
+                          })
+                        }
+                      >
+                        <Trash2 className="size-4 text-muted-foreground" />
+                      </Button>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>

@@ -29,6 +29,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { EmptyState } from '@/components/empty-state'
+import { useCanEdit } from '@/components/role-provider'
 import { cn } from '@/lib/utils'
 import {
   Check,
@@ -108,6 +109,7 @@ export function MatchingView({
   const [isPending, startTransition] = useTransition()
   const [genPending, startGen] = useTransition()
   const [aiPending, startAi] = useTransition()
+  const canEdit = useCanEdit()
 
   const groups = useMemo(() => {
     return {
@@ -145,31 +147,33 @@ export function MatchingView({
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="outline"
-            disabled={genPending || aiPending || noCanonical}
-            onClick={() =>
-              startGen(() => {
-                void generateSuggestions()
-              })
-            }
-          >
-            <ListChecks className="size-4" />
-            {genPending ? 'Scanning…' : 'Name match'}
-          </Button>
-          <Button
-            disabled={aiPending || genPending || noCanonical}
-            onClick={() =>
-              startAi(() => {
-                void generateAiSuggestions()
-              })
-            }
-          >
-            <Sparkles className="size-4" />
-            {aiPending ? 'Thinking…' : 'AI match pass'}
-          </Button>
-        </div>
+        {canEdit && (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              disabled={genPending || aiPending || noCanonical}
+              onClick={() =>
+                startGen(() => {
+                  void generateSuggestions()
+                })
+              }
+            >
+              <ListChecks className="size-4" />
+              {genPending ? 'Scanning…' : 'Name match'}
+            </Button>
+            <Button
+              disabled={aiPending || genPending || noCanonical}
+              onClick={() =>
+                startAi(() => {
+                  void generateAiSuggestions()
+                })
+              }
+            >
+              <Sparkles className="size-4" />
+              {aiPending ? 'Thinking…' : 'AI match pass'}
+            </Button>
+          </div>
+        )}
       </div>
 
       {noCanonical && (
@@ -224,7 +228,7 @@ export function MatchingView({
                     <TableHead>Vendor product</TableHead>
                     <TableHead>Suggested canonical item</TableHead>
                     <TableHead>Confidence</TableHead>
-                    <TableHead className="text-right">Verify</TableHead>
+                    {canEdit && <TableHead className="text-right">Verify</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -262,34 +266,36 @@ export function MatchingView({
                           )}
                         </div>
                       </TableCell>
-                      <TableCell>
-                        <div className="flex items-center justify-end gap-2">
-                          <AssignSelect
-                            productId={r.productId}
-                            canonicalItems={canonicalItems}
-                            placeholder="Reassign…"
-                            disabled={isPending}
-                            onAssign={(id, cid) => run(() => assignMatch(id, cid))}
-                          />
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={isPending}
-                            onClick={() => run(() => rejectMatch(r.productId))}
-                          >
-                            <X className="size-4" />
-                            Reject
-                          </Button>
-                          <Button
-                            size="sm"
-                            disabled={isPending}
-                            onClick={() => run(() => confirmMatch(r.productId))}
-                          >
-                            <Check className="size-4" />
-                            Confirm
-                          </Button>
-                        </div>
-                      </TableCell>
+                      {canEdit && (
+                        <TableCell>
+                          <div className="flex items-center justify-end gap-2">
+                            <AssignSelect
+                              productId={r.productId}
+                              canonicalItems={canonicalItems}
+                              placeholder="Reassign…"
+                              disabled={isPending}
+                              onAssign={(id, cid) => run(() => assignMatch(id, cid))}
+                            />
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={isPending}
+                              onClick={() => run(() => rejectMatch(r.productId))}
+                            >
+                              <X className="size-4" />
+                              Reject
+                            </Button>
+                            <Button
+                              size="sm"
+                              disabled={isPending}
+                              onClick={() => run(() => confirmMatch(r.productId))}
+                            >
+                              <Check className="size-4" />
+                              Confirm
+                            </Button>
+                          </div>
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))}
                 </TableBody>
@@ -313,7 +319,7 @@ export function MatchingView({
                   <TableRow>
                     <TableHead>Vendor product</TableHead>
                     <TableHead>Canonical item</TableHead>
-                    <TableHead className="text-right">Action</TableHead>
+                    {canEdit && <TableHead className="text-right">Action</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -327,17 +333,19 @@ export function MatchingView({
                           {r.canonicalItemName ?? 'Unknown'}
                         </Badge>
                       </TableCell>
-                      <TableCell className="text-right">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={isPending}
-                          onClick={() => run(() => resetMatch(r.productId))}
-                        >
-                          <RotateCcw className="size-4" />
-                          Unlink
-                        </Button>
-                      </TableCell>
+                      {canEdit && (
+                        <TableCell className="text-right">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={isPending}
+                            onClick={() => run(() => resetMatch(r.productId))}
+                          >
+                            <RotateCcw className="size-4" />
+                            Unlink
+                          </Button>
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))}
                 </TableBody>
@@ -361,7 +369,7 @@ export function MatchingView({
                   <TableRow>
                     <TableHead>Vendor product</TableHead>
                     <TableHead>Status</TableHead>
-                    <TableHead className="text-right">Assign</TableHead>
+                    {canEdit && <TableHead className="text-right">Assign</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -396,16 +404,18 @@ export function MatchingView({
                           )}
                         </div>
                       </TableCell>
-                      <TableCell>
-                        <div className="flex justify-end">
-                          <AssignSelect
-                            productId={r.productId}
-                            canonicalItems={canonicalItems}
-                            disabled={isPending || noCanonical}
-                            onAssign={(id, cid) => run(() => assignMatch(id, cid))}
-                          />
-                        </div>
-                      </TableCell>
+                      {canEdit && (
+                        <TableCell>
+                          <div className="flex justify-end">
+                            <AssignSelect
+                              productId={r.productId}
+                              canonicalItems={canonicalItems}
+                              disabled={isPending || noCanonical}
+                              onAssign={(id, cid) => run(() => assignMatch(id, cid))}
+                            />
+                          </div>
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))}
                 </TableBody>

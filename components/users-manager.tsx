@@ -129,7 +129,6 @@ export function UsersManager({
                         if (!value || value === u.role) return
                         run(u.id, () => setUserRole(u.id, value as Role))
                       }}
-                      // Prevent demoting the last admin from the UI.
                       disabled={rowBusy}
                     >
                       <SelectTrigger className="w-40" aria-label={`Role for ${u.name}`}>

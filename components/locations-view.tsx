@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/dialog'
 import { Plus, Trash2, MapPin } from 'lucide-react'
 import { EmptyState } from '@/components/empty-state'
+import { useCanEdit } from '@/components/role-provider'
 
 type Location = {
   id: number
@@ -34,6 +35,7 @@ type Location = {
 export function LocationsView({ locations }: { locations: Location[] }) {
   const [open, setOpen] = useState(false)
   const [isPending, startTransition] = useTransition()
+  const canEdit = useCanEdit()
 
   async function handleCreate(formData: FormData) {
     await createLocation(formData)
@@ -42,6 +44,7 @@ export function LocationsView({ locations }: { locations: Location[] }) {
 
   return (
     <div className="p-6">
+      {canEdit && (
       <div className="mb-4 flex justify-end">
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger render={<Button />}>
@@ -73,6 +76,7 @@ export function LocationsView({ locations }: { locations: Location[] }) {
           </DialogContent>
         </Dialog>
       </div>
+      )}
 
       {locations.length === 0 ? (
         <EmptyState
@@ -87,7 +91,7 @@ export function LocationsView({ locations }: { locations: Location[] }) {
               <TableRow>
                 <TableHead>Location</TableHead>
                 <TableHead>Region</TableHead>
-                <TableHead className="w-12" />
+                {canEdit && <TableHead className="w-12" />}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -99,21 +103,23 @@ export function LocationsView({ locations }: { locations: Location[] }) {
                   <TableCell className="text-muted-foreground">
                     {l.region ?? '—'}
                   </TableCell>
-                  <TableCell>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={`Delete ${l.name}`}
-                      disabled={isPending}
-                      onClick={() =>
-                        startTransition(() => {
-                          void deleteLocation(l.id)
-                        })
-                      }
-                    >
-                      <Trash2 className="size-4 text-muted-foreground" />
-                    </Button>
-                  </TableCell>
+                  {canEdit && (
+                    <TableCell>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Delete ${l.name}`}
+                        disabled={isPending}
+                        onClick={() =>
+                          startTransition(() => {
+                            void deleteLocation(l.id)
+                          })
+                        }
+                      >
+                        <Trash2 className="size-4 text-muted-foreground" />
+                      </Button>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>

@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/dialog'
 import { Plus, Trash2, Store } from 'lucide-react'
 import { EmptyState } from '@/components/empty-state'
+import { useCanEdit } from '@/components/role-provider'
 
 type Vendor = {
   id: number
@@ -35,6 +36,7 @@ type Vendor = {
 export function VendorsView({ vendors }: { vendors: Vendor[] }) {
   const [open, setOpen] = useState(false)
   const [isPending, startTransition] = useTransition()
+  const canEdit = useCanEdit()
 
   async function handleCreate(formData: FormData) {
     await createVendor(formData)
@@ -43,6 +45,7 @@ export function VendorsView({ vendors }: { vendors: Vendor[] }) {
 
   return (
     <div className="p-6">
+      {canEdit && (
       <div className="mb-4 flex justify-end">
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger render={<Button />}>
@@ -83,6 +86,7 @@ export function VendorsView({ vendors }: { vendors: Vendor[] }) {
           </DialogContent>
         </Dialog>
       </div>
+      )}
 
       {vendors.length === 0 ? (
         <EmptyState
@@ -98,7 +102,7 @@ export function VendorsView({ vendors }: { vendors: Vendor[] }) {
                 <TableHead>Vendor</TableHead>
                 <TableHead>Contact</TableHead>
                 <TableHead>Notes</TableHead>
-                <TableHead className="w-12" />
+                {canEdit && <TableHead className="w-12" />}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -113,21 +117,23 @@ export function VendorsView({ vendors }: { vendors: Vendor[] }) {
                   <TableCell className="text-muted-foreground">
                     {v.notes ?? '—'}
                   </TableCell>
-                  <TableCell>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={`Delete ${v.name}`}
-                      disabled={isPending}
-                      onClick={() =>
-                        startTransition(() => {
-                          void deleteVendor(v.id)
-                        })
-                      }
-                    >
-                      <Trash2 className="size-4 text-muted-foreground" />
-                    </Button>
-                  </TableCell>
+                  {canEdit && (
+                    <TableCell>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Delete ${v.name}`}
+                        disabled={isPending}
+                        onClick={() =>
+                          startTransition(() => {
+                            void deleteVendor(v.id)
+                          })
+                        }
+                      >
+                        <Trash2 className="size-4 text-muted-foreground" />
+                      </Button>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>

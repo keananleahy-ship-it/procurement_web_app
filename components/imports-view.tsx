@@ -41,6 +41,7 @@ import {
 } from 'lucide-react'
 import { EmptyState } from '@/components/empty-state'
 import { formatDate } from '@/lib/format'
+import { useCanEdit } from '@/components/role-provider'
 
 type Option = { id: number; name: string }
 type ImportRecord = {
@@ -78,6 +79,7 @@ export function ImportsView({
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const canEdit = useCanEdit()
 
   async function handleUpload(e: React.FormEvent) {
     e.preventDefault()
@@ -113,6 +115,7 @@ export function ImportsView({
 
   return (
     <div className="p-6">
+      {canEdit && (
       <div className="mb-4 flex justify-end">
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger render={<Button />}>
@@ -199,6 +202,7 @@ export function ImportsView({
           </DialogContent>
         </Dialog>
       </div>
+      )}
 
       {imports.length === 0 ? (
         <EmptyState
@@ -268,7 +272,7 @@ export function ImportsView({
                       >
                         <Download className="size-4" />
                       </a>
-                      {imp.status === 'pending' && (
+                      {canEdit && imp.status === 'pending' && (
                         <Button
                           variant="outline"
                           size="sm"
