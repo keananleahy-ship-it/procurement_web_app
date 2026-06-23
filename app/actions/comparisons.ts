@@ -1,6 +1,5 @@
 'use server'
 
-import { auth } from '@/lib/auth'
 import { db } from '@/lib/db'
 import {
   canonicalItems,
@@ -9,14 +8,8 @@ import {
   vendorPrices,
   vendors,
 } from '@/lib/db/schema'
+import { requireUser } from '@/lib/roles'
 import { eq } from 'drizzle-orm'
-import { headers } from 'next/headers'
-
-async function getUserId() {
-  const session = await auth.api.getSession({ headers: await headers() })
-  if (!session?.user) throw new Error('Unauthorized')
-  return session.user.id
-}
 
 export type PriceRow = {
   priceId: number
@@ -112,7 +105,7 @@ export type LocationComparison = {
   totalAcquisitionCost: number
 }
 
-async function getAllRows(userId: string): Promise<PriceRow[]> {
+async function getAllRows(): Promise<PriceRow[]> {
   const rows = await db
     .select({
       priceId: vendorPrices.id,
@@ -145,7 +138,6 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
     .leftJoin(canonicalItems, eq(canonicalItems.id, products.canonicalItemId))
     .leftJoin(vendors, eq(vendors.id, vendorPrices.vendorId))
     .leftJoin(locations, eq(locations.id, vendorPrices.locationId))
-    .where(eq(vendorPrices.userId, userId))
 
   return rows.map((r) => {
     const unitPrice = Number(r.unitPrice ?? 0)
@@ -243,8 +235,8 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
 }
 
 export async function getProductComparisons(): Promise<ProductComparison[]> {
-  const userId = await getUserId()
-  const rows = await getAllRows(userId)
+  await requireUser()
+  const rows = await getAllRows()
 
   // Group offers by their comparison key: products with a confirmed canonical
   // match collapse under that canonical item (so differently-named vendor
@@ -353,8 +345,8 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
 }
 
 export async function getLocationComparisons(): Promise<LocationComparison[]> {
-  const userId = await getUserId()
-  const rows = await getAllRows(userId)
+  await requireUser()
+  const rows = await getAllRows()
 
   const byLocation = new Map<string, PriceRow[]>()
   for (const row of rows) {
@@ -385,8 +377,8 @@ export async function getLocationComparisons(): Promise<LocationComparison[]> {
 }
 
 export async function getDashboardStats() {
-  const userId = await getUserId()
-  const rows = await getAllRows(userId)
+  await requireUser()
+  const rows = await getAllRows()
   const productIds = new Set(rows.map((r) => r.productId))
   const vendorIds = new Set(rows.map((r) => r.vendorId))
 

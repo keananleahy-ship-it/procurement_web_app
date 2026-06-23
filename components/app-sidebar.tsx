@@ -15,7 +15,9 @@ import {
   Layers,
   ListChecks,
   Upload,
+  Users,
 } from 'lucide-react'
+import { type Role, ROLE_LABELS } from '@/lib/roles-shared'
 
 const nav = [
   { href: '/', label: 'Overview', icon: LayoutDashboard },
@@ -29,7 +31,13 @@ const nav = [
   { href: '/locations', label: 'Locations', icon: MapPin },
 ]
 
-export function AppSidebar({ userName }: { userName: string }) {
+export function AppSidebar({
+  userName,
+  role,
+}: {
+  userName: string
+  role: Role
+}) {
   const pathname = usePathname()
   const router = useRouter()
 
@@ -71,6 +79,20 @@ export function AppSidebar({ userName }: { userName: string }) {
             </Link>
           )
         })}
+        {role === 'admin' && (
+          <Link
+            href="/admin"
+            className={cn(
+              'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+              pathname.startsWith('/admin')
+                ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground',
+            )}
+          >
+            <Users className="size-4" />
+            User Management
+          </Link>
+        )}
       </nav>
 
       <div className="border-t border-sidebar-border p-3">
@@ -80,6 +102,9 @@ export function AppSidebar({ userName }: { userName: string }) {
           </div>
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium">{userName}</p>
+            <p className="truncate text-xs text-sidebar-foreground/60">
+              {ROLE_LABELS[role]}
+            </p>
           </div>
           <button
             type="button"

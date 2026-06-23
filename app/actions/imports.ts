@@ -1,6 +1,5 @@
 'use server'
 
-import { auth } from '@/lib/auth'
 import { db } from '@/lib/db'
 import {
   imports,
@@ -9,37 +8,27 @@ import {
   products,
   vendorPrices,
 } from '@/lib/db/schema'
-import { and, desc, eq } from 'drizzle-orm'
+import { requireUser, requireEditor } from '@/lib/roles'
+import { desc, eq } from 'drizzle-orm'
 import { del } from '@vercel/blob'
-import { headers } from 'next/headers'
 import { revalidatePath } from 'next/cache'
 
-async function getUserId() {
-  const session = await auth.api.getSession({ headers: await headers() })
-  if (!session?.user) throw new Error('Unauthorized')
-  return session.user.id
-}
-
 export async function getImports() {
-  const userId = await getUserId()
-  return db
-    .select()
-    .from(imports)
-    .where(eq(imports.userId, userId))
-    .orderBy(desc(imports.createdAt))
+  await requireUser()
+  return db.select().from(imports).orderBy(desc(imports.createdAt))
 }
 
 export async function getImportWithRows(importId: number) {
-  const userId = await getUserId()
+  await requireUser()
   const [imp] = await db
     .select()
     .from(imports)
-    .where(and(eq(imports.id, importId), eq(imports.userId, userId)))
+    .where(eq(imports.id, importId))
   if (!imp) return null
   const rows = await db
     .select()
     .from(importRows)
-    .where(and(eq(importRows.importId, importId), eq(importRows.userId, userId)))
+    .where(eq(importRows.importId, importId))
     .orderBy(importRows.id)
   return { import: imp, rows }
 }
@@ -62,28 +51,23 @@ type RowPatch = {
 }
 
 export async function updateImportRow(rowId: number, patch: RowPatch) {
-  const userId = await getUserId()
-  await db
-    .update(importRows)
-    .set(patch)
-    .where(and(eq(importRows.id, rowId), eq(importRows.userId, userId)))
+  await requireEditor()
+  await db.update(importRows).set(patch).where(eq(importRows.id, rowId))
   revalidatePath('/imports')
 }
 
 export async function deleteImportRow(rowId: number) {
-  const userId = await getUserId()
-  await db
-    .delete(importRows)
-    .where(and(eq(importRows.id, rowId), eq(importRows.userId, userId)))
+  await requireEditor()
+  await db.delete(importRows).where(eq(importRows.id, rowId))
   revalidatePath('/imports')
 }
 
 export async function discardImport(importId: number) {
-  const userId = await getUserId()
+  await requireEditor()
   const [imp] = await db
     .select()
     .from(imports)
-    .where(and(eq(imports.id, importId), eq(imports.userId, userId)))
+    .where(eq(imports.id, importId))
   if (!imp) throw new Error('Import not found')
 
   // Remove the stored original file and staging rows, mark discarded.
@@ -92,17 +76,16 @@ export async function discardImport(importId: number) {
   } catch (err) {
     console.error('[v0] blob delete failed:', err)
   }
-  await db
-    .delete(importRows)
-    .where(and(eq(importRows.importId, importId), eq(importRows.userId, userId)))
+  await db.delete(importRows).where(eq(importRows.importId, importId))
   await db
     .update(imports)
     .set({ status: 'discarded' })
-    .where(and(eq(imports.id, importId), eq(imports.userId, userId)))
+    .where(eq(imports.id, importId))
   revalidatePath('/imports')
 }
 
 // Resolve a vendor/product by name (case-insensitive), creating it if missing.
+// New rows record the acting user as creator, but lookups span the workspace.
 async function resolveVendorId(
   userId: string,
   name: string,
@@ -152,12 +135,12 @@ export type CommitResult = {
 }
 
 export async function commitImport(importId: number): Promise<CommitResult> {
-  const userId = await getUserId()
+  const { id: userId } = await requireEditor()
 
   const [imp] = await db
     .select()
     .from(imports)
-    .where(and(eq(imports.id, importId), eq(imports.userId, userId)))
+    .where(eq(imports.id, importId))
   if (!imp) throw new Error('Import not found')
   if (imp.status === 'committed') {
     throw new Error('This import has already been committed')
@@ -166,17 +149,16 @@ export async function commitImport(importId: number): Promise<CommitResult> {
   const rows = await db
     .select()
     .from(importRows)
-    .where(and(eq(importRows.importId, importId), eq(importRows.userId, userId)))
+    .where(eq(importRows.importId, importId))
 
-  // Preload existing vendors/products for case-insensitive matching.
+  // Preload existing vendors/products for case-insensitive matching across the
+  // shared workspace (not scoped to the acting user).
   const existingVendors = await db
     .select({ id: vendors.id, name: vendors.name })
     .from(vendors)
-    .where(eq(vendors.userId, userId))
   const existingProducts = await db
     .select({ id: products.id, name: products.name })
     .from(products)
-    .where(eq(products.userId, userId))
 
   const vendorCache = new Map<string, number>()
   for (const v of existingVendors) vendorCache.set(v.name.toLowerCase(), v.id)
@@ -228,7 +210,7 @@ export async function commitImport(importId: number): Promise<CommitResult> {
       committedAt: new Date(),
       rowCount: committed,
     })
-    .where(and(eq(imports.id, importId), eq(imports.userId, userId)))
+    .where(eq(imports.id, importId))
 
   revalidatePath('/imports')
   revalidatePath('/prices')

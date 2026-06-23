@@ -1,29 +1,18 @@
 'use server'
 
-import { auth } from '@/lib/auth'
 import { db } from '@/lib/db'
 import { products } from '@/lib/db/schema'
-import { and, asc, eq } from 'drizzle-orm'
-import { headers } from 'next/headers'
+import { requireUser, requireEditor } from '@/lib/roles'
+import { asc, eq } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 
-async function getUserId() {
-  const session = await auth.api.getSession({ headers: await headers() })
-  if (!session?.user) throw new Error('Unauthorized')
-  return session.user.id
-}
-
 export async function getProducts() {
-  const userId = await getUserId()
-  return db
-    .select()
-    .from(products)
-    .where(eq(products.userId, userId))
-    .orderBy(asc(products.name))
+  await requireUser()
+  return db.select().from(products).orderBy(asc(products.name))
 }
 
 export async function createProduct(formData: FormData) {
-  const userId = await getUserId()
+  const { id: userId } = await requireEditor()
   const name = String(formData.get('name') ?? '').trim()
   if (!name) throw new Error('Product name is required')
   const category = String(formData.get('category') ?? '').trim() || null
@@ -36,10 +25,8 @@ export async function createProduct(formData: FormData) {
 }
 
 export async function deleteProduct(id: number) {
-  const userId = await getUserId()
-  await db
-    .delete(products)
-    .where(and(eq(products.id, id), eq(products.userId, userId)))
+  await requireEditor()
+  await db.delete(products).where(eq(products.id, id))
   revalidatePath('/products')
   revalidatePath('/')
 }

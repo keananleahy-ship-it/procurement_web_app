@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from 'next/server'
 import { put } from '@vercel/blob'
 import * as XLSX from 'xlsx'
-import { auth } from '@/lib/auth'
+import { getCurrentUser, canEdit } from '@/lib/roles'
 import { db } from '@/lib/db'
 import { imports, importRows } from '@/lib/db/schema'
 import { extractPriceRows, type ExtractedRow } from '@/lib/extract'
@@ -18,11 +18,17 @@ function toNumericString(n: number | null): string | null {
 }
 
 export async function POST(req: NextRequest) {
-  const session = await auth.api.getSession({ headers: req.headers })
-  if (!session?.user) {
+  const currentUser = await getCurrentUser()
+  if (!currentUser) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
-  const userId = session.user.id
+  if (!canEdit(currentUser.role)) {
+    return NextResponse.json(
+      { error: 'Forbidden: uploading imports requires uploader or admin access.' },
+      { status: 403 },
+    )
+  }
+  const userId = currentUser.id
 
   let formData: FormData
   try {

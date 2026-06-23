@@ -1,29 +1,18 @@
 'use server'
 
-import { auth } from '@/lib/auth'
 import { db } from '@/lib/db'
 import { vendorPrices } from '@/lib/db/schema'
-import { and, desc, eq } from 'drizzle-orm'
-import { headers } from 'next/headers'
+import { requireUser, requireEditor } from '@/lib/roles'
+import { desc, eq } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 
-async function getUserId() {
-  const session = await auth.api.getSession({ headers: await headers() })
-  if (!session?.user) throw new Error('Unauthorized')
-  return session.user.id
-}
-
 export async function getPrices() {
-  const userId = await getUserId()
-  return db
-    .select()
-    .from(vendorPrices)
-    .where(eq(vendorPrices.userId, userId))
-    .orderBy(desc(vendorPrices.createdAt))
+  await requireUser()
+  return db.select().from(vendorPrices).orderBy(desc(vendorPrices.createdAt))
 }
 
 export async function createPrice(formData: FormData) {
-  const userId = await getUserId()
+  const { id: userId } = await requireEditor()
 
   const productId = Number(formData.get('productId'))
   const vendorId = Number(formData.get('vendorId'))
@@ -75,10 +64,8 @@ export async function createPrice(formData: FormData) {
 }
 
 export async function deletePrice(id: number) {
-  const userId = await getUserId()
-  await db
-    .delete(vendorPrices)
-    .where(and(eq(vendorPrices.id, id), eq(vendorPrices.userId, userId)))
+  await requireEditor()
+  await db.delete(vendorPrices).where(eq(vendorPrices.id, id))
   revalidatePath('/prices')
   revalidatePath('/')
 }
@@ -86,17 +73,16 @@ export async function deletePrice(id: number) {
 // Set an estimated per-unit inbound freight on an FOB offer so it can be
 // rationalized against delivered offers. Passing 0/empty clears the estimate.
 export async function setFreightEstimate(id: number, perUnitFreight: number) {
-  const userId = await getUserId()
-  const value = Number.isFinite(perUnitFreight) && perUnitFreight > 0
-    ? perUnitFreight
-    : 0
+  await requireEditor()
+  const value =
+    Number.isFinite(perUnitFreight) && perUnitFreight > 0 ? perUnitFreight : 0
   await db
     .update(vendorPrices)
     .set({
       shippingCost: value.toFixed(2),
       freightEstimated: value > 0,
     })
-    .where(and(eq(vendorPrices.id, id), eq(vendorPrices.userId, userId)))
+    .where(eq(vendorPrices.id, id))
   revalidatePath('/compare')
   revalidatePath('/prices')
   revalidatePath('/')

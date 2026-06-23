@@ -1,8 +1,30 @@
 import { betterAuth } from 'better-auth'
-import { pool } from '@/lib/db'
+import { eq, sql } from 'drizzle-orm'
+import { pool, db } from '@/lib/db'
+import { user } from '@/lib/db/schema'
 
 export const auth = betterAuth({
   database: pool,
+  databaseHooks: {
+    user: {
+      create: {
+        // After a new account is created, promote it to admin if no admin
+        // exists yet — making the very first registered user the admin.
+        after: async (createdUser) => {
+          const [{ count }] = await db
+            .select({ count: sql<number>`count(*)::int` })
+            .from(user)
+            .where(eq(user.role, 'admin'))
+          if (count === 0) {
+            await db
+              .update(user)
+              .set({ role: 'admin' })
+              .where(eq(user.id, createdUser.id))
+          }
+        },
+      },
+    },
+  },
   baseURL:
     process.env.BETTER_AUTH_URL ??
     (process.env.VERCEL_PROJECT_PRODUCTION_URL

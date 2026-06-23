@@ -1,31 +1,20 @@
 'use server'
 
-import { auth } from '@/lib/auth'
 import { db } from '@/lib/db'
 import { canonicalItems, products } from '@/lib/db/schema'
 import { bestMatch } from '@/lib/match'
 import { aiMatchProducts } from '@/lib/match-ai'
+import { requireUser, requireEditor } from '@/lib/roles'
 import { and, asc, eq, inArray } from 'drizzle-orm'
-import { headers } from 'next/headers'
 import { revalidatePath } from 'next/cache'
 
-async function getUserId() {
-  const session = await auth.api.getSession({ headers: await headers() })
-  if (!session?.user) throw new Error('Unauthorized')
-  return session.user.id
-}
-
 export async function getCanonicalItems() {
-  const userId = await getUserId()
-  return db
-    .select()
-    .from(canonicalItems)
-    .where(eq(canonicalItems.userId, userId))
-    .orderBy(asc(canonicalItems.name))
+  await requireUser()
+  return db.select().from(canonicalItems).orderBy(asc(canonicalItems.name))
 }
 
 export async function createCanonicalItem(formData: FormData) {
-  const userId = await getUserId()
+  const { id: userId } = await requireEditor()
   const name = String(formData.get('name') ?? '').trim()
   if (!name) throw new Error('Canonical item name is required')
   const category = String(formData.get('category') ?? '').trim() || null
@@ -41,17 +30,13 @@ export async function createCanonicalItem(formData: FormData) {
 }
 
 export async function deleteCanonicalItem(id: number) {
-  const userId = await getUserId()
+  await requireEditor()
   // Detach any products pointing at this canonical item.
   await db
     .update(products)
     .set({ canonicalItemId: null, matchStatus: 'unmatched', matchScore: null })
-    .where(
-      and(eq(products.canonicalItemId, id), eq(products.userId, userId)),
-    )
-  await db
-    .delete(canonicalItems)
-    .where(and(eq(canonicalItems.id, id), eq(canonicalItems.userId, userId)))
+    .where(eq(products.canonicalItemId, id))
+  await db.delete(canonicalItems).where(eq(canonicalItems.id, id))
   revalidatePath('/canonical')
   revalidatePath('/matching')
   revalidatePath('/compare')
@@ -60,17 +45,14 @@ export async function deleteCanonicalItem(id: number) {
 
 /**
  * Recompute fuzzy-match suggestions for every product that has not yet been
- * confirmed or rejected by the user. Confirmed/rejected products are left
- * untouched so human decisions are never overwritten.
+ * confirmed or rejected. Confirmed/rejected products are left untouched so
+ * human decisions are never overwritten.
  */
 export async function generateSuggestions() {
-  const userId = await getUserId()
+  await requireEditor()
   const [items, prods] = await Promise.all([
-    db
-      .select()
-      .from(canonicalItems)
-      .where(eq(canonicalItems.userId, userId)),
-    db.select().from(products).where(eq(products.userId, userId)),
+    db.select().from(canonicalItems),
+    db.select().from(products),
   ])
 
   const candidates = items.map((i) => ({
@@ -96,7 +78,7 @@ export async function generateSuggestions() {
           matchMethod: 'fuzzy',
           matchReason: null,
         })
-        .where(and(eq(products.id, p.id), eq(products.userId, userId)))
+        .where(eq(products.id, p.id))
       suggested++
     } else {
       await db
@@ -108,7 +90,7 @@ export async function generateSuggestions() {
           matchMethod: null,
           matchReason: null,
         })
-        .where(and(eq(products.id, p.id), eq(products.userId, userId)))
+        .where(eq(products.id, p.id))
     }
   }
 
@@ -125,10 +107,10 @@ export async function generateSuggestions() {
  * products are left untouched so human decisions are preserved.
  */
 export async function generateAiSuggestions() {
-  const userId = await getUserId()
+  await requireEditor()
   const [items, prods] = await Promise.all([
-    db.select().from(canonicalItems).where(eq(canonicalItems.userId, userId)),
-    db.select().from(products).where(eq(products.userId, userId)),
+    db.select().from(canonicalItems),
+    db.select().from(products),
   ])
 
   const canonicalOptions = items.map((i) => ({
@@ -180,7 +162,7 @@ export async function generateAiSuggestions() {
           matchMethod: 'ai',
           matchReason: m.reason?.slice(0, 280) ?? null,
         })
-        .where(and(eq(products.id, p.id), eq(products.userId, userId)))
+        .where(eq(products.id, p.id))
       suggested++
     } else {
       await db
@@ -192,7 +174,7 @@ export async function generateAiSuggestions() {
           matchMethod: 'ai',
           matchReason: m?.reason?.slice(0, 280) ?? null,
         })
-        .where(and(eq(products.id, p.id), eq(products.userId, userId)))
+        .where(eq(products.id, p.id))
       cleared++
     }
   }
@@ -204,14 +186,13 @@ export async function generateAiSuggestions() {
 }
 
 export async function confirmMatch(productId: number) {
-  const userId = await getUserId()
+  await requireEditor()
   await db
     .update(products)
     .set({ matchStatus: 'confirmed' })
     .where(
       and(
         eq(products.id, productId),
-        eq(products.userId, userId),
         // Only confirm when there is something to confirm.
         inArray(products.matchStatus, ['suggested', 'rejected']),
       ),
@@ -222,7 +203,7 @@ export async function confirmMatch(productId: number) {
 }
 
 export async function rejectMatch(productId: number) {
-  const userId = await getUserId()
+  await requireEditor()
   await db
     .update(products)
     .set({
@@ -231,7 +212,7 @@ export async function rejectMatch(productId: number) {
       matchScore: null,
       matchReason: null,
     })
-    .where(and(eq(products.id, productId), eq(products.userId, userId)))
+    .where(eq(products.id, productId))
   revalidatePath('/matching')
   revalidatePath('/compare')
   revalidatePath('/')
@@ -239,7 +220,7 @@ export async function rejectMatch(productId: number) {
 
 /** Manually assign (or reassign) a product to a canonical item and confirm it. */
 export async function assignMatch(productId: number, canonicalItemId: number) {
-  const userId = await getUserId()
+  await requireEditor()
   await db
     .update(products)
     .set({
@@ -249,7 +230,7 @@ export async function assignMatch(productId: number, canonicalItemId: number) {
       matchMethod: 'manual',
       matchReason: null,
     })
-    .where(and(eq(products.id, productId), eq(products.userId, userId)))
+    .where(eq(products.id, productId))
   revalidatePath('/matching')
   revalidatePath('/compare')
   revalidatePath('/')
@@ -257,7 +238,7 @@ export async function assignMatch(productId: number, canonicalItemId: number) {
 
 /** Clear a match entirely, returning the product to the unmatched pool. */
 export async function resetMatch(productId: number) {
-  const userId = await getUserId()
+  await requireEditor()
   await db
     .update(products)
     .set({
@@ -267,7 +248,7 @@ export async function resetMatch(productId: number) {
       matchMethod: null,
       matchReason: null,
     })
-    .where(and(eq(products.id, productId), eq(products.userId, userId)))
+    .where(eq(products.id, productId))
   revalidatePath('/matching')
   revalidatePath('/compare')
   revalidatePath('/')
@@ -290,7 +271,7 @@ export type MatchRow = {
 
 /** Products joined with their (suggested or confirmed) canonical item. */
 export async function getMatchRows(): Promise<MatchRow[]> {
-  const userId = await getUserId()
+  await requireUser()
   const rows = await db
     .select({
       productId: products.id,
@@ -308,7 +289,6 @@ export async function getMatchRows(): Promise<MatchRow[]> {
     })
     .from(products)
     .leftJoin(canonicalItems, eq(canonicalItems.id, products.canonicalItemId))
-    .where(eq(products.userId, userId))
     .orderBy(asc(products.name))
 
   return rows.map((r) => ({

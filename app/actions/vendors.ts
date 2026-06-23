@@ -1,29 +1,19 @@
 'use server'
 
-import { auth } from '@/lib/auth'
 import { db } from '@/lib/db'
 import { vendors } from '@/lib/db/schema'
-import { and, asc, eq } from 'drizzle-orm'
-import { headers } from 'next/headers'
+import { requireUser, requireEditor } from '@/lib/roles'
+import { asc, eq } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 
-async function getUserId() {
-  const session = await auth.api.getSession({ headers: await headers() })
-  if (!session?.user) throw new Error('Unauthorized')
-  return session.user.id
-}
-
 export async function getVendors() {
-  const userId = await getUserId()
-  return db
-    .select()
-    .from(vendors)
-    .where(eq(vendors.userId, userId))
-    .orderBy(asc(vendors.name))
+  // Shared workspace: any authenticated user (including viewers) sees all data.
+  await requireUser()
+  return db.select().from(vendors).orderBy(asc(vendors.name))
 }
 
 export async function createVendor(formData: FormData) {
-  const userId = await getUserId()
+  const { id: userId } = await requireEditor()
   const name = String(formData.get('name') ?? '').trim()
   if (!name) throw new Error('Vendor name is required')
   const contactEmail = String(formData.get('contactEmail') ?? '').trim() || null
@@ -35,10 +25,8 @@ export async function createVendor(formData: FormData) {
 }
 
 export async function deleteVendor(id: number) {
-  const userId = await getUserId()
-  await db
-    .delete(vendors)
-    .where(and(eq(vendors.id, id), eq(vendors.userId, userId)))
+  await requireEditor()
+  await db.delete(vendors).where(eq(vendors.id, id))
   revalidatePath('/vendors')
   revalidatePath('/')
 }

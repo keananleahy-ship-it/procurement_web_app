@@ -18,6 +18,9 @@ export const user = pgTable('user', {
   email: text('email').notNull().unique(),
   emailVerified: boolean('emailVerified').notNull().default(false),
   image: text('image'),
+  // App role for the shared workspace: 'viewer' | 'uploader' | 'admin'.
+  // New signups default to 'viewer'; the very first user is promoted to admin.
+  role: text('role').notNull().default('viewer'),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
   updatedAt: timestamp('updatedAt').notNull().defaultNow(),
 })

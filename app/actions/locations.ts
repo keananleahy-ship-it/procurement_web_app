@@ -1,29 +1,18 @@
 'use server'
 
-import { auth } from '@/lib/auth'
 import { db } from '@/lib/db'
 import { locations } from '@/lib/db/schema'
-import { and, asc, eq } from 'drizzle-orm'
-import { headers } from 'next/headers'
+import { requireUser, requireEditor } from '@/lib/roles'
+import { asc, eq } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 
-async function getUserId() {
-  const session = await auth.api.getSession({ headers: await headers() })
-  if (!session?.user) throw new Error('Unauthorized')
-  return session.user.id
-}
-
 export async function getLocations() {
-  const userId = await getUserId()
-  return db
-    .select()
-    .from(locations)
-    .where(eq(locations.userId, userId))
-    .orderBy(asc(locations.name))
+  await requireUser()
+  return db.select().from(locations).orderBy(asc(locations.name))
 }
 
 export async function createLocation(formData: FormData) {
-  const userId = await getUserId()
+  const { id: userId } = await requireEditor()
   const name = String(formData.get('name') ?? '').trim()
   if (!name) throw new Error('Location name is required')
   const region = String(formData.get('region') ?? '').trim() || null
@@ -34,10 +23,8 @@ export async function createLocation(formData: FormData) {
 }
 
 export async function deleteLocation(id: number) {
-  const userId = await getUserId()
-  await db
-    .delete(locations)
-    .where(and(eq(locations.id, id), eq(locations.userId, userId)))
+  await requireEditor()
+  await db.delete(locations).where(eq(locations.id, id))
   revalidatePath('/locations')
   revalidatePath('/')
 }
