@@ -61,10 +61,6 @@ const extractedRowSchema = z.object({
     .number()
     .nullable()
     .describe('A separate delivered per-unit price when terms are "both".'),
-  minOrderQty: z
-    .number()
-    .nullable()
-    .describe('Minimum order quantity, if stated.'),
   currency: z
     .string()
     .nullable()

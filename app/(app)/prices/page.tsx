@@ -27,7 +27,6 @@ export default async function PricesPage() {
     freightTerms: p.freightTerms,
     deliveredPrice:
       p.deliveredPrice !== null ? Number(p.deliveredPrice) : null,
-    minOrderQty: p.minOrderQty,
     currency: p.currency,
     effectiveDate:
       p.effectiveDate ??

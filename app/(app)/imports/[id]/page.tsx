@@ -47,7 +47,6 @@ export default async function ImportReviewPage({
           freightEstimated: r.freightEstimated,
           freightTerms: r.freightTerms,
           deliveredPrice: r.deliveredPrice,
-          minOrderQty: r.minOrderQty,
           currency: r.currency,
           packSize: r.packSize,
           baseUnit: r.baseUnit,

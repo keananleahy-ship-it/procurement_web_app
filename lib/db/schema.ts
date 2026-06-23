@@ -145,7 +145,6 @@ export const vendorPrices = pgTable('vendor_prices', {
   //                 delivered alternative stored in deliveredPrice
   freightTerms: text('freightTerms').notNull().default('fob'),
   deliveredPrice: numeric('deliveredPrice', { precision: 12, scale: 2 }),
-  minOrderQty: integer('minOrderQty').notNull().default(1),
   currency: text('currency').notNull().default('USD'),
   // The date this pricing is effective (chosen by the uploader). Falls back to
   // createdAt for rows entered before file imports existed.
@@ -196,10 +195,9 @@ export const importRows = pgTable('import_rows', {
   freightEstimated: boolean('freightEstimated').notNull().default(false),
   freightTerms: text('freightTerms').notNull().default('fob'),
   deliveredPrice: numeric('deliveredPrice', { precision: 12, scale: 2 }),
-  minOrderQty: integer('minOrderQty').notNull().default(1),
   currency: text('currency').notNull().default('USD'),
-  // Physical pack/container capacity (e.g. a "205L DRUM" => 205, a "box of
-  // 100" => 100), independent of the quoted pricing unit. Editable in review.
+  // Physical container capacity normalized to US gallons (e.g. a "205L DRUM"
+  // => ~54.17). Display/analysis only — does NOT divide the per-gallon price.
   packSize: numeric('packSize', { precision: 12, scale: 4 })
     .notNull()
     .default('1'),

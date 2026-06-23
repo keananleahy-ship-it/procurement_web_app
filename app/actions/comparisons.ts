@@ -24,14 +24,13 @@ export type PriceRow = {
   unitPrice: number
   // inbound freight per selling unit applied to the landed cost below
   shippingCost: number
-  // freight per base unit (shippingCost / packSize), for the freight column
+  // inbound freight per selling (gallon) unit, for the freight column
   freightPerBaseUnit: number
   // true when shippingCost is a user-supplied estimate, not a quoted figure
   freightEstimated: boolean
   // true when this is an FOB offer with no freight supplied, so its landed
   // cost understates the true delivered cost and it can't be ranked fairly
   freightIncomplete: boolean
-  minOrderQty: number
   currency: string
   // freight basis: 'fob' | 'delivered' | 'both'
   freightTerms: string
@@ -40,9 +39,10 @@ export type PriceRow = {
   effectiveBasis: 'fob' | 'delivered'
   // landed cost per SELLING unit, freight-adjusted for the basis above
   landedUnitCost: number
-  // base units contained in one selling unit (e.g. box of 100 => 100)
+  // physical container capacity, normalized to gallons (e.g. a 205 L drum =>
+  // ~54.17). Display/analysis only — does NOT affect price ranking.
   packSize: number
-  // this offer's own base unit of measure (e.g. 'each', 'litre')
+  // this offer's pricing base unit of measure (gallons for fuel/lube vendors)
   baseUnit: string | null
   // the canonical item's base unit, when this offer belongs to a canonical
   // group; used to detect when an offer can't be compared apples-to-apples
@@ -53,10 +53,10 @@ export type PriceRow = {
   // false when this offer is excluded from ranking (unit mismatch or missing
   // freight); set during grouping. Defaults true on a standalone row.
   comparable: boolean
-  // landed cost per BASE unit = landedUnitCost / packSize. This is the
-  // apples-to-apples figure used to rank offers across pack sizes.
+  // landed cost per gallon — the apples-to-apples figure used to rank offers.
+  // Prices are quoted per gallon, so this equals landedUnitCost.
   pricePerBaseUnit: number
-  // total acquisition cost to fulfill the minimum order
+  // landed cost per selling (gallon) unit; retained for location roll-ups
   acquisitionCost: number
   // the date this pricing took effect (from its import, else entry date)
   effectiveDate: string | null
@@ -117,7 +117,6 @@ async function getAllRows(): Promise<PriceRow[]> {
       freightEstimated: vendorPrices.freightEstimated,
       freightTerms: vendorPrices.freightTerms,
       deliveredPrice: vendorPrices.deliveredPrice,
-      minOrderQty: vendorPrices.minOrderQty,
       currency: vendorPrices.currency,
       effectiveDate: vendorPrices.effectiveDate,
       createdAt: vendorPrices.createdAt,
@@ -142,7 +141,6 @@ async function getAllRows(): Promise<PriceRow[]> {
   return rows.map((r) => {
     const unitPrice = Number(r.unitPrice ?? 0)
     const shippingCost = Number(r.shippingCost ?? 0)
-    const minOrderQty = Number(r.minOrderQty ?? 1) || 1
     const freightTerms = r.freightTerms ?? 'fob'
     const freightEstimated = Boolean(r.freightEstimated)
     const deliveredPrice =
@@ -182,15 +180,16 @@ async function getAllRows(): Promise<PriceRow[]> {
     // cost: it isn't comparable to delivered offers until freight is supplied.
     const freightIncomplete = effectiveBasis === 'fob' && shippingCost === 0
 
-    const acquisitionCost = landedUnitCost * minOrderQty
+    const acquisitionCost = landedUnitCost
 
-    // Normalize to a per-base-unit cost so different pack sizes (e.g. a box of
-    // 100 vs a single each) compare fairly. packSize defaults to 1.
+    // Prices are quoted per gallon, so the landed cost per gallon IS the
+    // apples-to-apples figure — we rank on it directly. packSize now carries
+    // the physical container capacity (in gallons) for display only and must
+    // NOT divide the price.
     const rawPackSize = Number(r.packSize ?? 1)
     const packSize = rawPackSize > 0 ? rawPackSize : 1
-    const pricePerBaseUnit = landedUnitCost / packSize
-    const freightPerBaseUnit =
-      effectiveBasis === 'fob' ? shippingCost / packSize : 0
+    const pricePerBaseUnit = landedUnitCost
+    const freightPerBaseUnit = effectiveBasis === 'fob' ? shippingCost : 0
 
     return {
       priceId: r.priceId,
@@ -207,7 +206,6 @@ async function getAllRows(): Promise<PriceRow[]> {
       freightPerBaseUnit,
       freightEstimated,
       freightIncomplete,
-      minOrderQty,
       currency: r.currency,
       freightTerms,
       deliveredPrice,
@@ -383,13 +381,10 @@ export async function getDashboardStats() {
   const vendorIds = new Set(rows.map((r) => r.vendorId))
 
   const comparisons = await getProductComparisons()
-  // potentialSavings is per base unit; scale by the base units in a minimum
-  // order (packSize * minOrderQty) of the cheapest offer.
+  // potentialSavings is per gallon; scale by the cheapest offer's container
+  // capacity (gallons) to approximate the saving on one container fill.
   const totalPotentialSavings = comparisons.reduce(
-    (sum, c) =>
-      sum +
-      c.potentialSavings *
-        ((c.best?.packSize ?? 1) * (c.best?.minOrderQty ?? 1)),
+    (sum, c) => sum + c.potentialSavings * (c.best?.packSize ?? 1),
     0,
   )
 

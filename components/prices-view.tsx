@@ -45,7 +45,6 @@ type PriceRecord = {
   shippingCost: number
   freightTerms: string
   deliveredPrice: number | null
-  minOrderQty: number
   currency: string
   effectiveDate: string | null
 }
@@ -238,16 +237,6 @@ export function PricesView({
                     </div>
                   )}
                   <div className="flex flex-col gap-2">
-                    <Label htmlFor="minOrderQty">Min order qty</Label>
-                    <Input
-                      id="minOrderQty"
-                      name="minOrderQty"
-                      type="number"
-                      min="1"
-                      defaultValue="1"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-2">
                     <Label htmlFor="currency">Currency</Label>
                     <Input id="currency" name="currency" defaultValue="USD" />
                   </div>
@@ -287,7 +276,6 @@ export function PricesView({
                 <TableHead>Freight</TableHead>
                 <TableHead className="text-right">Unit price</TableHead>
                 <TableHead className="text-right">Freight / unit</TableHead>
-                <TableHead className="text-right">Min qty</TableHead>
                 <TableHead>Effective</TableHead>
                 {canEdit && <TableHead className="w-12" />}
               </TableRow>
@@ -322,9 +310,6 @@ export function PricesView({
                     {p.freightTerms === 'delivered'
                       ? 'incl.'
                       : formatCurrency(p.shippingCost, p.currency)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums text-muted-foreground">
-                    {p.minOrderQty}
                   </TableCell>
                   <TableCell className="tabular-nums text-muted-foreground">
                     {formatDate(p.effectiveDate)}

@@ -41,7 +41,6 @@ type RowPatch = {
   freightEstimated?: boolean
   freightTerms?: string
   deliveredPrice?: string | null
-  minOrderQty?: number
   currency?: string
   unit?: string | null
   category?: string | null
@@ -197,7 +196,6 @@ export async function commitImport(importId: number): Promise<CommitResult> {
       freightEstimated: r.freightEstimated,
       freightTerms: r.freightTerms,
       deliveredPrice: r.deliveredPrice,
-      minOrderQty: r.minOrderQty,
       currency: r.currency,
       effectiveDate: imp.effectiveDate,
       importId: imp.id,

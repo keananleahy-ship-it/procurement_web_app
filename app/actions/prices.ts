@@ -25,7 +25,6 @@ export async function createPrice(formData: FormData) {
     locationRaw && String(locationRaw) !== '' ? Number(locationRaw) : null
 
   const unitPrice = String(formData.get('unitPrice') ?? '0')
-  const minOrderQty = Number(formData.get('minOrderQty') ?? 1) || 1
   const currency = String(formData.get('currency') ?? 'USD').trim() || 'USD'
 
   const freightRaw = String(formData.get('freightTerms') ?? 'fob')
@@ -56,7 +55,6 @@ export async function createPrice(formData: FormData) {
     shippingCost,
     freightTerms,
     deliveredPrice,
-    minOrderQty,
     currency,
   })
   revalidatePath('/prices')
