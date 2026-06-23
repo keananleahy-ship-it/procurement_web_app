@@ -66,6 +66,45 @@ function toNumericString(n: number | null): string | null {
   return n.toFixed(2)
 }
 
+// Most vendors quote in US gallons, so we normalize litre-based container
+// capacities to gallons at import time for apples-to-apples comparison.
+const LITRES_PER_USG = 3.785411784
+const LITRE_ALIASES = new Set([
+  'l',
+  'litre',
+  'litres',
+  'liter',
+  'liters',
+  'ltr',
+  'ltrs',
+])
+const GALLON_ALIASES = new Set([
+  'usg',
+  'gal',
+  'gals',
+  'gallon',
+  'gallons',
+  'us gal',
+  'us gallon',
+])
+
+// Given a raw container capacity + base unit, return the capacity expressed in
+// US gallons when the unit is litres (or already gallons). Non-volume units
+// (kg, each, lb, …) pass through unchanged.
+function normalizeToGallons(
+  packSize: number,
+  baseUnit: string | null,
+): { packSize: string; baseUnit: string | null } {
+  const u = baseUnit?.trim().toLowerCase() ?? ''
+  if (LITRE_ALIASES.has(u)) {
+    return { packSize: (packSize / LITRES_PER_USG).toFixed(4), baseUnit: 'USG' }
+  }
+  if (GALLON_ALIASES.has(u)) {
+    return { packSize: packSize.toFixed(4), baseUnit: 'USG' }
+  }
+  return { packSize: packSize.toFixed(4), baseUnit: baseUnit?.trim() || null }
+}
+
 export async function POST(req: NextRequest) {
   const currentUser = await getCurrentUser()
   if (!currentUser) {
@@ -249,6 +288,11 @@ export async function POST(req: NextRequest) {
     await db.insert(importRows).values(
       rows.map((r) => {
         const reviewReason = reviewFor(r)
+        const rawPackSize = r.packSize && r.packSize > 0 ? r.packSize : 1
+        const { packSize, baseUnit } = normalizeToGallons(
+          rawPackSize,
+          r.baseUnit?.trim() || r.unit?.trim() || null,
+        )
         return {
           userId,
           importId,
@@ -256,15 +300,13 @@ export async function POST(req: NextRequest) {
           vendorName: resolvedVendorName,
           sku: r.sku?.trim() || null,
           unit: r.unit?.trim() || null,
-          packSize:
-            r.packSize && r.packSize > 0 ? String(r.packSize) : '1',
-          baseUnit: r.baseUnit?.trim() || r.unit?.trim() || null,
+          packSize,
+          baseUnit,
           category: r.category?.trim() || null,
           unitPrice: toNumericString(r.unitPrice),
           shippingCost: toNumericString(r.shippingCost) ?? '0',
           freightTerms: normalizeFreight(r.freightTerms),
           deliveredPrice: toNumericString(r.deliveredPrice),
-          minOrderQty: r.minOrderQty && r.minOrderQty > 0 ? Math.round(r.minOrderQty) : 1,
           currency: (r.currency?.trim() || 'USD').toUpperCase(),
           needsReview: reviewReason !== null,
           reviewReason,
