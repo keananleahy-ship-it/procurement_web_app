@@ -41,7 +41,7 @@ import {
 } from 'lucide-react'
 import { EmptyState } from '@/components/empty-state'
 import { formatDate } from '@/lib/format'
-import { useCanEdit } from '@/components/role-provider'
+import { useCanEdit, useCanAdmin } from '@/components/role-provider'
 
 type Option = { id: number; name: string }
 type ImportRecord = {
@@ -75,6 +75,7 @@ export function ImportsView({
   const [open, setOpen] = useState(false)
   const [locationId, setLocationId] = useState('')
   const [vendorName, setVendorName] = useState('')
+  const canAdmin = useCanAdmin()
   const [effectiveDate, setEffectiveDate] = useState(
     new Date().toISOString().slice(0, 10),
   )
@@ -161,23 +162,44 @@ export function ImportsView({
                 </div>
                 <div className="flex flex-col gap-2">
                   <Label htmlFor="vendor">Vendor</Label>
-                  <Input
-                    id="vendor"
-                    list="vendor-options"
-                    value={vendorName}
-                    onChange={(e) => setVendorName(e.target.value)}
-                    placeholder="Select or type the supplier name"
-                    autoComplete="off"
-                    required
-                  />
-                  <datalist id="vendor-options">
-                    {vendors.map((v) => (
-                      <option key={v.id} value={v.name} />
-                    ))}
-                  </datalist>
+                  {canAdmin ? (
+                    <>
+                      <Input
+                        id="vendor"
+                        list="vendor-options"
+                        value={vendorName}
+                        onChange={(e) => setVendorName(e.target.value)}
+                        placeholder="Select an existing vendor or type a new one"
+                        autoComplete="off"
+                        required
+                      />
+                      <datalist id="vendor-options">
+                        {vendors.map((v) => (
+                          <option key={v.id} value={v.name} />
+                        ))}
+                      </datalist>
+                    </>
+                  ) : (
+                    <Select
+                      value={vendorName}
+                      onValueChange={(v) => setVendorName(v ?? '')}
+                    >
+                      <SelectTrigger id="vendor">
+                        <SelectValue placeholder="Select a vendor" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {vendors.map((v) => (
+                          <SelectItem key={v.id} value={v.name}>
+                            {v.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
                   <p className="text-xs text-muted-foreground">
-                    All line items in this file will be attributed to this
-                    vendor.
+                    {canAdmin
+                      ? 'All line items will be attributed to this vendor. Type a new name to create one.'
+                      : 'All line items will be attributed to this vendor.'}
                   </p>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -193,7 +215,10 @@ export function ImportsView({
                   </div>
                   <div className="flex flex-col gap-2">
                     <Label>Location</Label>
-                    <Select value={locationId} onValueChange={setLocationId}>
+                    <Select
+                      value={locationId}
+                      onValueChange={(v) => setLocationId(v ?? '')}
+                    >
                       <SelectTrigger>
                         <SelectValue placeholder="Optional" />
                       </SelectTrigger>

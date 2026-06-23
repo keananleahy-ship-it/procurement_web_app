@@ -1,9 +1,10 @@
 import { type NextRequest, NextResponse } from 'next/server'
 import { put } from '@vercel/blob'
 import * as XLSX from 'xlsx'
-import { getCurrentUser, canEdit } from '@/lib/roles'
+import { getCurrentUser, canEdit, canAdmin } from '@/lib/roles'
 import { db } from '@/lib/db'
-import { imports, importRows } from '@/lib/db/schema'
+import { imports, importRows, vendors } from '@/lib/db/schema'
+import { asc } from 'drizzle-orm'
 import { extractPriceRows, type ExtractedRow } from '@/lib/extract'
 
 export const maxDuration = 120
@@ -108,6 +109,28 @@ export async function POST(req: NextRequest) {
     )
   }
 
+  // Enforce the naming convention server-side. Match the submitted name against
+  // existing vendors case-insensitively and snap to the stored spelling so we
+  // never create near-duplicates (e.g. "Acme" vs "acme"). Non-admins may only
+  // pick an existing vendor; admins may introduce a new name.
+  const existingVendors = await db
+    .select({ name: vendors.name })
+    .from(vendors)
+    .orderBy(asc(vendors.name))
+  const match = existingVendors.find(
+    (v) => v.name.toLowerCase() === vendorName.toLowerCase(),
+  )
+  const resolvedVendorName = match?.name ?? vendorName
+  if (!match && !canAdmin(currentUser.role)) {
+    return NextResponse.json(
+      {
+        error:
+          'Select an existing vendor. Only an admin can add a new vendor name.',
+      },
+      { status: 403 },
+    )
+  }
+
   const lower = file.name.toLowerCase()
   const isPdf = lower.endsWith('.pdf') || file.type === 'application/pdf'
   const isXls =
@@ -188,7 +211,7 @@ export async function POST(req: NextRequest) {
       effectiveDate,
       status: 'pending',
       rowCount: rows.length,
-      note: `Vendor: ${vendorName}`,
+      note: `Vendor: ${resolvedVendorName}`,
     })
     .returning({ id: imports.id })
 
@@ -200,7 +223,7 @@ export async function POST(req: NextRequest) {
         userId,
         importId,
         productName: r.productName.trim(),
-        vendorName,
+        vendorName: resolvedVendorName,
         sku: r.sku?.trim() || null,
         unit: r.unit?.trim() || null,
         packSize:
