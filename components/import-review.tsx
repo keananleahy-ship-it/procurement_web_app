@@ -94,10 +94,9 @@ export function ImportReview({
     setError(null)
     setCommitting(true)
     try {
-      const result = await commitImport(meta.id)
+      await commitImport(meta.id)
       router.push('/prices')
       router.refresh()
-      void result
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Commit failed')
       setCommitting(false)
