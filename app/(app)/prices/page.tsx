@@ -29,6 +29,13 @@ export default async function PricesPage() {
       p.deliveredPrice !== null ? Number(p.deliveredPrice) : null,
     minOrderQty: p.minOrderQty,
     currency: p.currency,
+    effectiveDate:
+      p.effectiveDate ??
+      (p.createdAt
+        ? new Date(p.createdAt as unknown as string)
+            .toISOString()
+            .slice(0, 10)
+        : null),
   }))
 
   return (

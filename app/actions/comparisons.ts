@@ -41,6 +41,8 @@ export type PriceRow = {
   landedUnitCost: number
   // total acquisition cost to fulfill the minimum order
   acquisitionCost: number
+  // the date this pricing took effect (from its import, else entry date)
+  effectiveDate: string | null
   // canonical matching context
   canonicalItemId: number | null
   matchStatus: string
@@ -63,6 +65,8 @@ export type ProductComparison = {
   worst: PriceRow | null
   vendorCount: number
   potentialSavings: number // worst landed - best landed
+  // most recent effective date across the group's offers
+  latestEffectiveDate: string | null
 }
 
 export type LocationComparison = {
@@ -86,6 +90,8 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
       deliveredPrice: vendorPrices.deliveredPrice,
       minOrderQty: vendorPrices.minOrderQty,
       currency: vendorPrices.currency,
+      effectiveDate: vendorPrices.effectiveDate,
+      createdAt: vendorPrices.createdAt,
       productName: products.name,
       category: products.category,
       unit: products.unit,
@@ -163,6 +169,13 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
       effectiveBasis,
       landedUnitCost,
       acquisitionCost,
+      effectiveDate:
+        r.effectiveDate ??
+        (r.createdAt
+          ? new Date(r.createdAt as unknown as string)
+              .toISOString()
+              .slice(0, 10)
+          : null),
       canonicalItemId: r.canonicalItemId,
       matchStatus: r.matchStatus ?? 'unmatched',
       canonicalItemName: r.canonicalItemName,
@@ -196,6 +209,12 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
     const best = sorted[0] ?? null
     const worst = sorted[sorted.length - 1] ?? null
     const vendorIds = new Set(offers.map((o) => o.vendorId))
+    const latestEffectiveDate =
+      offers
+        .map((o) => o.effectiveDate)
+        .filter((d): d is string => !!d)
+        .sort()
+        .at(-1) ?? null
     const isCanonical = key.startsWith('c')
     const displayName = isCanonical
       ? (offers.find((o) => o.canonicalItemName)?.canonicalItemName ??
@@ -215,6 +234,7 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
       vendorCount: vendorIds.size,
       potentialSavings:
         best && worst ? worst.landedUnitCost - best.landedUnitCost : 0,
+      latestEffectiveDate,
     })
   }
 

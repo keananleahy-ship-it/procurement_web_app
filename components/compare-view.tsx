@@ -14,9 +14,10 @@ import {
 } from '@/components/ui/table'
 import { Card } from '@/components/ui/card'
 import { EmptyState } from '@/components/empty-state'
-import { formatCurrency } from '@/lib/format'
+import { formatCurrency, formatDate } from '@/lib/format'
 import {
   ArrowDownNarrowWide,
+  CalendarClock,
   GitCompareArrows,
   Layers,
   Search,
@@ -88,9 +89,17 @@ export function CompareView({
                     <Badge variant="secondary">{c.category}</Badge>
                   )}
                 </div>
-                <p className="mt-0.5 text-sm text-muted-foreground">
-                  {c.vendorCount} vendor{c.vendorCount === 1 ? '' : 's'}
-                  {c.unit ? ` · per ${c.unit}` : ''}
+                <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-sm text-muted-foreground">
+                  <span>
+                    {c.vendorCount} vendor{c.vendorCount === 1 ? '' : 's'}
+                    {c.unit ? ` · per ${c.unit}` : ''}
+                  </span>
+                  {c.latestEffectiveDate && (
+                    <span className="inline-flex items-center gap-1">
+                      <CalendarClock className="size-3.5" />
+                      Updated {formatDate(c.latestEffectiveDate)}
+                    </span>
+                  )}
                 </p>
               </div>
               {c.potentialSavings > 0 && (
@@ -115,6 +124,7 @@ export function CompareView({
                       Landed / unit
                     </span>
                   </TableHead>
+                  <TableHead>Effective</TableHead>
                   <TableHead className="text-right">Status</TableHead>
                 </TableRow>
               </TableHeader>
@@ -183,6 +193,9 @@ export function CompareView({
                         )}
                       >
                         {formatCurrency(o.landedUnitCost, o.currency)}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground tabular-nums">
+                        {formatDate(o.effectiveDate)}
                       </TableCell>
                       <TableCell className="text-right">
                         {isBest ? (

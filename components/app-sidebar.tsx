@@ -14,6 +14,7 @@ import {
   GitCompareArrows,
   Layers,
   ListChecks,
+  Upload,
 } from 'lucide-react'
 
 const nav = [
@@ -21,6 +22,7 @@ const nav = [
   { href: '/compare', label: 'Compare Products', icon: GitCompareArrows },
   { href: '/matching', label: 'Match Verification', icon: ListChecks },
   { href: '/canonical', label: 'Canonical Items', icon: Layers },
+  { href: '/imports', label: 'Data Imports', icon: Upload },
   { href: '/prices', label: 'Price Entries', icon: Tags },
   { href: '/products', label: 'Products', icon: Package },
   { href: '/vendors', label: 'Vendors', icon: Store },

@@ -6,6 +6,7 @@ import {
   serial,
   integer,
   numeric,
+  date,
 } from 'drizzle-orm/pg-core'
 
 // --- Better Auth required tables -------------------------------------------
@@ -124,5 +125,54 @@ export const vendorPrices = pgTable('vendor_prices', {
   deliveredPrice: numeric('deliveredPrice', { precision: 12, scale: 2 }),
   minOrderQty: integer('minOrderQty').notNull().default(1),
   currency: text('currency').notNull().default('USD'),
+  // The date this pricing is effective (chosen by the uploader). Falls back to
+  // createdAt for rows entered before file imports existed.
+  effectiveDate: date('effectiveDate'),
+  // Provenance: the file import this price came from, if any.
+  importId: integer('importId'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
+// --- File imports ----------------------------------------------------------
+// Each upload (XLS or PDF) from a location is staged here, AI-parsed into
+// import_rows for review, then committed into vendor_prices.
+
+export const imports = pgTable('imports', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  locationId: integer('locationId'),
+  fileName: text('fileName').notNull(),
+  blobPathname: text('blobPathname').notNull(),
+  // 'xls' | 'pdf'
+  fileType: text('fileType').notNull(),
+  // The date the pricing is effective, chosen by the uploader.
+  effectiveDate: date('effectiveDate').notNull(),
+  // 'pending' | 'committed' | 'discarded'
+  status: text('status').notNull().default('pending'),
+  rowCount: integer('rowCount').notNull().default(0),
+  note: text('note'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+  committedAt: timestamp('committedAt'),
+})
+
+// Staging rows parsed from an import, edited/approved before commit.
+export const importRows = pgTable('import_rows', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  importId: integer('importId').notNull(),
+  productName: text('productName').notNull(),
+  vendorName: text('vendorName'),
+  sku: text('sku'),
+  unit: text('unit'),
+  category: text('category'),
+  unitPrice: numeric('unitPrice', { precision: 12, scale: 2 }),
+  shippingCost: numeric('shippingCost', { precision: 12, scale: 2 })
+    .notNull()
+    .default('0'),
+  freightTerms: text('freightTerms').notNull().default('fob'),
+  deliveredPrice: numeric('deliveredPrice', { precision: 12, scale: 2 }),
+  minOrderQty: integer('minOrderQty').notNull().default(1),
+  currency: text('currency').notNull().default('USD'),
+  include: boolean('include').notNull().default(true),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
