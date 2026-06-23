@@ -105,38 +105,24 @@ type ExtractInput =
   | { kind: 'text'; text: string }
   | { kind: 'pdf'; data: Buffer | Uint8Array; filename: string }
 
-export async function extractPriceRows(
-  input: ExtractInput,
-): Promise<ExtractionResult> {
-  const content:
-    | { type: 'text'; text: string }[]
-    | (
-        | { type: 'text'; text: string }
-        | { type: 'file'; data: Buffer | Uint8Array; mediaType: string; filename: string }
-      )[] =
-    input.kind === 'text'
-      ? [
-          {
-            type: 'text',
-            text: `Extract all priced line items from this price list:\n\n${input.text}`,
-          },
-        ]
-      : [
-          {
-            type: 'text',
-            text: 'Extract all priced line items from this attached price list document.',
-          },
-          {
-            type: 'file',
-            data: input.data,
-            mediaType: 'application/pdf',
-            filename: input.filename,
-          },
-        ]
+type UserContent =
+  | { type: 'text'; text: string }
+  | {
+      type: 'file'
+      data: Buffer | Uint8Array
+      mediaType: string
+      filename: string
+    }
 
-  // Fail fast instead of hanging until the platform's hard function timeout.
+// One structured-output call. Kept small per call so output never truncates.
+async function runExtraction(
+  content: UserContent[],
+  maxOutputTokens: number,
+): Promise<ExtractionResult> {
+  // Fail fast instead of hanging until the platform's hard function timeout,
+  // but allow enough headroom for the SDK's retry/backoff on rate limits.
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 45_000)
+  const timeout = setTimeout(() => controller.abort(), 90_000)
 
   try {
     const { output } = await generateText({
@@ -144,13 +130,140 @@ export async function extractPriceRows(
       system: SYSTEM_PROMPT,
       output: Output.object({ schema: extractionSchema }),
       messages: [{ role: 'user', content }],
-      maxOutputTokens: 8000,
-      maxRetries: 1,
+      maxOutputTokens,
+      // Rate-limit errors are retryable; the SDK backs off exponentially.
+      maxRetries: 4,
       abortSignal: controller.signal,
     })
-
     return output
   } finally {
     clearTimeout(timeout)
   }
+}
+
+// Run async tasks with a bounded concurrency so we don't open hundreds of
+// gateway connections at once for very large files.
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = new Array(items.length)
+  let cursor = 0
+
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor++
+      try {
+        results[index] = { status: 'fulfilled', value: await fn(items[index], index) }
+      } catch (reason) {
+        results[index] = { status: 'rejected', reason }
+      }
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    () => worker(),
+  )
+  await Promise.all(workers)
+  return results
+}
+
+// A single model call reliably handles a few dozen rows; beyond that the JSON
+// output truncates. So we split spreadsheet rows into batches, extract each in
+// parallel, and merge the results.
+const ROWS_PER_CHUNK = 60
+const CONCURRENCY = 3
+const CHUNK_MAX_TOKENS = 24_000
+
+async function extractTextChunked(text: string): Promise<ExtractionResult> {
+  const allLines = text.split('\n')
+
+  // The first non-blank, non-"# Sheet:" line is the column header; prepend it
+  // to every chunk so each batch keeps its column context.
+  const headerIdx = allLines.findIndex(
+    (l) => l.trim() !== '' && !l.trim().startsWith('#'),
+  )
+  const header = headerIdx >= 0 ? allLines[headerIdx] : ''
+  const dataLines = allLines
+    .slice(headerIdx + 1)
+    .filter((l) => l.trim() !== '' && !l.trim().startsWith('#'))
+
+  // Small files: a single call is fine and avoids extra round-trips.
+  if (dataLines.length <= ROWS_PER_CHUNK) {
+    return runExtraction(
+      [
+        {
+          type: 'text',
+          text: `Extract all priced line items from this price list:\n\n${text}`,
+        },
+      ],
+      CHUNK_MAX_TOKENS,
+    )
+  }
+
+  const chunks: string[] = []
+  for (let i = 0; i < dataLines.length; i += ROWS_PER_CHUNK) {
+    const batch = dataLines.slice(i, i + ROWS_PER_CHUNK)
+    chunks.push([header, ...batch].join('\n'))
+  }
+
+  const settled = await mapWithConcurrency(chunks, CONCURRENCY, (chunk) =>
+    runExtraction(
+      [
+        {
+          type: 'text',
+          text: `Extract all priced line items from this section of a vendor price list. The first line is the column header.\n\n${chunk}`,
+        },
+      ],
+      CHUNK_MAX_TOKENS,
+    ),
+  )
+
+  const merged: ExtractionResult = { defaultVendorName: null, rows: [] }
+  let anySuccess = false
+  for (const result of settled) {
+    if (result.status !== 'fulfilled') {
+      console.error('[v0] chunk extraction failed:', result.reason)
+      continue
+    }
+    anySuccess = true
+    if (!merged.defaultVendorName && result.value.defaultVendorName) {
+      merged.defaultVendorName = result.value.defaultVendorName
+    }
+    merged.rows.push(...result.value.rows)
+  }
+
+  if (!anySuccess) {
+    throw new Error('No output generated.')
+  }
+
+  return merged
+}
+
+export async function extractPriceRows(
+  input: ExtractInput,
+): Promise<ExtractionResult> {
+  if (input.kind === 'text') {
+    return extractTextChunked(input.text)
+  }
+
+  // PDFs can't be cheaply split, so send the whole document with a large
+  // output budget.
+  return runExtraction(
+    [
+      {
+        type: 'text',
+        text: 'Extract all priced line items from this attached price list document.',
+      },
+      {
+        type: 'file',
+        data: input.data,
+        mediaType: 'application/pdf',
+        filename: input.filename,
+      },
+    ],
+    32_000,
+  )
 }

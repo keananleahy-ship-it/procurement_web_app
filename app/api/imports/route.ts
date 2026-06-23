@@ -6,7 +6,7 @@ import { db } from '@/lib/db'
 import { imports, importRows } from '@/lib/db/schema'
 import { extractPriceRows, type ExtractedRow } from '@/lib/extract'
 
-export const maxDuration = 60
+export const maxDuration = 120
 
 // Cap how much text we send to the model. XLSX sheets can have a huge "used
 // range" full of empty cells; without bounding this the prompt balloons to
