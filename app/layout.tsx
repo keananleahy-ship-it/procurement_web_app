@@ -10,9 +10,9 @@ const geistMono = Geist_Mono({
 })
 
 export const metadata: Metadata = {
-  title: 'Vendry — Vendor Pricing Comparison',
+  title: 'Ace Procurement — Vendor Pricing Tool',
   description:
-    'Compare vendor pricing, match similar products across suppliers, and analyze acquisition costs by location.',
+    'Ace Solutions vendor pricing tool: compare vendor pricing, match similar products across suppliers, and analyze landed acquisition costs by location.',
   generator: 'v0.app',
   icons: {
     icon: [

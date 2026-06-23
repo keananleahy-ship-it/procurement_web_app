@@ -53,7 +53,14 @@ export function AppSidebar({
         <div className="flex size-8 items-center justify-center rounded-md bg-sidebar-primary text-sidebar-primary-foreground">
           <GitCompareArrows className="size-4" />
         </div>
-        <span className="text-base font-semibold tracking-tight">Vendry</span>
+        <div className="flex flex-col leading-tight">
+          <span className="text-base font-semibold tracking-tight">
+            Ace Procurement
+          </span>
+          <span className="text-xs text-sidebar-foreground/60">
+            Vendor Pricing
+          </span>
+        </div>
       </div>
 
       <nav className="flex flex-1 flex-col gap-1 px-3 py-2">
