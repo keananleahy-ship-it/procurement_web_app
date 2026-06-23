@@ -65,13 +65,16 @@ const STATUS_STYLES: Record<string, string> = {
 export function ImportsView({
   imports,
   locations,
+  vendors,
 }: {
   imports: ImportRecord[]
   locations: Option[]
+  vendors: Option[]
 }) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [locationId, setLocationId] = useState('')
+  const [vendorName, setVendorName] = useState('')
   const [effectiveDate, setEffectiveDate] = useState(
     new Date().toISOString().slice(0, 10),
   )
@@ -89,9 +92,14 @@ export function ImportsView({
       setError('Please choose a file to upload.')
       return
     }
+    if (!vendorName.trim()) {
+      setError('Please choose or enter the vendor for this price list.')
+      return
+    }
     const body = new FormData()
     body.set('file', file)
     body.set('effectiveDate', effectiveDate)
+    body.set('vendorName', vendorName.trim())
     if (locationId) body.set('locationId', locationId)
 
     setUploading(true)
@@ -104,6 +112,7 @@ export function ImportsView({
       }
       setOpen(false)
       setFileName('')
+      setVendorName('')
       if (fileRef.current) fileRef.current.value = ''
       router.push(`/imports/${data.importId}`)
     } catch {
@@ -149,6 +158,27 @@ export function ImportsView({
                   {fileName && (
                     <p className="text-xs text-muted-foreground">{fileName}</p>
                   )}
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="vendor">Vendor</Label>
+                  <Input
+                    id="vendor"
+                    list="vendor-options"
+                    value={vendorName}
+                    onChange={(e) => setVendorName(e.target.value)}
+                    placeholder="Select or type the supplier name"
+                    autoComplete="off"
+                    required
+                  />
+                  <datalist id="vendor-options">
+                    {vendors.map((v) => (
+                      <option key={v.id} value={v.name} />
+                    ))}
+                  </datalist>
+                  <p className="text-xs text-muted-foreground">
+                    All line items in this file will be attributed to this
+                    vendor.
+                  </p>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="flex flex-col gap-2">

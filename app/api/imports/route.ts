@@ -87,6 +87,7 @@ export async function POST(req: NextRequest) {
 
   const file = formData.get('file')
   const effectiveDate = String(formData.get('effectiveDate') ?? '').trim()
+  const vendorName = String(formData.get('vendorName') ?? '').trim()
   const locationRaw = formData.get('locationId')
   const locationId =
     locationRaw && String(locationRaw) !== '' ? Number(locationRaw) : null
@@ -97,6 +98,12 @@ export async function POST(req: NextRequest) {
   if (!effectiveDate) {
     return NextResponse.json(
       { error: 'An effective date is required' },
+      { status: 400 },
+    )
+  }
+  if (!vendorName) {
+    return NextResponse.json(
+      { error: 'A vendor is required' },
       { status: 400 },
     )
   }
