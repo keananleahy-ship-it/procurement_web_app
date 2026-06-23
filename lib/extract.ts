@@ -126,7 +126,11 @@ async function runExtraction(
 
   try {
     const { output } = await generateText({
-      model: 'google/gemini-2.5-flash',
+      // gpt-4.1-mini is a non-reasoning model with reliable strict structured
+      // output. Gemini 2.5's reasoning tokens count against maxOutputTokens and
+      // could consume the whole budget for large tables, yielding "No output
+      // generated"; this model has no such failure mode and is fast/cheap.
+      model: 'openai/gpt-4.1-mini',
       system: SYSTEM_PROMPT,
       output: Output.object({ schema: extractionSchema }),
       messages: [{ role: 'user', content }],
@@ -173,7 +177,7 @@ async function mapWithConcurrency<T, R>(
 // A single model call reliably handles a few dozen rows; beyond that the JSON
 // output truncates. So we split spreadsheet rows into batches, extract each in
 // parallel, and merge the results.
-const ROWS_PER_CHUNK = 60
+const ROWS_PER_CHUNK = 40
 const CONCURRENCY = 5
 const CHUNK_MAX_TOKENS = 24_000
 
