@@ -51,6 +51,8 @@ export default async function ImportReviewPage({
           currency: r.currency,
           packSize: r.packSize,
           baseUnit: r.baseUnit,
+          needsReview: r.needsReview,
+          reviewReason: r.reviewReason,
           include: r.include,
         }))}
       />

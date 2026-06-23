@@ -199,6 +199,34 @@ export async function POST(req: NextRequest) {
   const rows = (extraction.rows ?? []).filter((r) => r.productName?.trim())
   const fileType = isPdf ? 'pdf' : 'xls'
 
+  // Determine the file's dominant pricing unit so we can flag outlier rows
+  // (e.g. a single "case"-priced line in a file otherwise quoted per "USG")
+  // for manual review rather than silently mixing pricing bases.
+  const unitCounts = new Map<string, number>()
+  for (const r of rows) {
+    const u = r.unit?.trim().toLowerCase()
+    if (u) unitCounts.set(u, (unitCounts.get(u) ?? 0) + 1)
+  }
+  let dominantUnit: string | null = null
+  let dominantCount = 0
+  for (const [u, c] of unitCounts) {
+    if (c > dominantCount) {
+      dominantUnit = u
+      dominantCount = c
+    }
+  }
+  // Only treat a unit as "dominant" when there's a real majority to compare
+  // against; a file with no consistent unit shouldn't flag everything.
+  const hasDominant = dominantUnit !== null && dominantCount >= 2
+
+  function reviewFor(r: (typeof rows)[number]): string | null {
+    const u = r.unit?.trim().toLowerCase() || null
+    if (hasDominant && u && u !== dominantUnit) {
+      return `Unit "${r.unit?.trim()}" differs from the file's usual "${dominantUnit}" — verify the price basis and pack size.`
+    }
+    return null
+  }
+
   // Create the import record, then its staging rows.
   const [created] = await db
     .insert(imports)
@@ -219,25 +247,30 @@ export async function POST(req: NextRequest) {
 
   if (rows.length > 0) {
     await db.insert(importRows).values(
-      rows.map((r) => ({
-        userId,
-        importId,
-        productName: r.productName.trim(),
-        vendorName: resolvedVendorName,
-        sku: r.sku?.trim() || null,
-        unit: r.unit?.trim() || null,
-        packSize:
-          r.packSize && r.packSize > 0 ? String(r.packSize) : '1',
-        baseUnit: r.baseUnit?.trim() || r.unit?.trim() || null,
-        category: r.category?.trim() || null,
-        unitPrice: toNumericString(r.unitPrice),
-        shippingCost: toNumericString(r.shippingCost) ?? '0',
-        freightTerms: normalizeFreight(r.freightTerms),
-        deliveredPrice: toNumericString(r.deliveredPrice),
-        minOrderQty: r.minOrderQty && r.minOrderQty > 0 ? Math.round(r.minOrderQty) : 1,
-        currency: (r.currency?.trim() || 'USD').toUpperCase(),
-        include: true,
-      })),
+      rows.map((r) => {
+        const reviewReason = reviewFor(r)
+        return {
+          userId,
+          importId,
+          productName: r.productName.trim(),
+          vendorName: resolvedVendorName,
+          sku: r.sku?.trim() || null,
+          unit: r.unit?.trim() || null,
+          packSize:
+            r.packSize && r.packSize > 0 ? String(r.packSize) : '1',
+          baseUnit: r.baseUnit?.trim() || r.unit?.trim() || null,
+          category: r.category?.trim() || null,
+          unitPrice: toNumericString(r.unitPrice),
+          shippingCost: toNumericString(r.shippingCost) ?? '0',
+          freightTerms: normalizeFreight(r.freightTerms),
+          deliveredPrice: toNumericString(r.deliveredPrice),
+          minOrderQty: r.minOrderQty && r.minOrderQty > 0 ? Math.round(r.minOrderQty) : 1,
+          currency: (r.currency?.trim() || 'USD').toUpperCase(),
+          needsReview: reviewReason !== null,
+          reviewReason,
+          include: true,
+        }
+      }),
     )
   }
 

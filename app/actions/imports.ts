@@ -47,6 +47,8 @@ type RowPatch = {
   category?: string | null
   packSize?: string
   baseUnit?: string | null
+  needsReview?: boolean
+  reviewReason?: string | null
   include?: boolean
 }
 

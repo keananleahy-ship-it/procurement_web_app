@@ -198,12 +198,18 @@ export const importRows = pgTable('import_rows', {
   deliveredPrice: numeric('deliveredPrice', { precision: 12, scale: 2 }),
   minOrderQty: integer('minOrderQty').notNull().default(1),
   currency: text('currency').notNull().default('USD'),
-  // Inferred number of base units per selling unit, editable in review.
+  // Physical pack/container capacity (e.g. a "205L DRUM" => 205, a "box of
+  // 100" => 100), independent of the quoted pricing unit. Editable in review.
   packSize: numeric('packSize', { precision: 12, scale: 4 })
     .notNull()
     .default('1'),
-  // Inferred base unit of measure (e.g. 'each', 'litre').
+  // Base unit of measure for packSize (e.g. 'each', 'litre', 'kg', 'USG').
   baseUnit: text('baseUnit'),
+  // Set by import post-processing when a row looks inconsistent (e.g. its unit
+  // differs from the file's dominant unit) and a human should verify it.
+  needsReview: boolean('needsReview').notNull().default(false),
+  // Short human-readable explanation of why the row was flagged.
+  reviewReason: text('reviewReason'),
   include: boolean('include').notNull().default(true),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })

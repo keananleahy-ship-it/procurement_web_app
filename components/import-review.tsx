@@ -26,8 +26,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Check, X, Trash2, CheckCircle2, Loader2 } from 'lucide-react'
+import {
+  Check,
+  X,
+  Trash2,
+  CheckCircle2,
+  Loader2,
+  AlertTriangle,
+} from 'lucide-react'
 import { formatDate } from '@/lib/format'
+import { cn } from '@/lib/utils'
 
 export type StagingRow = {
   id: number
@@ -42,6 +50,8 @@ export type StagingRow = {
   currency: string
   packSize: string
   baseUnit: string | null
+  needsReview: boolean
+  reviewReason: string | null
   include: boolean
 }
 
@@ -71,10 +81,19 @@ export function ImportReview({
   const [isPending, startTransition] = useTransition()
   const [committing, setCommitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [onlyFlagged, setOnlyFlagged] = useState(false)
 
   const includable = rows.filter(
     (r) => r.include && r.unitPrice !== null && r.unitPrice !== '' && r.vendorName?.trim(),
   ).length
+
+  const flaggedCount = rows.filter((r) => r.needsReview).length
+  const visibleRows = onlyFlagged ? rows.filter((r) => r.needsReview) : rows
+
+  function resolveReview(id: number) {
+    patchRow(id, { needsReview: false })
+    persist(id, { needsReview: false, reviewReason: null })
+  }
 
   function patchRow(id: number, patch: Partial<StagingRow>) {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)))
@@ -154,6 +173,24 @@ export function ImportReview({
         </p>
       )}
 
+      {flaggedCount > 0 && (
+        <div className="flex flex-col gap-2 rounded-lg border border-warning/40 bg-warning/10 p-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2 text-sm text-foreground">
+            <AlertTriangle className="size-4 text-warning" />
+            {flaggedCount} {flaggedCount === 1 ? 'row needs' : 'rows need'} review
+            — their unit differs from the rest of the file. Check the price basis
+            and pack size before importing.
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setOnlyFlagged((v) => !v)}
+          >
+            {onlyFlagged ? 'Show all rows' : 'Show only flagged'}
+          </Button>
+        </div>
+      )}
+
       <div className="overflow-x-auto rounded-lg border border-border bg-card">
         <Table>
           <TableHeader>
@@ -173,10 +210,16 @@ export function ImportReview({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.map((r) => {
+            {visibleRows.map((r) => {
               const dim = !r.include
               return (
-                <TableRow key={r.id} className={dim ? 'opacity-50' : undefined}>
+                <TableRow
+                  key={r.id}
+                  className={cn(
+                    dim && 'opacity-50',
+                    r.needsReview && 'bg-warning/10',
+                  )}
+                >
                   <TableCell>
                     <Button
                       variant={r.include ? 'secondary' : 'ghost'}
@@ -202,6 +245,23 @@ export function ImportReview({
                       onChange={(e) => patchRow(r.id, { productName: e.target.value })}
                       onBlur={(e) => persist(r.id, { productName: e.target.value })}
                     />
+                    {r.needsReview && (
+                      <div className="mt-1 flex items-start gap-1.5">
+                        <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" />
+                        <span className="text-[11px] leading-snug text-muted-foreground">
+                          {r.reviewReason ?? 'Needs review.'}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-5 shrink-0 px-1.5 text-[11px]"
+                          onClick={() => resolveReview(r.id)}
+                        >
+                          Mark reviewed
+                        </Button>
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell>
                     <Input
@@ -217,8 +277,9 @@ export function ImportReview({
                     <Select
                       value={r.freightTerms}
                       onValueChange={(v) => {
-                        patchRow(r.id, { freightTerms: v })
-                        persist(r.id, { freightTerms: v })
+                        const next = v ?? 'fob'
+                        patchRow(r.id, { freightTerms: next })
+                        persist(r.id, { freightTerms: next })
                       }}
                     >
                       <SelectTrigger className="h-8">

@@ -17,18 +17,20 @@ const extractedRowSchema = z.object({
   unit: z
     .string()
     .nullable()
-    .describe('Selling unit of measure, e.g. "each", "box", "jug", "case"'),
+    .describe(
+      'The basis the PRICE is quoted in (the per-what of unitPrice), e.g. "USG", "each", "litre", "case". Not the container.',
+    ),
   packSize: z
     .number()
     .nullable()
     .describe(
-      'How many base units are contained in ONE selling unit. Examples: "box of 100" => 100; "5 L jug" => 5; "case of 24" => 24; a single "each" => 1. Default 1 if the selling unit IS the base unit.',
+      'The physical container/package capacity, independent of the pricing unit. Examples: "205L DRUM" => 205; "20L PAIL" => 20; "55USG DRUM" => 55; "box of 100" => 100; "12 x 1L" => 12. Use 1 only when no container size is stated.',
     ),
   baseUnit: z
     .string()
     .nullable()
     .describe(
-      'The underlying base unit of measure that packSize counts, e.g. "each", "litre", "kg", "metre". For a "box of 100 bolts" this is "each"; for a "5 L jug" this is "litre".',
+      'The unit of the container capacity in packSize, e.g. "litre", "USG", "kg", "each". For "205L DRUM" this is "litre"; for "55USG DRUM" this is "USG"; for "box of 100" this is "each".',
     ),
   category: z.string().nullable().describe('Product category, if present'),
   vendorName: z
@@ -106,15 +108,20 @@ Rules:
   - If freight is already stated per unit, use it as-is.
   - If a price is delivered/landed, freight is already included — set shippingCost to 0.
 - Numbers must be plain numbers without currency symbols or thousands separators.
-- Pack size: infer how many base units are inside ONE selling unit so prices can be normalized. Set unit to the selling unit, packSize to the count, and baseUnit to what is being counted.
-  - "box/100", "box of 100", "pack of 50", "100/box", "100 per box", "ctn 100" => unit "box", packSize 100/50, baseUnit "each".
-  - "5 L jug", "5L", "5 litre container", "5L pail" => unit "jug"/"pail", packSize 5, baseUnit "litre".
-  - "25 kg bag", "25kg" => unit "bag", packSize 25, baseUnit "kg".
-  - "case of 24", "24 pk", "24-pack" => unit "case", packSize 24, baseUnit "each".
-  - Multipliers like "12 x 1L" => packSize 12, baseUnit "litre" (12 one-litre units per case). "4 x 5kg" => packSize 20? No — keep packSize 4 and baseUnit "kg" only if each inner unit is 5kg; prefer total base content: 4 x 5kg => packSize 20, baseUnit "kg". For "12 x 1L", total is 12 litres => packSize 12, baseUnit "litre".
-  - Dimensions/specs that are NOT pack quantities (e.g. "M8 x 50mm" bolt size, "2400 x 1200" sheet size) are part of the product name, NOT packSize. Do not treat a size spec as a pack count.
-  - If the selling unit is already the base unit (plain "each", "pair", per "litre", per "kg", per "metre"), packSize is 1 and baseUnit equals that unit.
-  - When genuinely unsure, use packSize 1 and copy the selling unit into baseUnit. Never guess a large pack count.
+- unit vs packSize/baseUnit — these are TWO SEPARATE things, do not conflate them:
+  - "unit" is the basis the PRICE is quoted in (the per-what of unitPrice). e.g. if the sheet quotes a price "per US gallon", unit is "USG"; if "per each", unit is "each"; if "per case", unit is "case". Keep unitPrice on that basis — do NOT recompute the price.
+  - "packSize" + "baseUnit" describe the PHYSICAL container/package the item ships in, regardless of how the price is quoted. Always capture the container capacity when the description names one.
+- Container/package parsing (set packSize = capacity number, baseUnit = its unit):
+  - "205L DRUM" => packSize 205, baseUnit "litre". "20L PAIL" => packSize 20, baseUnit "litre". "1040L IBC"/"1040L TOTE" => packSize 1040, baseUnit "litre".
+  - "55USG DRUM" => packSize 55, baseUnit "USG". "5 GAL PAIL" => packSize 5, baseUnit "USG".
+  - "25 kg bag", "25kg" => packSize 25, baseUnit "kg".
+  - "box of 100", "100/box", "ctn 100", "pack of 50" => packSize 100/50, baseUnit "each".
+  - "case of 24", "24 pk", "24-pack" => packSize 24, baseUnit "each".
+  - Multipliers give TOTAL base content: "12 x 1L" => packSize 12, baseUnit "litre"; "4 x 5kg" => packSize 20, baseUnit "kg".
+  - Even when the price is quoted per gallon/litre/each, STILL fill packSize/baseUnit from the container named in the description (e.g. a row priced per USG for a "205L DRUM" => unit "USG", packSize 205, baseUnit "litre").
+- Do NOT duplicate the size in productName: if you put the container size into packSize/baseUnit, include it at most once in the name. Never repeat it (e.g. output "ACCUFLO TK 68 1040L IBC", never "ACCUFLO TK 68 1040L IBC 1040L IBC").
+- Dimensions/specs that are NOT pack quantities (e.g. "M8 x 50mm" bolt size, "2400 x 1200" sheet size) belong in the product name, NOT packSize.
+- If no container/package size is stated, packSize is 1 and baseUnit equals the selling unit. Never guess a large pack count.
 - If a value is not present, return null for it.`
 
 type ExtractInput =
