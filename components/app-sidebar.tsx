@@ -1,5 +1,6 @@
 'use client'
 
+import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { authClient } from '@/lib/auth-client'
@@ -49,18 +50,20 @@ export function AppSidebar({
 
   return (
     <aside className="flex h-svh w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
-      <div className="flex items-center gap-2 px-5 py-5">
-        <div className="flex size-8 items-center justify-center rounded-md bg-sidebar-primary text-sidebar-primary-foreground">
-          <GitCompareArrows className="size-4" />
+      <div className="flex flex-col gap-2 px-5 py-5">
+        <div className="flex items-center justify-center rounded-md bg-white px-3 py-2.5">
+          <Image
+            src="/brand/ace-solutions-logo.jpg"
+            alt="ACE Solutions"
+            width={1300}
+            height={422}
+            priority
+            className="h-7 w-auto"
+          />
         </div>
-        <div className="flex flex-col leading-tight">
-          <span className="text-base font-semibold tracking-tight">
-            Ace Procurement
-          </span>
-          <span className="text-xs text-sidebar-foreground/60">
-            Vendor Pricing
-          </span>
-        </div>
+        <span className="px-0.5 text-xs font-medium text-sidebar-foreground/60">
+          Procurement · Vendor Pricing
+        </span>
       </div>
 
       <nav className="flex flex-1 flex-col gap-1 px-3 py-2">
