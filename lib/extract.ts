@@ -98,6 +98,7 @@ Rules:
   - If a price is described as "delivered", "DDP", "freight included", or "landed", set freightTerms to "delivered" and put that price in unitPrice.
   - If a price is "FOB", "EXW", "ex-works", "pickup", or freight is listed separately, set freightTerms to "fob" and put any freight in shippingCost.
   - If BOTH an FOB price and a delivered price are given for the same item, set freightTerms to "both", put the FOB price in unitPrice and the delivered price in deliveredPrice.
+  - CONSISTENCY: when the price list pairs an FOB price with a separate per-unit freight/delivery surcharge (e.g. a "+$0.45/gal delivered" column or a freight column that applies to every row), treat EVERY such row the same way: set freightTerms "both", put the FOB price in unitPrice, the surcharge in shippingCost, and the delivered price in deliveredPrice. If the delivered price isn't printed explicitly, compute it as unitPrice + shippingCost. Do NOT classify some rows as "fob" and visually-identical rows as "both" — apply one rule to the whole file.
   - If unclear, default to "fob".
 - Freight must be expressed PER SINGLE SELLING UNIT, matching unitPrice:
   - If freight is quoted per order, per shipment, per pallet, or per load, divide it by the order/quantity it covers to get a per-unit figure (e.g. "$120 freight per order, min 10" => 12 per unit).
