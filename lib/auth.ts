@@ -37,6 +37,10 @@ export const auth = betterAuth({
     autoSignIn: true,
   },
   trustedOrigins: [
+    // v0 preview iframes are served from rotating *.vusercontent.net origins,
+    // which won't match V0_RUNTIME_URL exactly. Trust the whole domain so the
+    // sign-in POST isn't rejected with "Invalid origin".
+    'https://*.vusercontent.net',
     ...(process.env.V0_RUNTIME_URL ? [process.env.V0_RUNTIME_URL] : []),
     ...(process.env.VERCEL_URL ? [`https://${process.env.VERCEL_URL}`] : []),
     ...(process.env.VERCEL_PROJECT_PRODUCTION_URL
