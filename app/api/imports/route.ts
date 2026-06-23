@@ -92,7 +92,10 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     console.error('[v0] extraction failed:', err)
     return NextResponse.json(
-      { error: 'Could not read pricing from this file. Please check the format.' },
+      {
+        error:
+          'Could not read pricing from this file. Please check the format.',
+      },
       { status: 422 },
     )
   }

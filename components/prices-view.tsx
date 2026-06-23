@@ -32,7 +32,7 @@ import {
 import { Plus, Trash2, Tags } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { EmptyState } from '@/components/empty-state'
-import { formatCurrency } from '@/lib/format'
+import { formatCurrency, formatDate } from '@/lib/format'
 
 type Option = { id: number; name: string }
 type PriceRecord = {
@@ -46,6 +46,7 @@ type PriceRecord = {
   deliveredPrice: number | null
   minOrderQty: number
   currency: string
+  effectiveDate: string | null
 }
 
 const FREIGHT_LABELS: Record<string, string> = {
@@ -283,6 +284,7 @@ export function PricesView({
                 <TableHead className="text-right">Unit price</TableHead>
                 <TableHead className="text-right">Freight cost</TableHead>
                 <TableHead className="text-right">Min qty</TableHead>
+                <TableHead>Effective</TableHead>
                 <TableHead className="w-12" />
               </TableRow>
             </TableHeader>
@@ -319,6 +321,9 @@ export function PricesView({
                   </TableCell>
                   <TableCell className="text-right tabular-nums text-muted-foreground">
                     {p.minOrderQty}
+                  </TableCell>
+                  <TableCell className="tabular-nums text-muted-foreground">
+                    {formatDate(p.effectiveDate)}
                   </TableCell>
                   <TableCell>
                     <Button
