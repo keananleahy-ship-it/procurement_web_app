@@ -1,5 +1,11 @@
 import { generateText, Output } from 'ai'
+import { createOpenAI } from '@ai-sdk/openai'
 import * as z from 'zod'
+
+// Call OpenAI directly with the user's own API key, bypassing the Vercel AI
+// Gateway entirely. This avoids the gateway's team-scoped billing/free-tier
+// limits — usage is billed straight to this OpenAI account.
+const openai = createOpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
 // Note: OpenAI/Gateway strict mode requires every property to be present, so we
 // use .nullable() (never .optional()) for fields the model may not find.
@@ -130,7 +136,7 @@ async function runExtraction(
       // output. Gemini 2.5's reasoning tokens count against maxOutputTokens and
       // could consume the whole budget for large tables, yielding "No output
       // generated"; this model has no such failure mode and is fast/cheap.
-      model: 'openai/gpt-4.1-mini',
+      model: openai('gpt-4.1-mini'),
       system: SYSTEM_PROMPT,
       output: Output.object({ schema: extractionSchema }),
       messages: [{ role: 'user', content }],
