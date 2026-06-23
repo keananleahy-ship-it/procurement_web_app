@@ -108,7 +108,11 @@ export function PricesView({
                 <div className="flex flex-col gap-2">
                   <Label>Product</Label>
                   <input type="hidden" name="productId" value={productId} />
-                  <Select value={productId} onValueChange={setProductId} required>
+                  <Select
+                    value={productId}
+                    onValueChange={(v) => setProductId(v ?? '')}
+                    required
+                  >
                     <SelectTrigger>
                       <SelectValue placeholder="Select product" />
                     </SelectTrigger>
@@ -124,7 +128,11 @@ export function PricesView({
                 <div className="flex flex-col gap-2">
                   <Label>Vendor</Label>
                   <input type="hidden" name="vendorId" value={vendorId} />
-                  <Select value={vendorId} onValueChange={setVendorId} required>
+                  <Select
+                    value={vendorId}
+                    onValueChange={(v) => setVendorId(v ?? '')}
+                    required
+                  >
                     <SelectTrigger>
                       <SelectValue placeholder="Select vendor" />
                     </SelectTrigger>
@@ -140,7 +148,10 @@ export function PricesView({
                 <div className="flex flex-col gap-2">
                   <Label>Location</Label>
                   <input type="hidden" name="locationId" value={locationId} />
-                  <Select value={locationId} onValueChange={setLocationId}>
+                  <Select
+                    value={locationId}
+                    onValueChange={(v) => setLocationId(v ?? '')}
+                  >
                     <SelectTrigger>
                       <SelectValue placeholder="Optional" />
                     </SelectTrigger>
@@ -162,7 +173,7 @@ export function PricesView({
                   />
                   <Select
                     value={freightTerms}
-                    onValueChange={setFreightTerms}
+                    onValueChange={(v) => setFreightTerms(v ?? 'fob')}
                   >
                     <SelectTrigger>
                       <SelectValue>
