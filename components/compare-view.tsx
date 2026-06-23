@@ -1,8 +1,10 @@
 'use client'
 
-import { useMemo, useState } from 'react'
-import type { ProductComparison } from '@/app/actions/comparisons'
+import { useMemo, useState, useTransition } from 'react'
+import type { ProductComparison, PriceRow } from '@/app/actions/comparisons'
+import { setFreightEstimate } from '@/app/actions/prices'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
   Table,
@@ -107,6 +109,13 @@ export function CompareView({
                       Some offers use a different unit — excluded from ranking
                     </span>
                   )}
+                  {c.hasIncompleteFreight && (
+                    <span className="inline-flex items-center gap-1 text-warning">
+                      <TriangleAlert className="size-3.5" />
+                      Some FOB offers have no freight — add an estimate to rank
+                      them
+                    </span>
+                  )}
                   {c.latestEffectiveDate && (
                     <span className="inline-flex items-center gap-1">
                       <CalendarClock className="size-3.5" />
@@ -131,7 +140,7 @@ export function CompareView({
                   <TableHead>Freight</TableHead>
                   <TableHead className="text-right">Pack</TableHead>
                   <TableHead className="text-right">Unit price</TableHead>
-                  <TableHead className="text-right">Freight cost</TableHead>
+                  <TableHead className="text-right">Freight / unit</TableHead>
                   <TableHead className="text-right">Landed / unit</TableHead>
                   <TableHead className="text-right">
                     <span className="inline-flex items-center gap-1">
@@ -155,7 +164,7 @@ export function CompareView({
                       key={o.priceId}
                       className={cn(
                         isBest && 'bg-success/5',
-                        o.unitMismatch && 'opacity-70',
+                        !o.comparable && 'opacity-70',
                       )}
                     >
                       <TableCell className="font-medium text-foreground">
@@ -211,9 +220,23 @@ export function CompareView({
                         )}
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">
-                        {o.effectiveBasis === 'delivered'
-                          ? 'incl.'
-                          : formatCurrency(o.shippingCost, o.currency)}
+                        {o.effectiveBasis === 'delivered' ? (
+                          'incl.'
+                        ) : o.freightIncomplete ? (
+                          <FreightEstimateEditor offer={o} />
+                        ) : (
+                          <span className="inline-flex items-center justify-end gap-1">
+                            {formatCurrency(o.shippingCost, o.currency)}
+                            {o.freightEstimated && (
+                              <span
+                                className="text-[11px] font-medium text-warning"
+                                title="User-supplied freight estimate"
+                              >
+                                est.
+                              </span>
+                            )}
+                          </span>
+                        )}
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">
                         {formatCurrency(o.landedUnitCost, o.currency)}
@@ -221,7 +244,7 @@ export function CompareView({
                       <TableCell
                         className={cn(
                           'text-right font-semibold tabular-nums',
-                          o.unitMismatch
+                          !o.comparable
                             ? 'text-muted-foreground'
                             : isBest
                               ? 'text-success'
@@ -235,6 +258,13 @@ export function CompareView({
                             {formatCurrency(o.pricePerBaseUnit, o.currency)}
                             <span className="ml-1 text-xs font-normal">
                               /{o.baseUnit ?? 'unit'}
+                            </span>
+                          </span>
+                        ) : o.freightIncomplete && !o.comparable ? (
+                          <span title="Excludes freight — landed cost understated until an estimate is added">
+                            {formatCurrency(o.pricePerBaseUnit, o.currency)}
+                            <span className="ml-1 text-xs font-normal">
+                              ex-freight
                             </span>
                           </span>
                         ) : (
@@ -253,6 +283,15 @@ export function CompareView({
                           >
                             <TriangleAlert className="size-3" />
                             Unit mismatch
+                          </Badge>
+                        ) : o.freightIncomplete && !o.comparable ? (
+                          <Badge
+                            variant="outline"
+                            className="gap-1 border-warning/40 text-warning"
+                            title="FOB offer with no freight — add an estimated freight cost so its landed cost can be ranked fairly"
+                          >
+                            <TriangleAlert className="size-3" />
+                            Freight missing
                           </Badge>
                         ) : isBest ? (
                           <Badge className="bg-success text-success-foreground hover:bg-success">
@@ -275,5 +314,66 @@ export function CompareView({
         ))}
       </div>
     </div>
+  )
+}
+
+// Inline editor to capture an estimated per-unit inbound freight for an FOB
+// offer that arrived without one, so it can be ranked against delivered offers.
+function FreightEstimateEditor({ offer }: { offer: PriceRow }) {
+  const [open, setOpen] = useState(false)
+  const [value, setValue] = useState('')
+  const [isPending, startTransition] = useTransition()
+
+  function submit() {
+    const num = Number(value)
+    if (!Number.isFinite(num) || num <= 0) {
+      setOpen(false)
+      return
+    }
+    startTransition(async () => {
+      await setFreightEstimate(offer.priceId, num)
+      setOpen(false)
+    })
+  }
+
+  if (!open) {
+    return (
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-7 px-2 text-xs text-warning hover:text-warning"
+        onClick={() => setOpen(true)}
+      >
+        Add est.
+      </Button>
+    )
+  }
+
+  return (
+    <span className="inline-flex items-center justify-end gap-1">
+      <Input
+        autoFocus
+        type="number"
+        step="0.01"
+        min="0"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') submit()
+          if (e.key === 'Escape') setOpen(false)
+        }}
+        placeholder="/unit"
+        className="h-7 w-20 text-right tabular-nums"
+        disabled={isPending}
+      />
+      <Button
+        size="sm"
+        className="h-7 px-2 text-xs"
+        onClick={submit}
+        disabled={isPending}
+      >
+        Save
+      </Button>
+    </span>
   )
 }

@@ -82,3 +82,22 @@ export async function deletePrice(id: number) {
   revalidatePath('/prices')
   revalidatePath('/')
 }
+
+// Set an estimated per-unit inbound freight on an FOB offer so it can be
+// rationalized against delivered offers. Passing 0/empty clears the estimate.
+export async function setFreightEstimate(id: number, perUnitFreight: number) {
+  const userId = await getUserId()
+  const value = Number.isFinite(perUnitFreight) && perUnitFreight > 0
+    ? perUnitFreight
+    : 0
+  await db
+    .update(vendorPrices)
+    .set({
+      shippingCost: value.toFixed(2),
+      freightEstimated: value > 0,
+    })
+    .where(and(eq(vendorPrices.id, id), eq(vendorPrices.userId, userId)))
+  revalidatePath('/compare')
+  revalidatePath('/prices')
+  revalidatePath('/')
+}

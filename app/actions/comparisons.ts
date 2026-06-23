@@ -29,7 +29,15 @@ export type PriceRow = {
   locationId: number | null
   locationName: string | null
   unitPrice: number
+  // inbound freight per selling unit applied to the landed cost below
   shippingCost: number
+  // freight per base unit (shippingCost / packSize), for the freight column
+  freightPerBaseUnit: number
+  // true when shippingCost is a user-supplied estimate, not a quoted figure
+  freightEstimated: boolean
+  // true when this is an FOB offer with no freight supplied, so its landed
+  // cost understates the true delivered cost and it can't be ranked fairly
+  freightIncomplete: boolean
   minOrderQty: number
   currency: string
   // freight basis: 'fob' | 'delivered' | 'both'
@@ -49,6 +57,9 @@ export type PriceRow = {
   // true when this offer's base unit differs from its group's base unit, so it
   // is excluded from best/worst ranking (e.g. priced per 'each' vs per 'pair')
   unitMismatch: boolean
+  // false when this offer is excluded from ranking (unit mismatch or missing
+  // freight); set during grouping. Defaults true on a standalone row.
+  comparable: boolean
   // landed cost per BASE unit = landedUnitCost / packSize. This is the
   // apples-to-apples figure used to rank offers across pack sizes.
   pricePerBaseUnit: number
@@ -80,6 +91,9 @@ export type ProductComparison = {
   // true when one or more offers use a base unit that doesn't match the
   // group's base unit and were therefore excluded from ranking
   hasUnitMismatch: boolean
+  // true when one or more FOB offers lack freight (understated cost) and were
+  // excluded from ranking because the group has freight-complete offers
+  hasIncompleteFreight: boolean
   offers: PriceRow[]
   best: PriceRow | null
   worst: PriceRow | null
@@ -107,6 +121,7 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
       locationId: vendorPrices.locationId,
       unitPrice: vendorPrices.unitPrice,
       shippingCost: vendorPrices.shippingCost,
+      freightEstimated: vendorPrices.freightEstimated,
       freightTerms: vendorPrices.freightTerms,
       deliveredPrice: vendorPrices.deliveredPrice,
       minOrderQty: vendorPrices.minOrderQty,
@@ -137,13 +152,15 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
     const shippingCost = Number(r.shippingCost ?? 0)
     const minOrderQty = Number(r.minOrderQty ?? 1) || 1
     const freightTerms = r.freightTerms ?? 'fob'
+    const freightEstimated = Boolean(r.freightEstimated)
     const deliveredPrice =
       r.deliveredPrice !== null && r.deliveredPrice !== undefined
         ? Number(r.deliveredPrice)
         : null
 
-    // FOB landed cost spreads freight across the minimum order quantity.
-    const fobLandedUnitCost = unitPrice + shippingCost / minOrderQty
+    // Freight is stored per selling unit, so FOB landed cost simply adds it to
+    // the unit price — no spreading across the minimum order.
+    const fobLandedUnitCost = unitPrice + shippingCost
     // Delivered landed cost is freight-inclusive, so freight is never added.
     // For 'delivered' terms the all-in price lives in unitPrice; for 'both'
     // it lives in deliveredPrice alongside the FOB unitPrice.
@@ -169,16 +186,19 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
       effectiveBasis = 'fob'
     }
 
-    const acquisitionCost =
-      effectiveBasis === 'delivered'
-        ? landedUnitCost * minOrderQty
-        : unitPrice * minOrderQty + shippingCost
+    // An FOB offer that arrived with no freight understates the true landed
+    // cost: it isn't comparable to delivered offers until freight is supplied.
+    const freightIncomplete = effectiveBasis === 'fob' && shippingCost === 0
+
+    const acquisitionCost = landedUnitCost * minOrderQty
 
     // Normalize to a per-base-unit cost so different pack sizes (e.g. a box of
     // 100 vs a single each) compare fairly. packSize defaults to 1.
     const rawPackSize = Number(r.packSize ?? 1)
     const packSize = rawPackSize > 0 ? rawPackSize : 1
     const pricePerBaseUnit = landedUnitCost / packSize
+    const freightPerBaseUnit =
+      effectiveBasis === 'fob' ? shippingCost / packSize : 0
 
     return {
       priceId: r.priceId,
@@ -192,6 +212,9 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
       locationName: r.locationName,
       unitPrice,
       shippingCost,
+      freightPerBaseUnit,
+      freightEstimated,
+      freightIncomplete,
       minOrderQty,
       currency: r.currency,
       freightTerms,
@@ -202,6 +225,7 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
       baseUnit: r.baseUnit ?? r.unit ?? null,
       canonicalBaseUnit: r.canonicalBaseUnit ?? null,
       unitMismatch: false,
+      comparable: true,
       pricePerBaseUnit,
       acquisitionCost,
       effectiveDate:
@@ -267,23 +291,39 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
     // Flag offers whose own base unit differs from the group's base unit; these
     // can't be compared apples-to-apples (e.g. priced per 'each' vs per 'pair').
     const groupUnit = norm(baseUnit)
-    const flagged = offers.map((o) => ({
-      ...o,
-      unitMismatch:
-        !!groupUnit && !!norm(o.baseUnit) && norm(o.baseUnit) !== groupUnit,
-    }))
 
-    // Rank only comparable offers by normalized per-base-unit cost. Mismatched
+    // Only treat missing freight as disqualifying when the group also has at
+    // least one freight-complete offer (delivered, or FOB with freight) to
+    // compare against. A group of all-FOB-no-freight still ranks among itself.
+    const hasFreightComplete = offers.some((o) => !o.freightIncomplete)
+
+    const flagged = offers.map((o) => {
+      const unitMismatch =
+        !!groupUnit && !!norm(o.baseUnit) && norm(o.baseUnit) !== groupUnit
+      const freightExcluded = o.freightIncomplete && hasFreightComplete
+      return {
+        ...o,
+        unitMismatch,
+        // not directly comparable for ranking: wrong unit, or understated cost
+        comparable: !unitMismatch && !freightExcluded,
+      }
+    })
+
+    // Rank only comparable offers by normalized per-base-unit cost. Excluded
     // offers still display, but sort after and never win best/worst.
     const comparable = flagged
-      .filter((o) => !o.unitMismatch)
+      .filter((o) => o.comparable)
       .sort((a, b) => a.pricePerBaseUnit - b.pricePerBaseUnit)
-    const mismatched = flagged.filter((o) => o.unitMismatch)
-    const offersSorted = [...comparable, ...mismatched]
+    const excluded = flagged.filter((o) => !o.comparable)
+    const offersSorted = [...comparable, ...excluded]
     const best = comparable[0] ?? null
     const worst = comparable[comparable.length - 1] ?? null
     const mixedPackSizes =
       new Set(comparable.map((o) => o.packSize)).size > 1
+    const hasUnitMismatch = flagged.some((o) => o.unitMismatch)
+    const hasIncompleteFreight = flagged.some(
+      (o) => o.freightIncomplete && hasFreightComplete,
+    )
 
     comparisons.push({
       key,
@@ -295,7 +335,8 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
       isCanonical,
       baseUnit,
       mixedPackSizes,
-      hasUnitMismatch: mismatched.length > 0,
+      hasUnitMismatch,
+      hasIncompleteFreight,
       offers: offersSorted,
       best,
       worst,

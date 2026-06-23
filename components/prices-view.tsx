@@ -181,7 +181,7 @@ export function PricesView({
                   </Select>
                   <p className="text-xs text-muted-foreground">
                     {freightTerms === 'fob' &&
-                      'Freight is added on top of the unit price, spread across the minimum order.'}
+                      'Enter freight per unit; it is added on top of the unit price as landed cost.'}
                     {freightTerms === 'delivered' &&
                       'The unit price is all-in; no freight is added in the analysis.'}
                     {freightTerms === 'both' &&
@@ -207,7 +207,7 @@ export function PricesView({
                   </div>
                   {showShipping && (
                     <div className="flex flex-col gap-2">
-                      <Label htmlFor="shippingCost">Freight cost</Label>
+                      <Label htmlFor="shippingCost">Freight / unit</Label>
                       <Input
                         id="shippingCost"
                         name="shippingCost"
@@ -215,7 +215,7 @@ export function PricesView({
                         step="0.01"
                         min="0"
                         defaultValue="0"
-                        placeholder="Total per order"
+                        placeholder="Per unit"
                       />
                     </div>
                   )}

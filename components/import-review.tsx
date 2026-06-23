@@ -35,6 +35,7 @@ export type StagingRow = {
   vendorName: string | null
   unitPrice: string | null
   shippingCost: string
+  freightEstimated: boolean
   freightTerms: string
   deliveredPrice: string | null
   minOrderQty: number
@@ -162,7 +163,7 @@ export function ImportReview({
               <TableHead className="min-w-40">Vendor</TableHead>
               <TableHead className="min-w-36">Freight</TableHead>
               <TableHead className="text-right">Unit price</TableHead>
-              <TableHead className="text-right">Freight cost</TableHead>
+              <TableHead className="text-right">Freight / unit</TableHead>
               <TableHead className="text-right">Delivered</TableHead>
               <TableHead className="text-right">Min qty</TableHead>
               <TableHead className="text-right">Pack size</TableHead>
@@ -248,16 +249,34 @@ export function ImportReview({
                     />
                   </TableCell>
                   <TableCell>
-                    <Input
-                      className="h-8 text-right tabular-nums"
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      disabled={r.freightTerms === 'delivered'}
-                      value={r.freightTerms === 'delivered' ? '' : r.shippingCost}
-                      onChange={(e) => patchRow(r.id, { shippingCost: e.target.value || '0' })}
-                      onBlur={(e) => persist(r.id, { shippingCost: e.target.value || '0' })}
-                    />
+                    <div className="flex flex-col items-end gap-1">
+                      <Input
+                        className="h-8 text-right tabular-nums"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        disabled={r.freightTerms === 'delivered'}
+                        value={r.freightTerms === 'delivered' ? '' : r.shippingCost}
+                        onChange={(e) => patchRow(r.id, { shippingCost: e.target.value || '0' })}
+                        onBlur={(e) => persist(r.id, { shippingCost: e.target.value || '0' })}
+                      />
+                      {r.freightTerms !== 'delivered' && (
+                        <Button
+                          type="button"
+                          variant={r.freightEstimated ? 'secondary' : 'ghost'}
+                          size="sm"
+                          className="h-5 px-1.5 text-[11px]"
+                          aria-pressed={r.freightEstimated}
+                          onClick={() => {
+                            const next = !r.freightEstimated
+                            patchRow(r.id, { freightEstimated: next })
+                            persist(r.id, { freightEstimated: next })
+                          }}
+                        >
+                          {r.freightEstimated ? 'Estimated' : 'Mark est.'}
+                        </Button>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell>
                     <Input

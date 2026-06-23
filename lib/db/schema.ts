@@ -127,12 +127,17 @@ export const vendorPrices = pgTable('vendor_prices', {
   vendorId: integer('vendorId').notNull(),
   locationId: integer('locationId'),
   unitPrice: numeric('unitPrice', { precision: 12, scale: 2 }).notNull(),
+  // Inbound freight expressed PER SELLING UNIT (same basis as unitPrice). Per-
+  // order/per-shipment freight is converted to per-unit at import or entry.
   shippingCost: numeric('shippingCost', { precision: 12, scale: 2 })
     .notNull()
     .default('0'),
+  // True when shippingCost is a user-supplied estimate rather than a quoted
+  // figure (used to rationalize FOB offers that arrive without freight).
+  freightEstimated: boolean('freightEstimated').notNull().default(false),
   // Freight basis for this quote:
-  //  'fob'       -> unitPrice is FOB origin; buyer adds shippingCost (freight)
-  //  'delivered' -> unitPrice is the all-in delivered price; freight ignored
+  //  'fob'       -> unitPrice is FOB origin; buyer adds shippingCost per unit
+  //  'delivered' -> unitPrice is the all-in delivered price; freight included
   //  'both'      -> vendor offers FOB (unitPrice + shippingCost) AND a
   //                 delivered alternative stored in deliveredPrice
   freightTerms: text('freightTerms').notNull().default('fob'),
@@ -180,9 +185,12 @@ export const importRows = pgTable('import_rows', {
   unit: text('unit'),
   category: text('category'),
   unitPrice: numeric('unitPrice', { precision: 12, scale: 2 }),
+  // Inbound freight per selling unit (converted from per-order at extraction).
   shippingCost: numeric('shippingCost', { precision: 12, scale: 2 })
     .notNull()
     .default('0'),
+  // True when shippingCost is an estimate rather than a quoted figure.
+  freightEstimated: boolean('freightEstimated').notNull().default(false),
   freightTerms: text('freightTerms').notNull().default('fob'),
   deliveredPrice: numeric('deliveredPrice', { precision: 12, scale: 2 }),
   minOrderQty: integer('minOrderQty').notNull().default(1),

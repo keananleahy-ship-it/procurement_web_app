@@ -40,7 +40,9 @@ const extractedRowSchema = z.object({
   shippingCost: z
     .number()
     .nullable()
-    .describe('Separate freight/shipping cost per order, if quoted (FOB).'),
+    .describe(
+      'Inbound freight expressed PER SINGLE SELLING UNIT (same basis as unitPrice). If the source quotes freight per order/shipment/load, divide it by the order quantity to get a per-unit figure. If freight is already per unit, use it directly. Use 0 for delivered terms.',
+    ),
   freightTerms: z
     .enum(['fob', 'delivered', 'both'])
     .nullable()
@@ -85,6 +87,10 @@ Rules:
   - If a price is "FOB", "EXW", "ex-works", "pickup", or freight is listed separately, set freightTerms to "fob" and put any freight in shippingCost.
   - If BOTH an FOB price and a delivered price are given for the same item, set freightTerms to "both", put the FOB price in unitPrice and the delivered price in deliveredPrice.
   - If unclear, default to "fob".
+- Freight must be expressed PER SINGLE SELLING UNIT, matching unitPrice:
+  - If freight is quoted per order, per shipment, per pallet, or per load, divide it by the order/quantity it covers to get a per-unit figure (e.g. "$120 freight per order, min 10" => 12 per unit).
+  - If freight is already stated per unit, use it as-is.
+  - If a price is delivered/landed, freight is already included — set shippingCost to 0.
 - Numbers must be plain numbers without currency symbols or thousands separators.
 - Pack size: infer how many base units are inside one selling unit so prices can be normalized.
   - "box/100", "box of 100", "pack of 50" => packSize is that count, baseUnit "each".
