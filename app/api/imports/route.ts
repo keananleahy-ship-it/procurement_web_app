@@ -188,9 +188,7 @@ export async function POST(req: NextRequest) {
       effectiveDate,
       status: 'pending',
       rowCount: rows.length,
-      note: extraction.defaultVendorName
-        ? `Document vendor: ${extraction.defaultVendorName}`
-        : null,
+      note: `Vendor: ${vendorName}`,
     })
     .returning({ id: imports.id })
 
@@ -202,7 +200,7 @@ export async function POST(req: NextRequest) {
         userId,
         importId,
         productName: r.productName.trim(),
-        vendorName: r.vendorName?.trim() || extraction.defaultVendorName || null,
+        vendorName,
         sku: r.sku?.trim() || null,
         unit: r.unit?.trim() || null,
         packSize:
