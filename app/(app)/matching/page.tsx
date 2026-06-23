@@ -12,7 +12,7 @@ export default async function MatchingPage() {
     <>
       <PageHeader
         title="Match Verification"
-        description="Review fuzzy-matched suggestions and confirm or reject each one before it's used in comparisons."
+        description="Review name-similarity and AI-suggested matches, then confirm or reject each one before it's used in comparisons."
       />
       <MatchingView
         rows={rows}
