@@ -88,6 +88,9 @@ export const canonicalItems = pgTable('canonical_items', {
   name: text('name').notNull(),
   category: text('category'),
   unit: text('unit'),
+  // The base unit used to normalize prices across pack sizes for this item
+  // (e.g. 'each', 'litre', 'kg'). Offers are compared per base unit.
+  baseUnit: text('baseUnit'),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 
@@ -103,6 +106,17 @@ export const products = pgTable('products', {
   canonicalItemId: integer('canonicalItemId'),
   matchStatus: text('matchStatus').notNull().default('unmatched'),
   matchScore: numeric('matchScore', { precision: 5, scale: 4 }),
+  // How the current suggestion was produced: 'fuzzy' | 'ai' | 'manual'.
+  matchMethod: text('matchMethod'),
+  // Short human-readable explanation for an AI-suggested match.
+  matchReason: text('matchReason'),
+  // Number of base units contained in one selling unit (e.g. a box of 100 =>
+  // 100; a 5 L jug => 5). Used to normalize price per base unit.
+  packSize: numeric('packSize', { precision: 12, scale: 4 })
+    .notNull()
+    .default('1'),
+  // The base unit of measure for packSize (e.g. 'each', 'litre', 'kg').
+  baseUnit: text('baseUnit'),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 
@@ -173,6 +187,12 @@ export const importRows = pgTable('import_rows', {
   deliveredPrice: numeric('deliveredPrice', { precision: 12, scale: 2 }),
   minOrderQty: integer('minOrderQty').notNull().default(1),
   currency: text('currency').notNull().default('USD'),
+  // Inferred number of base units per selling unit, editable in review.
+  packSize: numeric('packSize', { precision: 12, scale: 4 })
+    .notNull()
+    .default('1'),
+  // Inferred base unit of measure (e.g. 'each', 'litre').
+  baseUnit: text('baseUnit'),
   include: boolean('include').notNull().default(true),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })

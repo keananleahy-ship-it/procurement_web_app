@@ -39,6 +39,8 @@ export type StagingRow = {
   deliveredPrice: string | null
   minOrderQty: number
   currency: string
+  packSize: string
+  baseUnit: string | null
   include: boolean
 }
 
@@ -163,6 +165,8 @@ export function ImportReview({
               <TableHead className="text-right">Freight cost</TableHead>
               <TableHead className="text-right">Delivered</TableHead>
               <TableHead className="text-right">Min qty</TableHead>
+              <TableHead className="text-right">Pack size</TableHead>
+              <TableHead className="min-w-24">Base unit</TableHead>
               <TableHead className="w-20">Cur.</TableHead>
               <TableHead className="w-12" />
             </TableRow>
@@ -279,6 +283,34 @@ export function ImportReview({
                       value={r.minOrderQty}
                       onChange={(e) => patchRow(r.id, { minOrderQty: Number(e.target.value) || 1 })}
                       onBlur={(e) => persist(r.id, { minOrderQty: Number(e.target.value) || 1 })}
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      className="h-8 w-20 text-right tabular-nums"
+                      type="number"
+                      step="0.0001"
+                      min="0"
+                      value={r.packSize}
+                      onChange={(e) =>
+                        patchRow(r.id, { packSize: e.target.value || '1' })
+                      }
+                      onBlur={(e) =>
+                        persist(r.id, { packSize: e.target.value || '1' })
+                      }
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      className="h-8 w-24"
+                      placeholder="unit"
+                      value={r.baseUnit ?? ''}
+                      onChange={(e) =>
+                        patchRow(r.id, { baseUnit: e.target.value })
+                      }
+                      onBlur={(e) =>
+                        persist(r.id, { baseUnit: e.target.value.trim() || null })
+                      }
                     />
                   </TableCell>
                   <TableCell>

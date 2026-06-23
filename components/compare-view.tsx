@@ -92,8 +92,14 @@ export function CompareView({
                 <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-sm text-muted-foreground">
                   <span>
                     {c.vendorCount} vendor{c.vendorCount === 1 ? '' : 's'}
-                    {c.unit ? ` · per ${c.unit}` : ''}
+                    {c.baseUnit ? ` · per ${c.baseUnit}` : ''}
                   </span>
+                  {c.mixedPackSizes && (
+                    <span className="inline-flex items-center gap-1 text-primary">
+                      <Layers className="size-3.5" />
+                      Mixed pack sizes — normalized
+                    </span>
+                  )}
                   {c.latestEffectiveDate && (
                     <span className="inline-flex items-center gap-1">
                       <CalendarClock className="size-3.5" />
@@ -105,7 +111,7 @@ export function CompareView({
               {c.potentialSavings > 0 && (
                 <div className="flex items-center gap-1.5 rounded-md bg-success/10 px-3 py-1.5 text-sm font-medium text-success">
                   <TrendingDown className="size-4" />
-                  Save {formatCurrency(c.potentialSavings)} / {c.unit ?? 'unit'}
+                  Save {formatCurrency(c.potentialSavings)} / {c.baseUnit ?? 'unit'}
                 </div>
               )}
             </div>
@@ -116,12 +122,14 @@ export function CompareView({
                   <TableHead>Vendor</TableHead>
                   <TableHead>Location</TableHead>
                   <TableHead>Freight</TableHead>
+                  <TableHead className="text-right">Pack</TableHead>
                   <TableHead className="text-right">Unit price</TableHead>
                   <TableHead className="text-right">Freight cost</TableHead>
+                  <TableHead className="text-right">Landed / unit</TableHead>
                   <TableHead className="text-right">
                     <span className="inline-flex items-center gap-1">
                       <ArrowDownNarrowWide className="size-3.5" />
-                      Landed / unit
+                      Per {c.baseUnit ?? 'base unit'}
                     </span>
                   </TableHead>
                   <TableHead>Effective</TableHead>
@@ -173,6 +181,15 @@ export function CompareView({
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {o.packSize === 1 ? (
+                          <span className="text-muted-foreground/60">—</span>
+                        ) : (
+                          <span title={`${o.packSize} ${o.baseUnit ?? 'units'} per ${o.unit ?? 'unit'}`}>
+                            ×{o.packSize}
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
                         {formatCurrency(
                           o.effectiveBasis === 'delivered' &&
                             o.deliveredPrice !== null
@@ -186,13 +203,16 @@ export function CompareView({
                           ? 'incl.'
                           : formatCurrency(o.shippingCost, o.currency)}
                       </TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {formatCurrency(o.landedUnitCost, o.currency)}
+                      </TableCell>
                       <TableCell
                         className={cn(
                           'text-right font-semibold tabular-nums',
                           isBest ? 'text-success' : 'text-foreground',
                         )}
                       >
-                        {formatCurrency(o.landedUnitCost, o.currency)}
+                        {formatCurrency(o.pricePerBaseUnit, o.currency)}
                       </TableCell>
                       <TableCell className="text-muted-foreground tabular-nums">
                         {formatDate(o.effectiveDate)}

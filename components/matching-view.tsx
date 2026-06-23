@@ -5,6 +5,7 @@ import type { MatchRow } from '@/app/actions/canonical'
 import {
   assignMatch,
   confirmMatch,
+  generateAiSuggestions,
   generateSuggestions,
   rejectMatch,
   resetMatch,
@@ -106,6 +107,7 @@ export function MatchingView({
 }) {
   const [isPending, startTransition] = useTransition()
   const [genPending, startGen] = useTransition()
+  const [aiPending, startAi] = useTransition()
 
   const groups = useMemo(() => {
     return {
@@ -137,22 +139,37 @@ export function MatchingView({
               Auto-match products to canonical items
             </p>
             <p className="text-sm text-muted-foreground">
-              Suggestions are scored by name similarity. You confirm or reject
-              each one — nothing is grouped until you approve it.
+              Run a fast name-similarity pass, then an AI pass that catches
+              synonyms and pack-size variants. You confirm or reject each one —
+              nothing is grouped until you approve it.
             </p>
           </div>
         </div>
-        <Button
-          disabled={genPending || noCanonical}
-          onClick={() =>
-            startGen(() => {
-              void generateSuggestions()
-            })
-          }
-        >
-          <Sparkles className="size-4" />
-          {genPending ? 'Scanning…' : 'Generate suggestions'}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            disabled={genPending || aiPending || noCanonical}
+            onClick={() =>
+              startGen(() => {
+                void generateSuggestions()
+              })
+            }
+          >
+            <ListChecks className="size-4" />
+            {genPending ? 'Scanning…' : 'Name match'}
+          </Button>
+          <Button
+            disabled={aiPending || genPending || noCanonical}
+            onClick={() =>
+              startAi(() => {
+                void generateAiSuggestions()
+              })
+            }
+          >
+            <Sparkles className="size-4" />
+            {aiPending ? 'Thinking…' : 'AI match pass'}
+          </Button>
+        </div>
       </div>
 
       {noCanonical && (
@@ -222,10 +239,28 @@ export function MatchingView({
                         )}
                       </TableCell>
                       <TableCell className="text-foreground">
-                        {r.canonicalItemName ?? '—'}
+                        <div className="flex flex-col gap-0.5">
+                          <span>{r.canonicalItemName ?? '—'}</span>
+                          {r.matchReason && (
+                            <span className="max-w-xs text-xs text-muted-foreground">
+                              {r.matchReason}
+                            </span>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>
-                        <ConfidenceBadge score={r.matchScore} />
+                        <div className="flex items-center gap-1.5">
+                          <ConfidenceBadge score={r.matchScore} />
+                          {r.matchMethod === 'ai' && (
+                            <Badge
+                              variant="outline"
+                              className="gap-1 border-accent-foreground/20 text-xs text-accent-foreground"
+                            >
+                              <Sparkles className="size-3" />
+                              AI
+                            </Badge>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center justify-end gap-2">
@@ -341,13 +376,25 @@ export function MatchingView({
                         )}
                       </TableCell>
                       <TableCell>
-                        {r.matchStatus === 'rejected' ? (
-                          <Badge variant="outline" className="text-destructive">
-                            Rejected
-                          </Badge>
-                        ) : (
-                          <Badge variant="secondary">Unmatched</Badge>
-                        )}
+                        <div className="flex flex-col gap-0.5">
+                          {r.matchStatus === 'rejected' ? (
+                            <Badge
+                              variant="outline"
+                              className="w-fit text-destructive"
+                            >
+                              Rejected
+                            </Badge>
+                          ) : (
+                            <Badge variant="secondary" className="w-fit">
+                              Unmatched
+                            </Badge>
+                          )}
+                          {r.matchReason && (
+                            <span className="max-w-xs text-xs text-muted-foreground">
+                              {r.matchReason}
+                            </span>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <div className="flex justify-end">

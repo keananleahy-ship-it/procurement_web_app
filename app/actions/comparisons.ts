@@ -37,8 +37,15 @@ export type PriceRow = {
   deliveredPrice: number | null
   // which basis was used to compute the landed cost below ('fob' | 'delivered')
   effectiveBasis: 'fob' | 'delivered'
-  // landed cost per unit, freight-adjusted for the basis above
+  // landed cost per SELLING unit, freight-adjusted for the basis above
   landedUnitCost: number
+  // base units contained in one selling unit (e.g. box of 100 => 100)
+  packSize: number
+  // base unit of measure for the normalized price (e.g. 'each', 'litre')
+  baseUnit: string | null
+  // landed cost per BASE unit = landedUnitCost / packSize. This is the
+  // apples-to-apples figure used to rank offers across pack sizes.
+  pricePerBaseUnit: number
   // total acquisition cost to fulfill the minimum order
   acquisitionCost: number
   // the date this pricing took effect (from its import, else entry date)
@@ -60,11 +67,16 @@ export type ProductComparison = {
   // true when this group represents a confirmed canonical item spanning
   // potentially multiple vendor products
   isCanonical: boolean
+  // base unit used to normalize prices in this group (e.g. 'each', 'litre')
+  baseUnit: string | null
+  // true when offers in this group have differing pack sizes
+  mixedPackSizes: boolean
   offers: PriceRow[]
   best: PriceRow | null
   worst: PriceRow | null
   vendorCount: number
-  potentialSavings: number // worst landed - best landed
+  // savings per base unit: worst pricePerBaseUnit - best pricePerBaseUnit
+  potentialSavings: number
   // most recent effective date across the group's offers
   latestEffectiveDate: string | null
 }
@@ -95,9 +107,12 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
       productName: products.name,
       category: products.category,
       unit: products.unit,
+      packSize: products.packSize,
+      baseUnit: products.baseUnit,
       canonicalItemId: products.canonicalItemId,
       matchStatus: products.matchStatus,
       canonicalItemName: canonicalItems.name,
+      canonicalBaseUnit: canonicalItems.baseUnit,
       vendorName: vendors.name,
       locationName: locations.name,
     })
@@ -150,6 +165,12 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
         ? landedUnitCost * minOrderQty
         : unitPrice * minOrderQty + shippingCost
 
+    // Normalize to a per-base-unit cost so different pack sizes (e.g. a box of
+    // 100 vs a single each) compare fairly. packSize defaults to 1.
+    const rawPackSize = Number(r.packSize ?? 1)
+    const packSize = rawPackSize > 0 ? rawPackSize : 1
+    const pricePerBaseUnit = landedUnitCost / packSize
+
     return {
       priceId: r.priceId,
       productId: r.productId,
@@ -168,6 +189,9 @@ async function getAllRows(userId: string): Promise<PriceRow[]> {
       deliveredPrice,
       effectiveBasis,
       landedUnitCost,
+      packSize,
+      baseUnit: r.baseUnit ?? r.canonicalBaseUnit ?? r.unit ?? null,
+      pricePerBaseUnit,
       acquisitionCost,
       effectiveDate:
         r.effectiveDate ??
@@ -203,8 +227,9 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
 
   const comparisons: ProductComparison[] = []
   for (const [key, offers] of byKey) {
+    // Rank by normalized per-base-unit cost so pack sizes compare fairly.
     const sorted = [...offers].sort(
-      (a, b) => a.landedUnitCost - b.landedUnitCost,
+      (a, b) => a.pricePerBaseUnit - b.pricePerBaseUnit,
     )
     const best = sorted[0] ?? null
     const worst = sorted[sorted.length - 1] ?? null
@@ -220,6 +245,10 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
       ? (offers.find((o) => o.canonicalItemName)?.canonicalItemName ??
         'Canonical item')
       : offers[0].productName
+    const baseUnit =
+      offers.find((o) => o.baseUnit)?.baseUnit ?? offers[0].unit ?? null
+    const mixedPackSizes =
+      new Set(offers.map((o) => o.packSize)).size > 1
     comparisons.push({
       key,
       displayName,
@@ -228,12 +257,16 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
       category: offers[0].category,
       unit: offers[0].unit,
       isCanonical,
+      baseUnit,
+      mixedPackSizes,
       offers: sorted,
       best,
       worst,
       vendorCount: vendorIds.size,
       potentialSavings:
-        best && worst ? worst.landedUnitCost - best.landedUnitCost : 0,
+        best && worst
+          ? worst.pricePerBaseUnit - best.pricePerBaseUnit
+          : 0,
       latestEffectiveDate,
     })
   }
@@ -280,8 +313,13 @@ export async function getDashboardStats() {
   const vendorIds = new Set(rows.map((r) => r.vendorId))
 
   const comparisons = await getProductComparisons()
+  // potentialSavings is per base unit; scale by the base units in a minimum
+  // order (packSize * minOrderQty) of the cheapest offer.
   const totalPotentialSavings = comparisons.reduce(
-    (sum, c) => sum + c.potentialSavings * (c.best?.minOrderQty ?? 1),
+    (sum, c) =>
+      sum +
+      c.potentialSavings *
+        ((c.best?.packSize ?? 1) * (c.best?.minOrderQty ?? 1)),
     0,
   )
 

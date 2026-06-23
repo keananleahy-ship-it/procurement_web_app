@@ -132,6 +132,9 @@ export async function POST(req: NextRequest) {
         vendorName: r.vendorName?.trim() || extraction.defaultVendorName || null,
         sku: r.sku?.trim() || null,
         unit: r.unit?.trim() || null,
+        packSize:
+          r.packSize && r.packSize > 0 ? String(r.packSize) : '1',
+        baseUnit: r.baseUnit?.trim() || r.unit?.trim() || null,
         category: r.category?.trim() || null,
         unitPrice: toNumericString(r.unitPrice),
         shippingCost: toNumericString(r.shippingCost) ?? '0',

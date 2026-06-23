@@ -48,6 +48,8 @@ export default async function ImportReviewPage({
           deliveredPrice: r.deliveredPrice,
           minOrderQty: r.minOrderQty,
           currency: r.currency,
+          packSize: r.packSize,
+          baseUnit: r.baseUnit,
           include: r.include,
         }))}
       />

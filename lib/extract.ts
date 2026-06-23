@@ -11,7 +11,19 @@ const extractedRowSchema = z.object({
   unit: z
     .string()
     .nullable()
-    .describe('Unit of measure, e.g. "each", "box", "kg"'),
+    .describe('Selling unit of measure, e.g. "each", "box", "jug", "case"'),
+  packSize: z
+    .number()
+    .nullable()
+    .describe(
+      'How many base units are contained in ONE selling unit. Examples: "box of 100" => 100; "5 L jug" => 5; "case of 24" => 24; a single "each" => 1. Default 1 if the selling unit IS the base unit.',
+    ),
+  baseUnit: z
+    .string()
+    .nullable()
+    .describe(
+      'The underlying base unit of measure that packSize counts, e.g. "each", "litre", "kg", "metre". For a "box of 100 bolts" this is "each"; for a "5 L jug" this is "litre".',
+    ),
   category: z.string().nullable().describe('Product category, if present'),
   vendorName: z
     .string()
@@ -74,6 +86,13 @@ Rules:
   - If BOTH an FOB price and a delivered price are given for the same item, set freightTerms to "both", put the FOB price in unitPrice and the delivered price in deliveredPrice.
   - If unclear, default to "fob".
 - Numbers must be plain numbers without currency symbols or thousands separators.
+- Pack size: infer how many base units are inside one selling unit so prices can be normalized.
+  - "box/100", "box of 100", "pack of 50" => packSize is that count, baseUnit "each".
+  - "5 L jug", "5L", "5 litre container" => packSize 5, baseUnit "litre".
+  - "25 kg bag" => packSize 25, baseUnit "kg".
+  - "case of 24" => packSize 24, baseUnit "each".
+  - If the selling unit is already the base unit (e.g. plain "each", "pair", per "litre"), packSize is 1 and baseUnit equals that unit.
+  - When unsure, use packSize 1 and copy the selling unit into baseUnit.
 - If a value is not present, return null for it.`
 
 type ExtractInput =

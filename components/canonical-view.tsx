@@ -34,6 +34,7 @@ type CanonicalItem = {
   name: string
   category: string | null
   unit: string | null
+  baseUnit: string | null
   matchedCount: number
 }
 
@@ -80,9 +81,21 @@ export function CanonicalView({ items }: { items: CanonicalItem[] }) {
                     <Input id="category" name="category" placeholder="Office" />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <Label htmlFor="unit">Unit</Label>
+                    <Label htmlFor="unit">Selling unit</Label>
                     <Input id="unit" name="unit" placeholder="ream" />
                   </div>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="baseUnit">Base unit (for comparison)</Label>
+                  <Input
+                    id="baseUnit"
+                    name="baseUnit"
+                    placeholder="sheet"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Prices are normalized to this unit so different pack sizes
+                    compare fairly (e.g. compare per sheet, per litre, per each).
+                  </p>
                 </div>
               </div>
               <DialogFooter>
@@ -106,7 +119,8 @@ export function CanonicalView({ items }: { items: CanonicalItem[] }) {
               <TableRow>
                 <TableHead>Canonical item</TableHead>
                 <TableHead>Category</TableHead>
-                <TableHead>Unit</TableHead>
+                <TableHead>Selling unit</TableHead>
+                <TableHead>Base unit</TableHead>
                 <TableHead className="text-right">Matched products</TableHead>
                 <TableHead className="w-12" />
               </TableRow>
@@ -126,6 +140,9 @@ export function CanonicalView({ items }: { items: CanonicalItem[] }) {
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {it.unit ?? '—'}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {it.baseUnit ?? '—'}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
                     {it.matchedCount > 0 ? (

@@ -31,6 +31,7 @@ export default async function CanonicalPage() {
           name: i.name,
           category: i.category,
           unit: i.unit,
+          baseUnit: i.baseUnit,
           matchedCount: matchedCounts.get(i.id) ?? 0,
         }))}
       />

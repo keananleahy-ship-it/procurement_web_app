@@ -55,6 +55,8 @@ type RowPatch = {
   currency?: string
   unit?: string | null
   category?: string | null
+  packSize?: string
+  baseUnit?: string | null
   include?: boolean
 }
 
@@ -121,6 +123,8 @@ async function resolveProductId(
   name: string,
   unit: string | null,
   category: string | null,
+  packSize: string,
+  baseUnit: string | null,
   cache: Map<string, number>,
 ) {
   const key = name.trim().toLowerCase()
@@ -128,7 +132,14 @@ async function resolveProductId(
   if (existing) return existing
   const [created] = await db
     .insert(products)
-    .values({ userId, name: name.trim(), unit, category })
+    .values({
+      userId,
+      name: name.trim(),
+      unit,
+      category,
+      packSize: packSize && Number(packSize) > 0 ? packSize : '1',
+      baseUnit: baseUnit?.trim() || unit,
+    })
     .returning({ id: products.id })
   cache.set(key, created.id)
   return created.id
@@ -186,6 +197,8 @@ export async function commitImport(importId: number): Promise<CommitResult> {
       r.productName,
       r.unit,
       r.category,
+      r.packSize,
+      r.baseUnit,
       productCache,
     )
 
