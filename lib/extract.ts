@@ -134,12 +134,23 @@ export async function extractPriceRows(
           },
         ]
 
-  const { output } = await generateText({
-    model: 'google/gemini-2.5-flash',
-    system: SYSTEM_PROMPT,
-    output: Output.object({ schema: extractionSchema }),
-    messages: [{ role: 'user', content }],
-  })
+  // Fail fast instead of hanging until the platform's hard function timeout.
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 45_000)
 
-  return output
+  try {
+    const { output } = await generateText({
+      model: 'google/gemini-2.5-flash',
+      system: SYSTEM_PROMPT,
+      output: Output.object({ schema: extractionSchema }),
+      messages: [{ role: 'user', content }],
+      maxOutputTokens: 8000,
+      maxRetries: 1,
+      abortSignal: controller.signal,
+    })
+
+    return output
+  } finally {
+    clearTimeout(timeout)
+  }
 }

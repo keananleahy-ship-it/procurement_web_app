@@ -8,6 +8,54 @@ import { extractPriceRows, type ExtractedRow } from '@/lib/extract'
 
 export const maxDuration = 60
 
+// Cap how much text we send to the model. XLSX sheets can have a huge "used
+// range" full of empty cells; without bounding this the prompt balloons to
+// megabytes of commas and the model stalls or returns no output.
+const MAX_TEXT_CHARS = 120_000
+
+// Convert a workbook to compact CSV-like text: skip fully-empty rows, trim
+// trailing empty cells per row, and stop once we hit the character cap.
+function workbookToText(wb: XLSX.WorkBook): string {
+  const parts: string[] = []
+  let total = 0
+
+  for (const name of wb.SheetNames) {
+    const sheet = wb.Sheets[name]
+    if (!sheet) continue
+
+    const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+      header: 1,
+      blankrows: false,
+      defval: '',
+      raw: false,
+    })
+
+    const lines: string[] = []
+    for (const row of rows) {
+      // Trim trailing empty cells so wide formatted ranges don't bloat output.
+      let end = row.length
+      while (end > 0 && String(row[end - 1] ?? '').trim() === '') end--
+      if (end === 0) continue // fully empty row
+
+      const cells = row.slice(0, end).map((c) => {
+        const s = String(c ?? '').trim()
+        // Quote cells containing commas/quotes so columns stay aligned.
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+      })
+      lines.push(cells.join(','))
+    }
+
+    if (lines.length === 0) continue
+    const block = `# Sheet: ${name}\n${lines.join('\n')}`
+    parts.push(block)
+    total += block.length
+    if (total > MAX_TEXT_CHARS) break
+  }
+
+  const text = parts.join('\n\n')
+  return text.length > MAX_TEXT_CHARS ? text.slice(0, MAX_TEXT_CHARS) : text
+}
+
 function normalizeFreight(v: ExtractedRow['freightTerms']): string {
   return v === 'delivered' || v === 'both' ? v : 'fob'
 }
@@ -89,18 +137,27 @@ export async function POST(req: NextRequest) {
       })
     } else {
       const wb = XLSX.read(buffer, { type: 'buffer' })
-      const text = wb.SheetNames.map((name) => {
-        const csv = XLSX.utils.sheet_to_csv(wb.Sheets[name])
-        return `# Sheet: ${name}\n${csv}`
-      }).join('\n\n')
+      const text = workbookToText(wb)
+      if (!text.trim()) {
+        return NextResponse.json(
+          {
+            error:
+              'The spreadsheet appears to be empty. Make sure the price data is on the first sheet.',
+          },
+          { status: 422 },
+        )
+      }
       extraction = await extractPriceRows({ kind: 'text', text })
     }
   } catch (err) {
-    console.error('[v0] extraction failed:', err)
+    const message = err instanceof Error ? err.message : String(err)
+    console.error('[v0] extraction failed:', message)
+    const isTimeout = /abort|timed out|timeout/i.test(message)
     return NextResponse.json(
       {
-        error:
-          'Could not read pricing from this file. Please check the format.',
+        error: isTimeout
+          ? 'Reading this file took too long. Try a smaller file or split it into fewer rows.'
+          : 'Could not read pricing from this file. Please check that it contains a table of products and prices.',
       },
       { status: 422 },
     )
