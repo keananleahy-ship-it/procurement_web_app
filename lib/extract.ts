@@ -88,6 +88,14 @@ const SYSTEM_PROMPT = `You are a procurement data extraction assistant. You are 
 
 Rules:
 - Only extract real product/price rows. Ignore headers, totals, notes, page numbers, and blank rows.
+- Product names:
+  - Use the full descriptive product name exactly as printed, combining a description column with any adjacent size/grade/spec columns when they belong to the same item (e.g. description "Bolt, hex" + size "M8 x 50" => "Bolt, hex M8 x 50").
+  - Do NOT put the SKU/part number in productName; that belongs in sku. Do NOT put pack/size text that you have already parsed into packSize as the entire name — keep the descriptive name.
+  - Never leave productName blank. If only a code is present, use that code as the name.
+- Vendor names:
+  - The vendor/supplier is usually named once in the document title, letterhead, header preamble, or a "Vendor"/"Supplier"/"Quote from" field — NOT in each row. Capture it in defaultVendorName.
+  - Only set a row-level vendorName when that specific row is from a DIFFERENT supplier than the document-wide vendor (e.g. a multi-vendor comparison sheet). Otherwise leave vendorName null.
+  - Do not invent a vendor from a brand/manufacturer name in a product description — a brand on a product is not the selling vendor.
 - Interpret freight terms carefully:
   - If a price is described as "delivered", "DDP", "freight included", or "landed", set freightTerms to "delivered" and put that price in unitPrice.
   - If a price is "FOB", "EXW", "ex-works", "pickup", or freight is listed separately, set freightTerms to "fob" and put any freight in shippingCost.
@@ -98,13 +106,15 @@ Rules:
   - If freight is already stated per unit, use it as-is.
   - If a price is delivered/landed, freight is already included — set shippingCost to 0.
 - Numbers must be plain numbers without currency symbols or thousands separators.
-- Pack size: infer how many base units are inside one selling unit so prices can be normalized.
-  - "box/100", "box of 100", "pack of 50" => packSize is that count, baseUnit "each".
-  - "5 L jug", "5L", "5 litre container" => packSize 5, baseUnit "litre".
-  - "25 kg bag" => packSize 25, baseUnit "kg".
-  - "case of 24" => packSize 24, baseUnit "each".
-  - If the selling unit is already the base unit (e.g. plain "each", "pair", per "litre"), packSize is 1 and baseUnit equals that unit.
-  - When unsure, use packSize 1 and copy the selling unit into baseUnit.
+- Pack size: infer how many base units are inside ONE selling unit so prices can be normalized. Set unit to the selling unit, packSize to the count, and baseUnit to what is being counted.
+  - "box/100", "box of 100", "pack of 50", "100/box", "100 per box", "ctn 100" => unit "box", packSize 100/50, baseUnit "each".
+  - "5 L jug", "5L", "5 litre container", "5L pail" => unit "jug"/"pail", packSize 5, baseUnit "litre".
+  - "25 kg bag", "25kg" => unit "bag", packSize 25, baseUnit "kg".
+  - "case of 24", "24 pk", "24-pack" => unit "case", packSize 24, baseUnit "each".
+  - Multipliers like "12 x 1L" => packSize 12, baseUnit "litre" (12 one-litre units per case). "4 x 5kg" => packSize 20? No — keep packSize 4 and baseUnit "kg" only if each inner unit is 5kg; prefer total base content: 4 x 5kg => packSize 20, baseUnit "kg". For "12 x 1L", total is 12 litres => packSize 12, baseUnit "litre".
+  - Dimensions/specs that are NOT pack quantities (e.g. "M8 x 50mm" bolt size, "2400 x 1200" sheet size) are part of the product name, NOT packSize. Do not treat a size spec as a pack count.
+  - If the selling unit is already the base unit (plain "each", "pair", per "litre", per "kg", per "metre"), packSize is 1 and baseUnit equals that unit.
+  - When genuinely unsure, use packSize 1 and copy the selling unit into baseUnit. Never guess a large pack count.
 - If a value is not present, return null for it.`
 
 type ExtractInput =
@@ -196,6 +206,17 @@ async function extractTextChunked(text: string): Promise<ExtractionResult> {
     (l) => l.trim() !== '' && !l.trim().startsWith('#'),
   )
   const header = headerIdx >= 0 ? allLines[headerIdx] : ''
+
+  // Lines BEFORE the column header are usually the title/letterhead/preamble
+  // where the document-wide vendor name lives. Keep a trimmed copy so every
+  // chunk — not just the first — retains vendor context. Without this, later
+  // chunks lose the vendor entirely and misattribute it.
+  const preamble = allLines
+    .slice(0, headerIdx >= 0 ? headerIdx : 0)
+    .filter((l) => l.trim() !== '')
+    .slice(0, 15)
+    .join('\n')
+
   const dataLines = allLines
     .slice(headerIdx + 1)
     .filter((l) => l.trim() !== '' && !l.trim().startsWith('#'))
@@ -219,12 +240,16 @@ async function extractTextChunked(text: string): Promise<ExtractionResult> {
     chunks.push([header, ...batch].join('\n'))
   }
 
+  const vendorContext = preamble
+    ? `Document header / vendor context (applies to every row in this section):\n${preamble}\n\n`
+    : ''
+
   const settled = await mapWithConcurrency(chunks, CONCURRENCY, (chunk) =>
     runExtraction(
       [
         {
           type: 'text',
-          text: `Extract all priced line items from this section of a vendor price list. The first line is the column header.\n\n${chunk}`,
+          text: `Extract all priced line items from this section of a vendor price list. Use the document header/vendor context to set defaultVendorName. The first line after the context is the column header.\n\n${vendorContext}${chunk}`,
         },
       ],
       CHUNK_MAX_TOKENS,
