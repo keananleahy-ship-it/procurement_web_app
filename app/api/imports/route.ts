@@ -152,12 +152,15 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error('[v0] extraction failed:', message)
+    const isRateLimited = /rate.?limit|free tier|429|quota/i.test(message)
     const isTimeout = /abort|timed out|timeout/i.test(message)
     return NextResponse.json(
       {
-        error: isTimeout
-          ? 'Reading this file took too long. Try a smaller file or split it into fewer rows.'
-          : 'Could not read pricing from this file. Please check that it contains a table of products and prices.',
+        error: isRateLimited
+          ? 'The AI service is rate-limited on the free tier, so large files cannot be processed. Add AI Gateway credits to your Vercel team (and redeploy so the new credentials take effect) to enable full extraction.'
+          : isTimeout
+            ? 'Reading this file took too long. Try a smaller file or split it into fewer rows.'
+            : 'Could not read pricing from this file. Please check that it contains a table of products and prices.',
       },
       { status: 422 },
     )
