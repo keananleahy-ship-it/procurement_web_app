@@ -61,19 +61,20 @@ Rules:
 - confidence reflects how sure you are it is the same item: 0.9+ near-certain, 0.7-0.9 likely, 0.5-0.7 plausible, <0.5 doubtful.
 - Return exactly one entry per product id provided. Keep each reason concise.`
 
-export async function aiMatchProducts(
-  productsToMatch: ProductInput[],
+// The model must return one structured entry per product. Asking for hundreds
+// at once overflows the output budget and yields no parseable object
+// ("AI_NoOutputGeneratedError"), so we match in small batches. Each batch sees
+// the full canonical list (which is comparatively small).
+const BATCH_SIZE = 25
+// Run a few batches at once to keep large catalogs responsive without
+// hammering the provider's rate limits.
+const MAX_CONCURRENCY = 4
+
+async function matchBatch(
+  batch: ProductInput[],
   canonicalOptions: CanonicalInput[],
 ): Promise<AiMatch[]> {
-  if (productsToMatch.length === 0 || canonicalOptions.length === 0) {
-    return []
-  }
-
-  const payload = {
-    products: productsToMatch,
-    canonicalItems: canonicalOptions,
-  }
-
+  const payload = { products: batch, canonicalItems: canonicalOptions }
   const { output } = await generateText({
     model: 'google/gemini-2.5-flash',
     system: SYSTEM_PROMPT,
@@ -89,6 +90,39 @@ export async function aiMatchProducts(
       },
     ],
   })
-
   return output.matches
+}
+
+export async function aiMatchProducts(
+  productsToMatch: ProductInput[],
+  canonicalOptions: CanonicalInput[],
+): Promise<AiMatch[]> {
+  if (productsToMatch.length === 0 || canonicalOptions.length === 0) {
+    return []
+  }
+
+  // Split the products into fixed-size batches.
+  const batches: ProductInput[][] = []
+  for (let i = 0; i < productsToMatch.length; i += BATCH_SIZE) {
+    batches.push(productsToMatch.slice(i, i + BATCH_SIZE))
+  }
+
+  const results: AiMatch[] = []
+  // Process batches in small concurrent waves. A failed batch is skipped (its
+  // products are simply left for the next run) rather than failing everything.
+  for (let i = 0; i < batches.length; i += MAX_CONCURRENCY) {
+    const wave = batches.slice(i, i + MAX_CONCURRENCY)
+    const settled = await Promise.allSettled(
+      wave.map((b) => matchBatch(b, canonicalOptions)),
+    )
+    for (const s of settled) {
+      if (s.status === 'fulfilled') {
+        results.push(...s.value)
+      } else {
+        console.log('[v0] AI match batch failed:', s.reason?.message ?? s.reason)
+      }
+    }
+  }
+
+  return results
 }

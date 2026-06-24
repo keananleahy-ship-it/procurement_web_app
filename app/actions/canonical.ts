@@ -146,8 +146,11 @@ export async function generateAiSuggestions() {
   let cleared = 0
   for (const p of pending) {
     const m = byId.get(p.id)
+    // The product's batch may have been skipped (e.g. a transient AI failure).
+    // Leave those untouched so a re-run can pick them up, rather than wiping
+    // them to 'unmatched'.
+    if (!m) continue
     const hasMatch =
-      m &&
       m.canonicalItemId !== null &&
       validCanonicalIds.has(m.canonicalItemId) &&
       m.confidence >= 0.5
@@ -172,7 +175,7 @@ export async function generateAiSuggestions() {
           matchStatus: 'unmatched',
           matchScore: null,
           matchMethod: 'ai',
-          matchReason: m?.reason?.slice(0, 280) ?? null,
+          matchReason: m.reason?.slice(0, 280) ?? null,
         })
         .where(eq(products.id, p.id))
       cleared++
