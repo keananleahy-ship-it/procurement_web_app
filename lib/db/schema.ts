@@ -146,6 +146,15 @@ export const vendorPrices = pgTable('vendor_prices', {
   freightTerms: text('freightTerms').notNull().default('fob'),
   deliveredPrice: numeric('deliveredPrice', { precision: 12, scale: 2 }),
   currency: text('currency').notNull().default('USD'),
+  // Per-offer container/pack details. A single product (by name) can be sold in
+  // several container sizes, each its own offer with its own SKU and capacity,
+  // so these live on the price row rather than the shared product.
+  packSize: numeric('packSize', { precision: 12, scale: 4 })
+    .notNull()
+    .default('1'),
+  baseUnit: text('baseUnit'),
+  // Vendor part number for this specific container/offer.
+  sku: text('sku'),
   // The date this pricing is effective (chosen by the uploader). Falls back to
   // createdAt for rows entered before file imports existed.
   effectiveDate: date('effectiveDate'),

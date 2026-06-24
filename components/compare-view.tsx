@@ -139,7 +139,7 @@ export function CompareView({
                   <TableHead>Vendor</TableHead>
                   <TableHead>Location</TableHead>
                   <TableHead>Freight</TableHead>
-                  <TableHead className="text-right">Pack</TableHead>
+                  <TableHead className="text-right">Container</TableHead>
                   <TableHead className="text-right">Unit price</TableHead>
                   <TableHead className="text-right">Freight / unit</TableHead>
                   <TableHead className="text-right">Landed / unit</TableHead>
@@ -176,6 +176,11 @@ export function CompareView({
                               {o.productName}
                             </span>
                           )}
+                        {o.sku && (
+                          <span className="block font-mono text-xs font-normal text-muted-foreground">
+                            {o.sku}
+                          </span>
+                        )}
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {o.locationName ?? '—'}
@@ -206,8 +211,13 @@ export function CompareView({
                         {o.packSize === 1 ? (
                           <span className="text-muted-foreground/60">—</span>
                         ) : (
-                          <span title={`${o.packSize} ${o.baseUnit ?? 'units'} per ${o.unit ?? 'unit'}`}>
-                            ×{o.packSize}
+                          <span title={`Container holds ${o.packSize} ${o.baseUnit ?? 'units'}`}>
+                            {o.packSize.toLocaleString(undefined, {
+                              maximumFractionDigits: 2,
+                            })}{' '}
+                            <span className="text-xs text-muted-foreground/70">
+                              {o.baseUnit ?? ''}
+                            </span>
                           </span>
                         )}
                       </TableCell>

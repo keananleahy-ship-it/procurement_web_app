@@ -233,6 +233,11 @@ export async function commitImport(importId: number): Promise<CommitResult> {
       freightTerms: r.freightTerms,
       deliveredPrice: r.deliveredPrice,
       currency: r.currency,
+      // Per-offer container details, so multiple container sizes of the same
+      // product remain distinct offers.
+      packSize: r.packSize && Number(r.packSize) > 0 ? r.packSize : '1',
+      baseUnit: r.baseUnit?.trim() || r.unit || null,
+      sku: r.sku?.trim() || null,
       effectiveDate: imp.effectiveDate,
       importId: imp.id,
     })

@@ -17,6 +17,8 @@ export type PriceRow = {
   productName: string
   category: string | null
   unit: string | null
+  // vendor part number for this specific offer/container
+  sku: string | null
   vendorId: number
   vendorName: string
   locationId: number | null
@@ -120,11 +122,17 @@ async function getAllRows(): Promise<PriceRow[]> {
       currency: vendorPrices.currency,
       effectiveDate: vendorPrices.effectiveDate,
       createdAt: vendorPrices.createdAt,
+      // Per-offer container details, with the product's values as a fallback
+      // for any legacy price rows created before these columns existed.
+      offerPackSize: vendorPrices.packSize,
+      offerBaseUnit: vendorPrices.baseUnit,
+      offerSku: vendorPrices.sku,
       productName: products.name,
       category: products.category,
       unit: products.unit,
       packSize: products.packSize,
       baseUnit: products.baseUnit,
+      productSku: products.sku,
       canonicalItemId: products.canonicalItemId,
       matchStatus: products.matchStatus,
       canonicalItemName: canonicalItems.name,
@@ -186,7 +194,9 @@ async function getAllRows(): Promise<PriceRow[]> {
     // apples-to-apples figure — we rank on it directly. packSize now carries
     // the physical container capacity (in gallons) for display only and must
     // NOT divide the price.
-    const rawPackSize = Number(r.packSize ?? 1)
+    // Prefer the per-offer container capacity; fall back to the product's for
+    // legacy rows. This keeps multiple container sizes of one product distinct.
+    const rawPackSize = Number(r.offerPackSize ?? r.packSize ?? 1)
     const packSize = rawPackSize > 0 ? rawPackSize : 1
     const pricePerBaseUnit = landedUnitCost
     const freightPerBaseUnit = effectiveBasis === 'fob' ? shippingCost : 0
@@ -197,6 +207,7 @@ async function getAllRows(): Promise<PriceRow[]> {
       productName: r.productName ?? 'Unknown product',
       category: r.category,
       unit: r.unit,
+      sku: r.offerSku ?? r.productSku ?? null,
       vendorId: r.vendorId,
       vendorName: r.vendorName ?? 'Unknown vendor',
       locationId: r.locationId,
@@ -212,7 +223,7 @@ async function getAllRows(): Promise<PriceRow[]> {
       effectiveBasis,
       landedUnitCost,
       packSize,
-      baseUnit: r.baseUnit ?? r.unit ?? null,
+      baseUnit: r.offerBaseUnit ?? r.baseUnit ?? r.unit ?? null,
       canonicalBaseUnit: r.canonicalBaseUnit ?? null,
       unitMismatch: false,
       comparable: true,
