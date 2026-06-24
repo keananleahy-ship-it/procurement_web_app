@@ -203,8 +203,8 @@ export function ImportReview({
               <TableHead className="min-w-28">Unit of measure</TableHead>
               <TableHead className="text-right">Freight / unit</TableHead>
               <TableHead className="text-right">Delivered</TableHead>
-              <TableHead className="text-right">Container (gal)</TableHead>
-              <TableHead className="min-w-24">Price unit</TableHead>
+              <TableHead className="text-right">Container size</TableHead>
+              <TableHead className="min-w-24">Container unit</TableHead>
               <TableHead className="w-20">Cur.</TableHead>
               <TableHead className="w-12" />
             </TableRow>

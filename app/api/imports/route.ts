@@ -88,10 +88,28 @@ const GALLON_ALIASES = new Set([
   'us gallon',
 ])
 
+// Similarly, weight-based container capacities are normalized to pounds so
+// kilogram-quoted vendors compare directly against pound-quoted ones.
+const KG_PER_LB = 0.45359237
+const KILOGRAM_ALIASES = new Set([
+  'kg',
+  'kgs',
+  'kilo',
+  'kilos',
+  'kilogram',
+  'kilograms',
+])
+const POUND_ALIASES = new Set([
+  'lb',
+  'lbs',
+  'pound',
+  'pounds',
+])
+
 // Given a raw container capacity + base unit, return the capacity expressed in
-// US gallons when the unit is litres (or already gallons). Non-volume units
-// (kg, each, lb, …) pass through unchanged.
-function normalizeToGallons(
+// a canonical unit: litres → US gallons, kilograms → pounds. Other units
+// (each, case, …) pass through unchanged.
+function normalizeContainer(
   packSize: number,
   baseUnit: string | null,
 ): { packSize: string; baseUnit: string | null } {
@@ -101,6 +119,12 @@ function normalizeToGallons(
   }
   if (GALLON_ALIASES.has(u)) {
     return { packSize: packSize.toFixed(4), baseUnit: 'USG' }
+  }
+  if (KILOGRAM_ALIASES.has(u)) {
+    return { packSize: (packSize / KG_PER_LB).toFixed(4), baseUnit: 'lb' }
+  }
+  if (POUND_ALIASES.has(u)) {
+    return { packSize: packSize.toFixed(4), baseUnit: 'lb' }
   }
   return { packSize: packSize.toFixed(4), baseUnit: baseUnit?.trim() || null }
 }
@@ -289,7 +313,7 @@ export async function POST(req: NextRequest) {
       rows.map((r) => {
         const reviewReason = reviewFor(r)
         const rawPackSize = r.packSize && r.packSize > 0 ? r.packSize : 1
-        const { packSize, baseUnit } = normalizeToGallons(
+          const { packSize, baseUnit } = normalizeContainer(
           rawPackSize,
           r.baseUnit?.trim() || r.unit?.trim() || null,
         )
