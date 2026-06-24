@@ -94,6 +94,23 @@ function unitMatchesBasis(unit: string | null, basis: 'gal' | 'lb') {
   return basis === 'gal' ? GALLON_UNIT_ALIASES.has(u) : POUND_UNIT_ALIASES.has(u)
 }
 
+// Effective delivered (landed) price per selling unit, mirroring the
+// comparison engine: FOB adds freight to the unit price, Delivered uses the
+// freight-inclusive unit price as-is, and Both uses the entered delivered
+// price. Returns null when there isn't enough data to compute it.
+function computeDelivered(r: StagingRow): number | null {
+  const price = r.unitPrice === null || r.unitPrice === '' ? null : Number(r.unitPrice)
+  if (r.freightTerms === 'delivered') return price
+  if (r.freightTerms === 'both') {
+    return r.deliveredPrice === null || r.deliveredPrice === ''
+      ? null
+      : Number(r.deliveredPrice)
+  }
+  // fob
+  if (price === null) return null
+  return price + Number(r.shippingCost || 0)
+}
+
 export function ImportReview({
   meta,
   rows: initialRows,
@@ -484,20 +501,34 @@ export function ImportReview({
                     </div>
                   </TableCell>
                   <TableCell>
-                    <Input
-                      className="h-8 text-right tabular-nums"
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      disabled={r.freightTerms !== 'both'}
-                      value={r.deliveredPrice ?? ''}
-                      onChange={(e) =>
-                        patchRow(r.id, { deliveredPrice: e.target.value === '' ? null : e.target.value })
-                      }
-                      onBlur={(e) =>
-                        persist(r.id, { deliveredPrice: e.target.value === '' ? null : e.target.value })
-                      }
-                    />
+                    {r.freightTerms === 'both' ? (
+                      <Input
+                        className="h-8 text-right tabular-nums"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={r.deliveredPrice ?? ''}
+                        onChange={(e) =>
+                          patchRow(r.id, { deliveredPrice: e.target.value === '' ? null : e.target.value })
+                        }
+                        onBlur={(e) =>
+                          persist(r.id, { deliveredPrice: e.target.value === '' ? null : e.target.value })
+                        }
+                      />
+                    ) : (
+                      (() => {
+                        const delivered = computeDelivered(r)
+                        return (
+                          <div className="text-right tabular-nums text-sm">
+                            {delivered === null ? (
+                              <span className="text-muted-foreground">—</span>
+                            ) : (
+                              delivered.toFixed(2)
+                            )}
+                          </div>
+                        )
+                      })()
+                    )}
                   </TableCell>
                   <TableCell>
                     <Input
