@@ -344,11 +344,20 @@ export async function POST(req: NextRequest) {
   const hasDominant = dominantUnit !== null && dominantCount >= 2
 
   function reviewFor(r: (typeof rows)[number]): string | null {
+    const reasons: string[] = []
     const u = r.unit?.trim().toLowerCase() || null
     if (hasDominant && u && u !== dominantUnit) {
-      return `Unit "${r.unit?.trim()}" differs from the file's usual "${dominantUnit}" — verify the price basis and pack size.`
+      reasons.push(
+        `Unit "${r.unit?.trim()}" differs from the file's usual "${dominantUnit}" — verify the price basis and pack size.`,
+      )
     }
-    return null
+    if (r.containerAmbiguous) {
+      const raw = r.containerRaw?.trim()
+      reasons.push(
+        `Container size${raw ? ` "${raw}"` : ''} could not be confidently parsed — verify the pack size and unit.`,
+      )
+    }
+    return reasons.length > 0 ? reasons.join(' ') : null
   }
 
   // Create the import record, then its staging rows.

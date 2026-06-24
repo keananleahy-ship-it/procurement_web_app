@@ -32,6 +32,17 @@ const extractedRowSchema = z.object({
     .describe(
       'The unit of the container capacity in packSize, e.g. "litre", "USG", "kg", "each". For "205L DRUM" this is "litre"; for "55USG DRUM" this is "USG"; for "box of 100" this is "each".',
     ),
+  containerRaw: z
+    .string()
+    .nullable()
+    .describe(
+      'The EXACT container/package/size text as printed in the source (e.g. "DR", "4/1 GAL", "205L DRUM", "CS/6"), before any interpretation. Null only if no size/container descriptor appears for the row.',
+    ),
+  containerAmbiguous: z
+    .boolean()
+    .describe(
+      'True when a container/size descriptor IS present but you are NOT confident how to turn it into packSize + baseUnit (unfamiliar shorthand, missing/implied unit, abbreviation you had to guess). False when no size is stated, or when you parsed the size confidently.',
+    ),
   category: z.string().nullable().describe('Product category, if present'),
   vendorName: z
     .string()
@@ -118,8 +129,13 @@ Rules:
   - Even when the price is quoted per gallon/litre/each, STILL fill packSize/baseUnit from the container named in the description (e.g. a row priced per USG for a "205L DRUM" => unit "USG", packSize 205, baseUnit "litre").
 - Do NOT duplicate the size in productName: if you put the container size into packSize/baseUnit, include it at most once in the name. Never repeat it (e.g. output "ACCUFLO TK 68 1040L IBC", never "ACCUFLO TK 68 1040L IBC 1040L IBC").
 - Dimensions/specs that are NOT pack quantities (e.g. "M8 x 50mm" bolt size, "2400 x 1200" sheet size) belong in the product name, NOT packSize.
-- If no container/package size is stated, packSize is 1 and baseUnit equals the selling unit. Never guess a large pack count.
-- If a value is not present, return null for it.`
+  - If no container/package size is stated, packSize is 1 and baseUnit equals the selling unit. Never guess a large pack count.
+- Container confidence (IMPORTANT for accuracy):
+  - Always copy the exact size/container text you see into containerRaw (e.g. "DR", "4/1 GAL", "205L DRUM", "CS/6"). This is the literal source text, not your interpretation.
+  - Set containerAmbiguous to true whenever a size/container descriptor is present but you are NOT confident how to convert it to packSize + baseUnit — unfamiliar shorthand, an abbreviation you had to guess, or a missing/implied unit. Still provide your best-guess packSize/baseUnit, but flag it.
+  - Set containerAmbiguous to false when no size is stated at all, or when you parsed the container with high confidence from a clearly written description.
+  - When in doubt, prefer flagging (true) over a silent guess — a human will verify flagged rows.
+  - If a value is not present, return null for it.`
 
 type ExtractInput =
   | { kind: 'text'; text: string }
