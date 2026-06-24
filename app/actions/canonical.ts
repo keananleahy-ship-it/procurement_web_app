@@ -292,6 +292,59 @@ export async function assignMatch(productId: number, canonicalItemId: number) {
   revalidatePath('/')
 }
 
+/**
+ * Create a brand-new canonical item and immediately assign the given product to
+ * it (confirmed, manual). Used from the matching screen when none of the
+ * existing canonical items fit, so the reviewer never has to leave the page.
+ * Returns the new canonical item so the client can update its dropdown.
+ */
+export async function createCanonicalItemAndAssign(input: {
+  productId: number
+  name: string
+  category?: string | null
+}): Promise<{ id: number; name: string }> {
+  const { id: userId } = await requireEditor()
+  const name = input.name.trim()
+  if (!name) throw new Error('Canonical item name is required')
+
+  // Carry the product's unit/baseUnit onto the new item so per-unit price
+  // normalization in the Compare view keeps working.
+  const [prod] = await db
+    .select({ unit: products.unit, baseUnit: products.baseUnit })
+    .from(products)
+    .where(eq(products.id, input.productId))
+    .limit(1)
+
+  const category = input.category?.trim() || null
+  const [created] = await db
+    .insert(canonicalItems)
+    .values({
+      userId,
+      name,
+      category,
+      unit: prod?.unit ?? null,
+      baseUnit: prod?.baseUnit ?? prod?.unit ?? null,
+    })
+    .returning({ id: canonicalItems.id, name: canonicalItems.name })
+
+  await db
+    .update(products)
+    .set({
+      canonicalItemId: created.id,
+      matchStatus: 'confirmed',
+      matchScore: null,
+      matchMethod: 'manual',
+      matchReason: null,
+    })
+    .where(eq(products.id, input.productId))
+
+  revalidatePath('/matching')
+  revalidatePath('/canonical')
+  revalidatePath('/compare')
+  revalidatePath('/')
+  return created
+}
+
 /** Clear a match entirely, returning the product to the unmatched pool. */
 export async function resetMatch(productId: number) {
   await requireEditor()

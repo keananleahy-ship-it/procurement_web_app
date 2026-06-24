@@ -6,6 +6,7 @@ import {
   assignMatch,
   autoGroupProducts,
   confirmMatch,
+  createCanonicalItemAndAssign,
   generateAiSuggestions,
   generateSuggestions,
   rejectMatch,
@@ -13,6 +14,16 @@ import {
 } from '@/app/actions/canonical'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import {
   Table,
   TableBody,
@@ -40,6 +51,7 @@ import {
   ListChecks,
   AlertCircle,
   Boxes,
+  Plus,
 } from 'lucide-react'
 
 type CanonicalOption = { id: number; name: string }
@@ -98,6 +110,110 @@ function AssignSelect({
         ))}
       </SelectContent>
     </Select>
+  )
+}
+
+// Assign to an existing canonical item OR create a brand-new one inline, so a
+// reviewer never has to leave the matching screen when nothing fits.
+function ReassignControl({
+  productId,
+  productName,
+  category,
+  canonicalItems,
+  placeholder = 'Reassign…',
+  disabled,
+  onAssign,
+  onCreate,
+}: {
+  productId: number
+  productName: string
+  category: string | null
+  canonicalItems: CanonicalOption[]
+  placeholder?: string
+  disabled?: boolean
+  onAssign: (productId: number, canonicalItemId: number) => void
+  onCreate: (productId: number, name: string, category: string | null) => void
+}) {
+  const [open, setOpen] = useState(false)
+  // Prefill the name with the product name as a sensible starting point.
+  const [name, setName] = useState(productName)
+  const [cat, setCat] = useState(category ?? '')
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <AssignSelect
+        productId={productId}
+        canonicalItems={canonicalItems}
+        placeholder={placeholder}
+        disabled={disabled}
+        onAssign={onAssign}
+      />
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        disabled={disabled}
+        className="h-8 gap-1 px-2 text-xs"
+        onClick={() => {
+          setName(productName)
+          setCat(category ?? '')
+          setOpen(true)
+        }}
+      >
+        <Plus className="size-3.5" />
+        New
+      </Button>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>New canonical item</DialogTitle>
+            <DialogDescription>
+              Create a canonical item and assign{' '}
+              <span className="font-medium text-foreground">{productName}</span>{' '}
+              to it. Other vendor products can then be matched to this item too.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 py-2">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={`ci-name-${productId}`}>Item name</Label>
+              <Input
+                id={`ci-name-${productId}`}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Heavy-Duty Engine Oil 15W-40"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={`ci-cat-${productId}`}>
+                Category{' '}
+                <span className="text-muted-foreground">(optional)</span>
+              </Label>
+              <Input
+                id={`ci-cat-${productId}`}
+                value={cat}
+                onChange={(e) => setCat(e.target.value)}
+                placeholder="e.g. engine oil"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={!name.trim() || disabled}
+              onClick={() => {
+                onCreate(productId, name.trim(), cat.trim() || null)
+                setOpen(false)
+              }}
+            >
+              Create &amp; assign
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   )
 }
 
@@ -396,12 +512,23 @@ export function MatchingView({
                       {canEdit && (
                         <TableCell>
                           <div className="flex items-center justify-end gap-2">
-                            <AssignSelect
+                            <ReassignControl
                               productId={r.productId}
+                              productName={r.productName}
+                              category={r.category}
                               canonicalItems={canonicalItems}
                               placeholder="Reassign…"
                               disabled={isPending}
                               onAssign={(id, cid) => run(() => assignMatch(id, cid))}
+                              onCreate={(id, name, cat) =>
+                                run(() =>
+                                  createCanonicalItemAndAssign({
+                                    productId: id,
+                                    name,
+                                    category: cat,
+                                  }),
+                                )
+                              }
                             />
                             <Button
                               size="sm"
@@ -534,11 +661,23 @@ export function MatchingView({
                       {canEdit && (
                         <TableCell>
                           <div className="flex justify-end">
-                            <AssignSelect
+                            <ReassignControl
                               productId={r.productId}
+                              productName={r.productName}
+                              category={r.category}
                               canonicalItems={canonicalItems}
-                              disabled={isPending || noCanonical}
+                              placeholder="Assign manually"
+                              disabled={isPending}
                               onAssign={(id, cid) => run(() => assignMatch(id, cid))}
+                              onCreate={(id, name, cat) =>
+                                run(() =>
+                                  createCanonicalItemAndAssign({
+                                    productId: id,
+                                    name,
+                                    category: cat,
+                                  }),
+                                )
+                              }
                             />
                           </div>
                         </TableCell>
