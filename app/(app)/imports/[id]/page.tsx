@@ -42,6 +42,7 @@ export default async function ImportReviewPage({
           id: r.id,
           productName: r.productName,
           vendorName: r.vendorName,
+          sku: r.sku,
           unitPrice: r.unitPrice,
           unit: r.unit,
           shippingCost: r.shippingCost,

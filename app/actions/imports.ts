@@ -43,6 +43,7 @@ type RowPatch = {
   deliveredPrice?: string | null
   currency?: string
   unit?: string | null
+  sku?: string | null
   category?: string | null
   packSize?: string
   baseUnit?: string | null
@@ -110,6 +111,7 @@ async function resolveProductId(
   category: string | null,
   packSize: string,
   baseUnit: string | null,
+  sku: string | null,
   cache: Map<string, number>,
 ) {
   const key = name.trim().toLowerCase()
@@ -122,6 +124,7 @@ async function resolveProductId(
       name: name.trim(),
       unit,
       category,
+      sku: sku?.trim() || null,
       packSize: packSize && Number(packSize) > 0 ? packSize : '1',
       baseUnit: baseUnit?.trim() || unit,
     })
@@ -183,6 +186,7 @@ export async function commitImport(importId: number): Promise<CommitResult> {
       r.category,
       r.packSize,
       r.baseUnit,
+      r.sku,
       productCache,
     )
 
