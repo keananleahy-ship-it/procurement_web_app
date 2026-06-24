@@ -309,22 +309,52 @@ export async function resetMatch(productId: number) {
   revalidatePath('/')
 }
 
+// Normalize viscosity so equivalent forms collapse to one key:
+// "15W40"/"15w-40"/"15 W 40" -> "15w-40"; "ISO46"/"iso 46" -> "iso 46".
+function normalizeViscosity(v: string | null): string {
+  if (!v) return '-'
+  const s = v.trim().toLowerCase().replace(/\s+/g, ' ')
+  const sae = s.match(/(\d+)\s*w\s*-?\s*(\d+)/) // 15w-40, 15w40, 15 w 40
+  if (sae) return `${sae[1]}w-${sae[2]}`
+  const saeMono = s.match(/^sae\s*(\d+)$/) || s.match(/^(\d+)w$/)
+  if (saeMono) return s.replace(/\s+/g, '')
+  const iso = s.match(/iso\s*(?:vg)?\s*0*(\d+)/) // iso 46, iso46, iso vg 46
+  if (iso) return `iso ${iso[1]}`
+  const nlgi = s.match(/nlgi\s*([\d.]+)/)
+  if (nlgi) return `nlgi ${nlgi[1]}`
+  return s
+}
+
+// Normalize the product kind so phrasing variants collapse to one key.
+function normalizeKind(k: string): string {
+  let s = (k || '').trim().toLowerCase().replace(/\s+/g, ' ')
+  // Collapse common synonyms onto a single canonical category.
+  if (/(hdmo|hdeo|diesel engine|fleet|heavy[- ]duty (engine|motor|diesel))/.test(s))
+    s = 'heavy-duty engine oil'
+  else if (/\batf\b|automatic transmission/.test(s))
+    s = 'automatic transmission fluid'
+  else if (/passenger car|pcmo|motor oil/.test(s) && !/heavy/.test(s))
+    s = 'passenger car motor oil'
+  else if (/hydraulic/.test(s)) s = 'hydraulic fluid'
+  else if (/gear/.test(s)) s = 'gear oil'
+  else if (/grease/.test(s)) s = 'grease'
+  else if (/coolant|antifreeze/.test(s)) s = 'coolant'
+  return s
+}
+
 // Build a deterministic, brand-free grouping key from an AI-derived spec. Built
 // in code (not by the model) so the same spec always yields the same key across
-// batches. Strictness here = product kind + viscosity + performance grade +
-// base type, keeping synthetic/conventional and different grades separate.
+// batches. The key is product kind + viscosity only: performance grade and base
+// type are inconsistently stated across vendors' product names, so including
+// them fragmented equivalent oils into many single-vendor groups. They are kept
+// in the display name for visibility but do not split the group.
 function specSignature(s: {
   productKind: string
   viscosity: string | null
-  performanceGrade: string | null
-  baseType: string
 }): string {
-  return [
-    s.productKind?.trim().toLowerCase(),
-    s.viscosity?.trim().toLowerCase() || '-',
-    s.performanceGrade?.trim().toLowerCase() || '-',
-    s.baseType && s.baseType !== 'unknown' ? s.baseType : '-',
-  ].join('|')
+  return [normalizeKind(s.productKind), normalizeViscosity(s.viscosity)].join(
+    '|',
+  )
 }
 
 const AUTO_GROUP_CHUNK = 50
@@ -355,10 +385,34 @@ export async function autoGroupProducts(opts?: {
   const limit = Math.max(1, opts?.limit ?? AUTO_GROUP_CHUNK)
 
   if (opts?.reset) {
+    // Detach every undecided product so it is fully reconsidered, then delete
+    // any canonical item left with no products at all. This clears fragmented
+    // single-vendor items from earlier runs while preserving anything the user
+    // confirmed (those products keep their canonical link).
     await db
       .update(products)
-      .set({ matchMethod: null })
+      .set({
+        matchMethod: null,
+        canonicalItemId: null,
+        matchStatus: 'unmatched',
+        matchScore: null,
+        matchReason: null,
+      })
       .where(notInArray(products.matchStatus, ['confirmed', 'rejected']))
+
+    const referenced = await db
+      .selectDistinct({ id: products.canonicalItemId })
+      .from(products)
+    const keepIds = referenced
+      .map((r) => r.id)
+      .filter((id): id is number => id !== null)
+    if (keepIds.length > 0) {
+      await db
+        .delete(canonicalItems)
+        .where(notInArray(canonicalItems.id, keepIds))
+    } else {
+      await db.delete(canonicalItems)
+    }
   }
 
   const undecided = await db
@@ -395,13 +449,16 @@ export async function autoGroupProducts(opts?: {
   const specById = new Map(specs.map((s) => [s.productId, s]))
 
   // Load existing canonical items into a signature->id cache so equivalent
-  // specs reuse the same canonical item instead of creating duplicates.
+  // specs reuse the same canonical item instead of creating duplicates. Items
+  // created by this grouper store their exact signature in specKey; for
+  // confirmed/hand-made items we best-effort derive one from category + name.
   const existing = await db.select().from(canonicalItems)
   const sigToId = new Map<string, number>()
   for (const c of existing) {
-    // Canonical items created by this seeder store their signature in a stable
-    // form; match on lowercased name as a fallback for hand-created items.
-    sigToId.set(c.name.trim().toLowerCase(), c.id)
+    const sig =
+      c.specKey ??
+      specSignature({ productKind: c.category ?? c.name, viscosity: c.name })
+    if (!sigToId.has(sig)) sigToId.set(sig, c.id)
   }
 
   let grouped = 0
@@ -418,10 +475,26 @@ export async function autoGroupProducts(opts?: {
     }
 
     const sig = specSignature(spec)
-    const displayName = spec.displayName?.trim() || spec.productKind.trim()
-    // Use the signature as the lookup key; fall back to display name dedupe.
-    const cacheKey = sig
-    let canonicalId = sigToId.get(cacheKey)
+    // Build a stable, uniform canonical name from the grouping spec (kind +
+    // viscosity) so equivalent items read consistently regardless of which
+    // product created them. Grade/base type are appended for context only.
+    const kindTitle = normalizeKind(spec.productKind)
+      .split(' ')
+      .map((w) => (w.length > 3 ? w[0].toUpperCase() + w.slice(1) : w))
+      .join(' ')
+    const visc = normalizeViscosity(spec.viscosity)
+    const extras = [spec.performanceGrade?.trim(), spec.baseType !== 'unknown' ? spec.baseType : null]
+      .filter(Boolean)
+      .join(', ')
+    const displayName = [
+      kindTitle,
+      visc !== '-' ? visc.toUpperCase() : '',
+      extras ? `(${extras})` : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .trim()
+    let canonicalId = sigToId.get(sig)
 
     if (!canonicalId) {
       const [created] = await db
@@ -429,14 +502,14 @@ export async function autoGroupProducts(opts?: {
         .values({
           userId,
           name: displayName,
-          category: spec.productKind.trim(),
+          category: normalizeKind(spec.productKind),
           unit: p.unit ?? null,
           baseUnit: p.baseUnit ?? null,
+          specKey: sig,
         })
         .returning({ id: canonicalItems.id })
       canonicalId = created.id
-      sigToId.set(cacheKey, canonicalId)
-      sigToId.set(displayName.trim().toLowerCase(), canonicalId)
+      sigToId.set(sig, canonicalId)
       createdItems++
     }
 

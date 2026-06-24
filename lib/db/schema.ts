@@ -94,6 +94,10 @@ export const canonicalItems = pgTable('canonical_items', {
   // The base unit used to normalize prices across pack sizes for this item
   // (e.g. 'each', 'litre', 'kg'). Offers are compared per base unit.
   baseUnit: text('baseUnit'),
+  // Stable, brand-free grouping signature (e.g. "heavy-duty engine oil|15w-40")
+  // for items created by the spec auto-grouper. Used to dedupe equivalent specs
+  // across batches/runs without re-parsing the display name.
+  specKey: text('specKey'),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 

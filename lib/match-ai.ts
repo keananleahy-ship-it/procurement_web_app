@@ -184,16 +184,24 @@ export type AiSpec = z.infer<typeof specSchema>['specs'][number]
 
 const SPEC_SYSTEM_PROMPT = `You are a procurement catalog normalizer. For each vendor PRODUCT you are given, extract its brand-free SPECIFICATION so that equivalent products from different brands/vendors can be grouped for price comparison.
 
-For each product return:
-- productKind: the generic, brand-free category (lowercase). Examples: "heavy-duty engine oil", "passenger car motor oil", "hydraulic fluid", "gear oil", "grease", "coolant/antifreeze", "automatic transmission fluid", "def".
-- viscosity: the viscosity grade if present (e.g. "15W-40", "5W-30", "ISO 46", "80W-90"), else null.
-- performanceGrade: the performance/spec class if present (e.g. "CK-4", "CJ-4", "SN", "GL-5"), else null.
-- baseType: synthetic, semi-synthetic, conventional, or unknown.
-- displayName: a short brand-free name combining the above.
+CRITICAL: productKind and viscosity are the grouping keys. They MUST be phrased identically for equivalent products so they group together. Be consistent and terse.
 
-Ignore brand names, vendor names, marketing words, and pack/container sizes. Two products with the same productKind + viscosity + performanceGrade + baseType are the SAME specification regardless of brand. Return exactly one entry per product id.`
+- productKind: choose the SINGLE best match from this controlled list (lowercase, exact spelling). Use the closest one; only invent a new term if none fits:
+  "heavy-duty engine oil", "passenger car motor oil", "hydraulic fluid", "gear oil", "automatic transmission fluid", "transmission fluid", "grease", "coolant", "gasoline engine oil", "natural gas engine oil", "compressor oil", "turbine oil", "rock drill oil", "way oil", "spindle oil", "r&o oil", "circulating oil", "chain oil", "tractor fluid", "2-cycle oil", "marine engine oil", "aviation oil", "metalworking fluid", "open gear lubricant", "def", "solvent", "brake fluid", "industrial oil".
+  Treat "diesel engine oil", "fleet oil", "HDMO", "HDEO" all as "heavy-duty engine oil". Treat "ATF" as "automatic transmission fluid".
+- viscosity: normalize to canonical form. Engine/gear oils use SAE like "15W-40", "5W-30", "80W-90" (always with the dash, uppercase W). Industrial oils use "ISO 46", "ISO 100" (space, no leading zeros). Greases use NLGI like "NLGI 2". If none applies, null.
+- performanceGrade: the performance/spec class if explicitly present (e.g. "CK-4", "CJ-4", "SN", "GL-5"), else null. Do NOT guess.
+- baseType: only if explicitly indicated (synthetic, semi-synthetic, conventional); otherwise "unknown". Do NOT guess.
+- displayName: a short brand-free name, e.g. "Heavy-Duty Engine Oil 15W-40".
 
-async function specBatch(batch: ProductInput[]): Promise<AiSpec[]> {
+Ignore brand names, vendor names, marketing words, and pack/container sizes. Two products with the same productKind + viscosity are the same group regardless of brand. Return exactly one entry per product id — never skip a product.`
+
+// Spec extraction uses a smaller batch than matching: large structured-output
+// batches frequently truncate or return fewer entries than requested, which
+// previously dropped the majority of products silently.
+const SPEC_BATCH_SIZE = 12
+
+async function specBatchOnce(batch: ProductInput[]): Promise<AiSpec[]> {
   const { output } = await generateText({
     model: 'google/gemini-2.5-flash',
     system: SPEC_SYSTEM_PROMPT,
@@ -201,7 +209,7 @@ async function specBatch(batch: ProductInput[]): Promise<AiSpec[]> {
     messages: [
       {
         role: 'user',
-        content: `Extract the specification for each product. Respond with one entry per product.\n\n${JSON.stringify(
+        content: `Extract the specification for each of these ${batch.length} products. Respond with EXACTLY one entry per product id — do not skip any.\n\n${JSON.stringify(
           { products: batch },
           null,
           2,
@@ -212,14 +220,47 @@ async function specBatch(batch: ProductInput[]): Promise<AiSpec[]> {
   return output.specs
 }
 
+// Run a batch and guarantee coverage: retry once for the whole batch on error,
+// then retry any individual products the model omitted. Returns specs for as
+// many of the batch's products as possible.
+async function specBatch(batch: ProductInput[]): Promise<AiSpec[]> {
+  let specs: AiSpec[] = []
+  try {
+    specs = await specBatchOnce(batch)
+  } catch (err) {
+    console.log('[v0] spec batch error, retrying:', (err as Error)?.message)
+    try {
+      specs = await specBatchOnce(batch)
+    } catch (err2) {
+      console.log('[v0] spec batch retry failed:', (err2 as Error)?.message)
+      specs = []
+    }
+  }
+
+  // Find products the model dropped and retry just those in one smaller call.
+  const have = new Set(specs.map((s) => s.productId))
+  const missing = batch.filter((p) => !have.has(p.id))
+  if (missing.length > 0) {
+    try {
+      const retried = await specBatchOnce(missing)
+      const haveNow = new Set(specs.map((s) => s.productId))
+      for (const s of retried) if (!haveNow.has(s.productId)) specs.push(s)
+    } catch (err) {
+      console.log('[v0] spec missing-retry failed:', (err as Error)?.message)
+    }
+  }
+
+  return specs
+}
+
 export async function aiDeriveSpecs(
   productsToAnalyze: ProductInput[],
 ): Promise<AiSpec[]> {
   if (productsToAnalyze.length === 0) return []
 
   const batches: ProductInput[][] = []
-  for (let i = 0; i < productsToAnalyze.length; i += BATCH_SIZE) {
-    batches.push(productsToAnalyze.slice(i, i + BATCH_SIZE))
+  for (let i = 0; i < productsToAnalyze.length; i += SPEC_BATCH_SIZE) {
+    batches.push(productsToAnalyze.slice(i, i + SPEC_BATCH_SIZE))
   }
 
   const results: AiSpec[] = []
