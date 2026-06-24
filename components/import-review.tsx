@@ -70,6 +70,30 @@ const FREIGHT_LABELS: Record<string, string> = {
   both: 'Both',
 }
 
+// Price-unit aliases used to match rows when applying a flat per-unit freight
+// rate. Mirrors the normalization done at import time.
+const GALLON_UNIT_ALIASES = new Set([
+  'usg',
+  'gal',
+  'gals',
+  'gallon',
+  'gallons',
+  'us gal',
+  'us gallon',
+])
+const POUND_UNIT_ALIASES = new Set([
+  'lb',
+  'lbs',
+  'pound',
+  'pounds',
+])
+
+function unitMatchesBasis(unit: string | null, basis: 'gal' | 'lb') {
+  const u = unit?.trim().toLowerCase() ?? ''
+  if (!u) return false
+  return basis === 'gal' ? GALLON_UNIT_ALIASES.has(u) : POUND_UNIT_ALIASES.has(u)
+}
+
 export function ImportReview({
   meta,
   rows: initialRows,
@@ -83,6 +107,9 @@ export function ImportReview({
   const [committing, setCommitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [onlyFlagged, setOnlyFlagged] = useState(false)
+  const [flatFreight, setFlatFreight] = useState('')
+  const [flatBasis, setFlatBasis] = useState<'gal' | 'lb'>('gal')
+  const [flatFreightMsg, setFlatFreightMsg] = useState<string | null>(null)
 
   const includable = rows.filter(
     (r) => r.include && r.unitPrice !== null && r.unitPrice !== '' && r.vendorName?.trim(),
@@ -94,6 +121,48 @@ export function ImportReview({
   function resolveReview(id: number) {
     patchRow(id, { needsReview: false })
     persist(id, { needsReview: false, reviewReason: null })
+  }
+
+  // Apply a flat per-gal / per-lb freight rate to every row whose price unit
+  // matches the chosen basis. Since shippingCost is stored per selling unit on
+  // the same basis as unitPrice, the rate maps directly onto shippingCost and
+  // the Delivered column updates immediately.
+  function applyFlatFreight() {
+    setFlatFreightMsg(null)
+    const rate = flatFreight.trim()
+    if (rate === '' || Number.isNaN(Number(rate)) || Number(rate) < 0) {
+      setFlatFreightMsg('Enter a valid freight rate.')
+      return
+    }
+    const targets = rows.filter(
+      (r) =>
+        r.include &&
+        r.freightTerms !== 'delivered' &&
+        unitMatchesBasis(r.unit, flatBasis),
+    )
+    if (targets.length === 0) {
+      setFlatFreightMsg(
+        `No included rows priced per ${flatBasis === 'gal' ? 'gallon' : 'pound'}.`,
+      )
+      return
+    }
+    for (const r of targets) {
+      patchRow(r.id, {
+        shippingCost: rate,
+        freightTerms: 'fob',
+        freightEstimated: false,
+      })
+      persist(r.id, {
+        shippingCost: rate,
+        freightTerms: 'fob',
+        freightEstimated: false,
+      })
+    }
+    setFlatFreightMsg(
+      `Applied $${rate}/${flatBasis} freight to ${targets.length} ${
+        targets.length === 1 ? 'row' : 'rows'
+      }.`,
+    )
   }
 
   function patchRow(id: number, patch: Partial<StagingRow>) {
@@ -173,6 +242,57 @@ export function ImportReview({
           {error}
         </p>
       )}
+
+      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col gap-1">
+            <label
+              htmlFor="flat-freight"
+              className="text-xs font-medium text-foreground"
+            >
+              Flat freight rate
+            </label>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">$</span>
+              <Input
+                id="flat-freight"
+                className="h-8 w-28 text-right tabular-nums"
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="0.00"
+                value={flatFreight}
+                onChange={(e) => setFlatFreight(e.target.value)}
+              />
+              <Select
+                value={flatBasis}
+                onValueChange={(v) => setFlatBasis((v as 'gal' | 'lb') ?? 'gal')}
+              >
+                <SelectTrigger className="h-8 w-32">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="gal">per gallon</SelectItem>
+                  <SelectItem value="lb">per pound</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <Button variant="outline" size="sm" onClick={applyFlatFreight}>
+            Apply to matching rows
+          </Button>
+          {flatFreightMsg && (
+            <span className="text-xs text-muted-foreground" role="status">
+              {flatFreightMsg}
+            </span>
+          )}
+        </div>
+        <p className="max-w-md text-[11px] leading-snug text-muted-foreground">
+          For vendors that charge a flat per-unit freight. Sets freight per unit
+          on all included FOB rows priced in the chosen unit, so they show a
+          delivered price comparable to other vendors.
+        </p>
+      </div>
 
       {flaggedCount > 0 && (
         <div className="flex flex-col gap-2 rounded-lg border border-warning/40 bg-warning/10 p-3 sm:flex-row sm:items-center sm:justify-between">
