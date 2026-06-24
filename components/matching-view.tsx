@@ -108,8 +108,40 @@ export function MatchingView({
 }) {
   const [isPending, startTransition] = useTransition()
   const [genPending, startGen] = useTransition()
-  const [aiPending, startAi] = useTransition()
   const canEdit = useCanEdit()
+
+  // The AI pass is chunked and resumable: we loop the server action until the
+  // whole catalog is processed, tracking progress so a single request never
+  // times out partway through (which previously left most products unmatched).
+  const [aiRunning, setAiRunning] = useState(false)
+  const [aiProgress, setAiProgress] = useState<{
+    done: number
+    total: number
+  } | null>(null)
+  const [aiError, setAiError] = useState<string | null>(null)
+
+  async function runAiMatching() {
+    setAiRunning(true)
+    setAiError(null)
+    setAiProgress({ done: 0, total: 0 })
+    try {
+      let reset = true
+      // Guard against a pathological non-advancing loop.
+      for (let i = 0; i < 1000; i++) {
+        const res = await generateAiSuggestions({ reset })
+        reset = false
+        setAiProgress({ done: res.total - res.remaining, total: res.total })
+        if (res.done) break
+      }
+    } catch (err) {
+      setAiError(
+        err instanceof Error ? err.message : 'AI matching failed. Try again.',
+      )
+    } finally {
+      setAiRunning(false)
+      setAiProgress(null)
+    }
+  }
 
   const groups = useMemo(() => {
     return {
@@ -151,7 +183,7 @@ export function MatchingView({
           <div className="flex flex-wrap items-center gap-2">
             <Button
               variant="outline"
-              disabled={genPending || aiPending || noCanonical}
+              disabled={genPending || aiRunning || noCanonical}
               onClick={() =>
                 startGen(() => {
                   void generateSuggestions()
@@ -162,19 +194,59 @@ export function MatchingView({
               {genPending ? 'Scanning…' : 'Name match'}
             </Button>
             <Button
-              disabled={aiPending || genPending || noCanonical}
-              onClick={() =>
-                startAi(() => {
-                  void generateAiSuggestions()
-                })
-              }
+              disabled={aiRunning || genPending || noCanonical}
+              onClick={() => void runAiMatching()}
             >
               <Sparkles className="size-4" />
-              {aiPending ? 'Thinking…' : 'AI match pass'}
+              {aiRunning ? 'Matching…' : 'AI match pass'}
             </Button>
           </div>
         )}
       </div>
+
+      {aiRunning && aiProgress && (
+        <div className="flex flex-col gap-2 rounded-md border border-border bg-card px-4 py-3">
+          <div className="flex items-center justify-between text-sm text-foreground">
+            <span className="flex items-center gap-2">
+              <Sparkles className="size-4 text-accent-foreground" />
+              Matching products with AI…
+            </span>
+            <span className="tabular-nums text-muted-foreground">
+              {aiProgress.total > 0
+                ? `${aiProgress.done} / ${aiProgress.total}`
+                : 'Starting…'}
+            </span>
+          </div>
+          <div
+            className="h-2 w-full overflow-hidden rounded-full bg-muted"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={aiProgress.total}
+            aria-valuenow={aiProgress.done}
+          >
+            <div
+              className="h-full rounded-full bg-accent-foreground transition-all duration-300"
+              style={{
+                width:
+                  aiProgress.total > 0
+                    ? `${Math.round((aiProgress.done / aiProgress.total) * 100)}%`
+                    : '5%',
+              }}
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Keep this tab open until matching finishes — it processes your
+            catalog in batches.
+          </p>
+        </div>
+      )}
+
+      {aiError && !aiRunning && (
+        <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          <AlertCircle className="size-4 shrink-0" />
+          {aiError}
+        </div>
+      )}
 
       {noCanonical && (
         <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">

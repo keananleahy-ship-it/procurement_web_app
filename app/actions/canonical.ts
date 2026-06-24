@@ -5,7 +5,7 @@ import { canonicalItems, products } from '@/lib/db/schema'
 import { bestMatch } from '@/lib/match'
 import { aiMatchProducts } from '@/lib/match-ai'
 import { requireUser, requireEditor } from '@/lib/roles'
-import { and, asc, eq, inArray } from 'drizzle-orm'
+import { and, asc, eq, inArray, notInArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 
 export async function getCanonicalItems() {
@@ -100,19 +100,47 @@ export async function generateSuggestions() {
   return { suggested }
 }
 
-/**
- * AI-assisted second matching pass. Reasons over product + canonical lists to
- * catch synonyms and pack-size variants the fuzzy pass misses. Every result is
- * staged as a 'suggested' match (never auto-confirmed); confirmed/rejected
- * products are left untouched so human decisions are preserved.
- */
-export async function generateAiSuggestions() {
-  await requireEditor()
-  const [items, prods] = await Promise.all([
-    db.select().from(canonicalItems),
-    db.select().from(products),
-  ])
+// How many products one server-action call processes. Kept small so each call
+// finishes well within the function time budget; the client loops across calls.
+const AI_CHUNK_SIZE = 50
 
+export type AiMatchProgress = {
+  suggested: number
+  cleared: number
+  processed: number
+  remaining: number
+  total: number
+  done: boolean
+}
+
+/**
+ * AI-assisted second matching pass — chunked and resumable. Each call processes
+ * up to AI_CHUNK_SIZE undecided products and reports progress so the client can
+ * loop until the whole catalog is done, instead of trying to match everything
+ * in one long-running request (which timed out partway, leaving most products
+ * untouched). Results are staged as 'suggested'; confirmed/rejected products
+ * are always preserved.
+ *
+ * Pass { reset: true } on the first call of a fresh run to clear the prior 'ai'
+ * stamp on undecided products so they are reconsidered.
+ */
+export async function generateAiSuggestions(opts?: {
+  reset?: boolean
+  limit?: number
+}): Promise<AiMatchProgress> {
+  await requireEditor()
+  const limit = Math.max(1, opts?.limit ?? AI_CHUNK_SIZE)
+
+  // A fresh run clears the 'ai' processing stamp on undecided products so the
+  // whole catalog is reconsidered. Confirmed/rejected decisions are untouched.
+  if (opts?.reset) {
+    await db
+      .update(products)
+      .set({ matchMethod: null })
+      .where(notInArray(products.matchStatus, ['confirmed', 'rejected']))
+  }
+
+  const items = await db.select().from(canonicalItems)
   const canonicalOptions = items.map((i) => ({
     id: i.id,
     name: i.name,
@@ -120,16 +148,26 @@ export async function generateAiSuggestions() {
     baseUnit: i.baseUnit,
   }))
 
-  // Only reconsider products the user has not already decided on.
-  const pending = prods.filter(
-    (p) => p.matchStatus !== 'confirmed' && p.matchStatus !== 'rejected',
-  )
-  if (pending.length === 0 || canonicalOptions.length === 0) {
-    return { suggested: 0, cleared: 0 }
+  const undecided = await db
+    .select()
+    .from(products)
+    .where(notInArray(products.matchStatus, ['confirmed', 'rejected']))
+    .orderBy(asc(products.id))
+
+  const total = undecided.length
+  if (total === 0 || canonicalOptions.length === 0) {
+    return { suggested: 0, cleared: 0, processed: 0, remaining: 0, total, done: true }
+  }
+
+  // Products not yet stamped 'ai' in this run still need processing.
+  const pendingThisRun = undecided.filter((p) => p.matchMethod !== 'ai')
+  const chunk = pendingThisRun.slice(0, limit)
+  if (chunk.length === 0) {
+    return { suggested: 0, cleared: 0, processed: 0, remaining: 0, total, done: true }
   }
 
   const matches = await aiMatchProducts(
-    pending.map((p) => ({
+    chunk.map((p) => ({
       id: p.id,
       name: p.name,
       category: p.category,
@@ -143,19 +181,17 @@ export async function generateAiSuggestions() {
   const byId = new Map(matches.map((m) => [m.productId, m]))
 
   let suggested = 0
-  let cleared = 0
-  for (const p of pending) {
+  const clearedIds: number[] = []
+
+  for (const p of chunk) {
     const m = byId.get(p.id)
-    // The product's batch may have been skipped (e.g. a transient AI failure).
-    // Leave those untouched so a re-run can pick them up, rather than wiping
-    // them to 'unmatched'.
-    if (!m) continue
     const hasMatch =
+      m &&
       m.canonicalItemId !== null &&
       validCanonicalIds.has(m.canonicalItemId) &&
       m.confidence >= 0.5
 
-    if (hasMatch) {
+    if (hasMatch && m) {
       await db
         .update(products)
         .set({
@@ -168,24 +204,40 @@ export async function generateAiSuggestions() {
         .where(eq(products.id, p.id))
       suggested++
     } else {
-      await db
-        .update(products)
-        .set({
-          canonicalItemId: null,
-          matchStatus: 'unmatched',
-          matchScore: null,
-          matchMethod: 'ai',
-          matchReason: m.reason?.slice(0, 280) ?? null,
-        })
-        .where(eq(products.id, p.id))
-      cleared++
+      // No confident match (or the product's AI batch was skipped). Stamp it
+      // 'ai' anyway so the resumable loop always advances and never spins
+      // forever; a later fresh run (reset) can reconsider it.
+      clearedIds.push(p.id)
     }
   }
+
+  if (clearedIds.length > 0) {
+    await db
+      .update(products)
+      .set({
+        canonicalItemId: null,
+        matchStatus: 'unmatched',
+        matchScore: null,
+        matchMethod: 'ai',
+        matchReason: null,
+      })
+      .where(inArray(products.id, clearedIds))
+  }
+
+  const processed = chunk.length
+  const remaining = pendingThisRun.length - processed
 
   revalidatePath('/matching')
   revalidatePath('/compare')
   revalidatePath('/')
-  return { suggested, cleared }
+  return {
+    suggested,
+    cleared: clearedIds.length,
+    processed,
+    remaining,
+    total,
+    done: remaining <= 0,
+  }
 }
 
 export async function confirmMatch(productId: number) {
