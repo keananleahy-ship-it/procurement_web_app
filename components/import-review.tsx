@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, useTransition } from 'react'
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   updateImportRow,
@@ -129,6 +129,39 @@ export function ImportReview({
   const [flatFreight, setFlatFreight] = useState('')
   const [flatBasis, setFlatBasis] = useState<'gal' | 'lb'>('gal')
   const [flatFreightMsg, setFlatFreightMsg] = useState<string | null>(null)
+
+  // The table is wider than the screen. A native scrollbar only sits at the
+  // very bottom of the (tall) table, so we mirror it into a slider that stays
+  // pinned to the bottom of the viewport and keep the two scroll positions in
+  // sync. `scrollW` tracks the table's full width to size the slider thumb.
+  const tableScrollRef = useRef<HTMLDivElement>(null)
+  const sliderRef = useRef<HTMLDivElement>(null)
+  const [scrollW, setScrollW] = useState(0)
+  const [needsSlider, setNeedsSlider] = useState(false)
+
+  useEffect(() => {
+    const el = tableScrollRef.current
+    if (!el) return
+    const measure = () => {
+      setScrollW(el.scrollWidth)
+      setNeedsSlider(el.scrollWidth > el.clientWidth + 1)
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [rows.length, onlyFlagged])
+
+  function syncFromTable() {
+    if (tableScrollRef.current && sliderRef.current) {
+      sliderRef.current.scrollLeft = tableScrollRef.current.scrollLeft
+    }
+  }
+  function syncFromSlider() {
+    if (tableScrollRef.current && sliderRef.current) {
+      tableScrollRef.current.scrollLeft = sliderRef.current.scrollLeft
+    }
+  }
 
   const includable = rows.filter(
     (r) => r.include && r.unitPrice !== null && r.unitPrice !== '' && r.vendorName?.trim(),
@@ -497,7 +530,11 @@ export function ImportReview({
         </div>
       )}
 
-      <div className="overflow-x-auto rounded-lg border border-border bg-card">
+      <div
+        ref={tableScrollRef}
+        onScroll={syncFromTable}
+        className="overflow-x-auto rounded-lg border border-border bg-card"
+      >
         <Table>
           <TableHeader>
             <TableRow>
@@ -752,6 +789,16 @@ export function ImportReview({
           </TableBody>
         </Table>
       </div>
+      {needsSlider && (
+        <div
+          ref={sliderRef}
+          onScroll={syncFromSlider}
+          className="sticky bottom-0 z-10 overflow-x-auto rounded-md border border-border bg-card/95 shadow-sm backdrop-blur"
+          aria-label="Scroll table horizontally"
+        >
+          <div style={{ width: scrollW, height: 1 }} />
+        </div>
+      )}
       {rows.some((r) => r.include && (!r.vendorName?.trim() || r.unitPrice === null || r.unitPrice === '')) && (
         <p className="text-xs text-muted-foreground">
           Rows missing a vendor or unit price will be skipped on import. Add the
