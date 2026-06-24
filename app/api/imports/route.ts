@@ -471,6 +471,7 @@ export async function POST(req: NextRequest) {
           unit: r.unit?.trim() || null,
           packSize,
           baseUnit,
+          containerRaw: r.containerRaw?.trim() || null,
           category: r.category?.trim() || null,
           unitPrice: toNumericString(r.unitPrice),
           shippingCost,

@@ -203,6 +203,10 @@ export const importRows = pgTable('import_rows', {
     .default('1'),
   // Base unit of measure for packSize (e.g. 'each', 'litre', 'kg', 'USG').
   baseUnit: text('baseUnit'),
+  // The exact container/size text as printed in the source (e.g. "12/1",
+  // "40/14 LB"). Used to group rows sharing the same shorthand so an ambiguous
+  // definition can be resolved once for all matching rows.
+  containerRaw: text('containerRaw'),
   // Set by import post-processing when a row looks inconsistent (e.g. its unit
   // differs from the file's dominant unit) and a human should verify it.
   needsReview: boolean('needsReview').notNull().default(false),

@@ -9,7 +9,7 @@ import {
   vendorPrices,
 } from '@/lib/db/schema'
 import { requireUser, requireEditor } from '@/lib/roles'
-import { desc, eq } from 'drizzle-orm'
+import { desc, eq, and } from 'drizzle-orm'
 import { del } from '@vercel/blob'
 import { revalidatePath } from 'next/cache'
 
@@ -47,6 +47,7 @@ type RowPatch = {
   category?: string | null
   packSize?: string
   baseUnit?: string | null
+  containerRaw?: string | null
   needsReview?: boolean
   reviewReason?: string | null
   include?: boolean
@@ -56,6 +57,37 @@ export async function updateImportRow(rowId: number, patch: RowPatch) {
   await requireEditor()
   await db.update(importRows).set(patch).where(eq(importRows.id, rowId))
   revalidatePath('/imports')
+}
+
+// Apply a single container definition to every pending row in an import that
+// shares the same raw container text, and clear their review flags. Lets a
+// reviewer resolve one ambiguous shorthand for all matching rows at once
+// instead of line by line. Returns the number of rows updated.
+export async function resolveContainerGroup(
+  importId: number,
+  containerRaw: string,
+  patch: { packSize: string; baseUnit: string | null; unit?: string | null },
+) {
+  await requireEditor()
+  const set: RowPatch = {
+    packSize: patch.packSize,
+    baseUnit: patch.baseUnit,
+    needsReview: false,
+    reviewReason: null,
+  }
+  if (patch.unit !== undefined) set.unit = patch.unit
+  const updated = await db
+    .update(importRows)
+    .set(set)
+    .where(
+      and(
+        eq(importRows.importId, importId),
+        eq(importRows.containerRaw, containerRaw),
+      ),
+    )
+    .returning({ id: importRows.id })
+  revalidatePath('/imports')
+  return updated.length
 }
 
 export async function deleteImportRow(rowId: number) {

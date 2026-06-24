@@ -1,12 +1,13 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useMemo, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   updateImportRow,
   deleteImportRow,
   commitImport,
   discardImport,
+  resolveContainerGroup,
 } from '@/app/actions/imports'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -51,6 +52,7 @@ export type StagingRow = {
   unit: string | null
   packSize: string
   baseUnit: string | null
+  containerRaw: string | null
   needsReview: boolean
   reviewReason: string | null
   include: boolean
@@ -134,6 +136,82 @@ export function ImportReview({
 
   const flaggedCount = rows.filter((r) => r.needsReview).length
   const visibleRows = onlyFlagged ? rows.filter((r) => r.needsReview) : rows
+
+  // Group flagged rows that share the exact same raw container text, so one
+  // definition can resolve all of them at once. Rows flagged for other reasons
+  // (e.g. unit mismatch) with no container text are handled inline per row.
+  const containerGroups = useMemo(() => {
+    const map = new Map<
+      string,
+      { containerRaw: string; rows: StagingRow[] }
+    >()
+    for (const r of rows) {
+      if (!r.needsReview) continue
+      const raw = r.containerRaw?.trim()
+      if (!raw) continue
+      const existing = map.get(raw)
+      if (existing) existing.rows.push(r)
+      else map.set(raw, { containerRaw: raw, rows: [r] })
+    }
+    return Array.from(map.values()).sort((a, b) => b.rows.length - a.rows.length)
+  }, [rows])
+
+  // Draft definition inputs per container pattern, keyed by raw text.
+  const [groupDefs, setGroupDefs] = useState<
+    Record<string, { packSize: string; baseUnit: string; unit: string }>
+  >({})
+
+  function groupDef(g: { containerRaw: string; rows: StagingRow[] }) {
+    const sample = g.rows[0]
+    return (
+      groupDefs[g.containerRaw] ?? {
+        packSize: sample.packSize ?? '1',
+        baseUnit: sample.baseUnit ?? '',
+        unit: sample.unit ?? '',
+      }
+    )
+  }
+
+  function setGroupField(
+    raw: string,
+    def: { packSize: string; baseUnit: string; unit: string },
+    field: 'packSize' | 'baseUnit' | 'unit',
+    value: string,
+  ) {
+    setGroupDefs((prev) => ({ ...prev, [raw]: { ...def, [field]: value } }))
+  }
+
+  function applyContainerGroup(g: {
+    containerRaw: string
+    rows: StagingRow[]
+  }) {
+    const def = groupDef(g)
+    const packSize = def.packSize.trim() || '1'
+    const baseUnit = def.baseUnit.trim() || null
+    const unit = def.unit.trim() || null
+    const ids = new Set(g.rows.map((r) => r.id))
+    setRows((prev) =>
+      prev.map((r) =>
+        ids.has(r.id)
+          ? {
+              ...r,
+              packSize,
+              baseUnit,
+              unit,
+              needsReview: false,
+              reviewReason: null,
+            }
+          : r,
+      ),
+    )
+    startTransition(() => {
+      void resolveContainerGroup(meta.id, g.containerRaw, {
+        packSize,
+        baseUnit,
+        unit,
+      })
+    })
+  }
 
   function resolveReview(id: number) {
     patchRow(id, { needsReview: false })
@@ -311,13 +389,103 @@ export function ImportReview({
         </p>
       </div>
 
+      {containerGroups.length > 0 && (
+        <div className="flex flex-col gap-3 rounded-lg border border-warning/40 bg-warning/10 p-4">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
+            <div className="flex flex-col gap-0.5">
+              <p className="text-sm font-medium text-foreground">
+                Define {containerGroups.length} container{' '}
+                {containerGroups.length === 1 ? 'size' : 'sizes'} once
+              </p>
+              <p className="text-xs text-muted-foreground">
+                These package descriptions couldn’t be parsed confidently. Set
+                the pack size and unit for each below and it’s applied to every
+                matching row at once.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-col gap-2">
+            {containerGroups.map((g) => {
+              const def = groupDef(g)
+              return (
+                <div
+                  key={g.containerRaw}
+                  className="flex flex-col gap-2 rounded-md border border-border bg-card p-3 sm:flex-row sm:flex-wrap sm:items-end"
+                >
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      Description
+                    </span>
+                    <code className="rounded bg-muted px-2 py-1 text-sm text-foreground">
+                      {g.containerRaw}
+                    </code>
+                  </div>
+                  <Badge variant="secondary" className="sm:mb-1.5">
+                    {g.rows.length} {g.rows.length === 1 ? 'row' : 'rows'}
+                  </Badge>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-medium text-foreground">
+                      Container size
+                    </label>
+                    <Input
+                      className="h-8 w-24 text-right tabular-nums"
+                      type="number"
+                      step="0.0001"
+                      min="0"
+                      value={def.packSize}
+                      onChange={(e) =>
+                        setGroupField(g.containerRaw, def, 'packSize', e.target.value)
+                      }
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-medium text-foreground">
+                      Container unit
+                    </label>
+                    <Input
+                      className="h-8 w-28"
+                      placeholder="e.g. quart"
+                      value={def.baseUnit}
+                      onChange={(e) =>
+                        setGroupField(g.containerRaw, def, 'baseUnit', e.target.value)
+                      }
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-medium text-foreground">
+                      Price unit of measure
+                    </label>
+                    <Input
+                      className="h-8 w-28"
+                      placeholder="e.g. lb"
+                      value={def.unit}
+                      onChange={(e) =>
+                        setGroupField(g.containerRaw, def, 'unit', e.target.value)
+                      }
+                    />
+                  </div>
+                  <Button
+                    size="sm"
+                    className="sm:mb-0.5"
+                    onClick={() => applyContainerGroup(g)}
+                  >
+                    Apply to {g.rows.length} {g.rows.length === 1 ? 'row' : 'rows'}
+                  </Button>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {flaggedCount > 0 && (
         <div className="flex flex-col gap-2 rounded-lg border border-warning/40 bg-warning/10 p-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2 text-sm text-foreground">
             <AlertTriangle className="size-4 text-warning" />
-            {flaggedCount} {flaggedCount === 1 ? 'row needs' : 'rows need'} review
-            — their unit differs from the rest of the file. Check the price basis
-            and pack size before importing.
+            {flaggedCount} {flaggedCount === 1 ? 'row needs' : 'rows need'} review.
+            Use the definitions above for container shorthand, or fix individual
+            rows below.
           </div>
           <Button
             variant="outline"

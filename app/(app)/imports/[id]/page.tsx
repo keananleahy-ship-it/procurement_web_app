@@ -52,6 +52,7 @@ export default async function ImportReviewPage({
           currency: r.currency,
           packSize: r.packSize,
           baseUnit: r.baseUnit,
+          containerRaw: r.containerRaw,
           needsReview: r.needsReview,
           reviewReason: r.reviewReason,
           include: r.include,
