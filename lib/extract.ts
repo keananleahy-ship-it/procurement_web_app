@@ -123,6 +123,8 @@ Rules:
   - "205L DRUM" => packSize 205, baseUnit "litre". "20L PAIL" => packSize 20, baseUnit "litre". "1040L IBC"/"1040L TOTE" => packSize 1040, baseUnit "litre".
   - "55USG DRUM" => packSize 55, baseUnit "USG". "5 GAL PAIL" => packSize 5, baseUnit "USG".
   - "25 kg bag", "25kg" => packSize 25, baseUnit "kg". "400g", "400 g" => packSize 400, baseUnit "g".
+  - Small units are supported and will be converted automatically: volume "ml"/"cc", "fl oz", "pt"/"pint", "qt"/"quart" fold into gallons; weight "oz"/"ounce", "g"/"gram" fold into pounds. Use them as baseUnit when the container is stated that way (e.g. "500ml bottle" => packSize 500, baseUnit "ml"; "16oz tub" => packSize 16, baseUnit "oz").
+  - "oz" DEFAULTS to weight ounces (→ pounds). Only use "fl oz" as baseUnit when the source explicitly says fluid ounces or the product is clearly a liquid measured by fluid volume.
   - "box of 100", "100/box", "ctn 100", "pack of 50" => packSize 100/50, baseUnit "each".
   - "case of 24", "24 pk", "24-pack" => packSize 24, baseUnit "each".
   - Multipliers give TOTAL base content (multiply the count by the per-unit size): "12 x 1L" => packSize 12, baseUnit "litre"; "4 x 5kg" => packSize 20, baseUnit "kg"; "30 x 400g" / "30x400g" => packSize 12000, baseUnit "g"; "24 x 500ml" => packSize 12, baseUnit "litre".

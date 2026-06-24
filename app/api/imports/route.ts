@@ -94,6 +94,32 @@ const QUART_ALIASES = new Set([
   'quart',
   'quarts',
 ])
+const ML_PER_USG = 3785.411784
+const ML_ALIASES = new Set([
+  'ml',
+  'mls',
+  'millilitre',
+  'millilitres',
+  'milliliter',
+  'milliliters',
+  'cc',
+])
+const FLOZ_PER_USG = 128
+const FLOZ_ALIASES = new Set([
+  'fl oz',
+  'floz',
+  'fl. oz.',
+  'fl oz.',
+  'fluid ounce',
+  'fluid ounces',
+])
+const PINTS_PER_USG = 8
+const PINT_ALIASES = new Set([
+  'pt',
+  'pts',
+  'pint',
+  'pints',
+])
 
 // Similarly, weight-based container capacities are normalized to pounds so
 // kilogram-quoted vendors compare directly against pound-quoted ones.
@@ -134,6 +160,13 @@ const POUND_ALIASES = new Set([
   'pound',
   'pounds',
 ])
+const OUNCES_PER_LB = 16
+const OUNCE_ALIASES = new Set([
+  'oz',
+  'ozs',
+  'ounce',
+  'ounces',
+])
 
 // Given a raw container capacity + base unit, return the capacity expressed in
 // a canonical unit: litres → US gallons, kilograms → pounds. Other units
@@ -152,6 +185,15 @@ function normalizeContainer(
   if (QUART_ALIASES.has(u)) {
     return { packSize: (packSize / QUARTS_PER_USG).toFixed(4), baseUnit: 'USG' }
   }
+  if (PINT_ALIASES.has(u)) {
+    return { packSize: (packSize / PINTS_PER_USG).toFixed(4), baseUnit: 'USG' }
+  }
+  if (FLOZ_ALIASES.has(u)) {
+    return { packSize: (packSize / FLOZ_PER_USG).toFixed(4), baseUnit: 'USG' }
+  }
+  if (ML_ALIASES.has(u)) {
+    return { packSize: (packSize / ML_PER_USG).toFixed(4), baseUnit: 'USG' }
+  }
   if (KILOGRAM_ALIASES.has(u)) {
     return { packSize: (packSize / KG_PER_LB).toFixed(4), baseUnit: 'lb' }
   }
@@ -163,6 +205,9 @@ function normalizeContainer(
   }
   if (POUND_ALIASES.has(u)) {
     return { packSize: packSize.toFixed(4), baseUnit: 'lb' }
+  }
+  if (OUNCE_ALIASES.has(u)) {
+    return { packSize: (packSize / OUNCES_PER_LB).toFixed(4), baseUnit: 'lb' }
   }
   return { packSize: packSize.toFixed(4), baseUnit: baseUnit?.trim() || null }
 }
