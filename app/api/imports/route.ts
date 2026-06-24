@@ -3,7 +3,7 @@ import { put } from '@vercel/blob'
 import * as XLSX from 'xlsx'
 import { getCurrentUser, canEdit, canAdmin } from '@/lib/roles'
 import { db } from '@/lib/db'
-import { imports, importRows, vendors } from '@/lib/db/schema'
+import { imports, importRows, vendors, locations } from '@/lib/db/schema'
 import { asc } from 'drizzle-orm'
 import { extractPriceRows, type ExtractedRow } from '@/lib/extract'
 
@@ -180,9 +180,7 @@ export async function POST(req: NextRequest) {
   const file = formData.get('file')
   const effectiveDate = String(formData.get('effectiveDate') ?? '').trim()
   const vendorName = String(formData.get('vendorName') ?? '').trim()
-  const locationRaw = formData.get('locationId')
-  const locationId =
-    locationRaw && String(locationRaw) !== '' ? Number(locationRaw) : null
+  const locationName = String(formData.get('locationName') ?? '').trim()
 
   if (!(file instanceof File)) {
     return NextResponse.json({ error: 'No file provided' }, { status: 400 })
@@ -196,6 +194,12 @@ export async function POST(req: NextRequest) {
   if (!vendorName) {
     return NextResponse.json(
       { error: 'A vendor is required' },
+      { status: 400 },
+    )
+  }
+  if (!locationName) {
+    return NextResponse.json(
+      { error: 'A location is required' },
       { status: 400 },
     )
   }
@@ -217,6 +221,35 @@ export async function POST(req: NextRequest) {
       {
         error:
           'Select an existing vendor. Only an admin can add a new vendor name.',
+      },
+      { status: 403 },
+    )
+  }
+
+  // Resolve the location the same way: snap to an existing location
+  // case-insensitively, otherwise create it (admins only) so we never end up
+  // with near-duplicate location names.
+  const existingLocations = await db
+    .select({ id: locations.id, name: locations.name })
+    .from(locations)
+    .orderBy(asc(locations.name))
+  const locationMatch = existingLocations.find(
+    (l) => l.name.toLowerCase() === locationName.toLowerCase(),
+  )
+  let locationId: number
+  if (locationMatch) {
+    locationId = locationMatch.id
+  } else if (canAdmin(currentUser.role)) {
+    const [createdLocation] = await db
+      .insert(locations)
+      .values({ userId, name: locationName })
+      .returning({ id: locations.id })
+    locationId = createdLocation.id
+  } else {
+    return NextResponse.json(
+      {
+        error:
+          'Select an existing location. Only an admin can add a new location name.',
       },
       { status: 403 },
     )

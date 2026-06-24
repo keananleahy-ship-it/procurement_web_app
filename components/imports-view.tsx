@@ -73,7 +73,7 @@ export function ImportsView({
 }) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
-  const [locationId, setLocationId] = useState('')
+  const [locationName, setLocationName] = useState('')
   const [vendorName, setVendorName] = useState('')
   const canAdmin = useCanAdmin()
   const [effectiveDate, setEffectiveDate] = useState(
@@ -97,11 +97,15 @@ export function ImportsView({
       setError('Please choose or enter the vendor for this price list.')
       return
     }
+    if (!locationName.trim()) {
+      setError('Please choose or enter the location for this price list.')
+      return
+    }
     const body = new FormData()
     body.set('file', file)
     body.set('effectiveDate', effectiveDate)
     body.set('vendorName', vendorName.trim())
-    if (locationId) body.set('locationId', locationId)
+    body.set('locationName', locationName.trim())
 
     setUploading(true)
     try {
@@ -114,6 +118,7 @@ export function ImportsView({
       setOpen(false)
       setFileName('')
       setVendorName('')
+      setLocationName('')
       if (fileRef.current) fileRef.current.value = ''
       router.push(`/imports/${data.importId}`)
     } catch {
@@ -214,22 +219,41 @@ export function ImportsView({
                     />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <Label>Location</Label>
-                    <Select
-                      value={locationId}
-                      onValueChange={(v) => setLocationId(v ?? '')}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Optional" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {locations.map((l) => (
-                          <SelectItem key={l.id} value={String(l.id)}>
-                            {l.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <Label htmlFor="location">Location</Label>
+                    {canAdmin ? (
+                      <>
+                        <Input
+                          id="location"
+                          list="location-options"
+                          value={locationName}
+                          onChange={(e) => setLocationName(e.target.value)}
+                          placeholder="Select or type a new one"
+                          autoComplete="off"
+                          required
+                        />
+                        <datalist id="location-options">
+                          {locations.map((l) => (
+                            <option key={l.id} value={l.name} />
+                          ))}
+                        </datalist>
+                      </>
+                    ) : (
+                      <Select
+                        value={locationName}
+                        onValueChange={(v) => setLocationName(v ?? '')}
+                      >
+                        <SelectTrigger id="location">
+                          <SelectValue placeholder="Select a location" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {locations.map((l) => (
+                            <SelectItem key={l.id} value={l.name}>
+                              {l.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
                   </div>
                 </div>
                 {error && (
