@@ -87,6 +87,13 @@ const GALLON_ALIASES = new Set([
   'us gal',
   'us gallon',
 ])
+const QUARTS_PER_USG = 4
+const QUART_ALIASES = new Set([
+  'qt',
+  'qts',
+  'quart',
+  'quarts',
+])
 
 // Similarly, weight-based container capacities are normalized to pounds so
 // kilogram-quoted vendors compare directly against pound-quoted ones.
@@ -141,6 +148,9 @@ function normalizeContainer(
   }
   if (GALLON_ALIASES.has(u)) {
     return { packSize: packSize.toFixed(4), baseUnit: 'USG' }
+  }
+  if (QUART_ALIASES.has(u)) {
+    return { packSize: (packSize / QUARTS_PER_USG).toFixed(4), baseUnit: 'USG' }
   }
   if (KILOGRAM_ALIASES.has(u)) {
     return { packSize: (packSize / KG_PER_LB).toFixed(4), baseUnit: 'lb' }
