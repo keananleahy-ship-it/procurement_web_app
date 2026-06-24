@@ -111,10 +111,10 @@ Rules:
 - Container/package parsing (set packSize = capacity number, baseUnit = its unit):
   - "205L DRUM" => packSize 205, baseUnit "litre". "20L PAIL" => packSize 20, baseUnit "litre". "1040L IBC"/"1040L TOTE" => packSize 1040, baseUnit "litre".
   - "55USG DRUM" => packSize 55, baseUnit "USG". "5 GAL PAIL" => packSize 5, baseUnit "USG".
-  - "25 kg bag", "25kg" => packSize 25, baseUnit "kg".
+  - "25 kg bag", "25kg" => packSize 25, baseUnit "kg". "400g", "400 g" => packSize 400, baseUnit "g".
   - "box of 100", "100/box", "ctn 100", "pack of 50" => packSize 100/50, baseUnit "each".
   - "case of 24", "24 pk", "24-pack" => packSize 24, baseUnit "each".
-  - Multipliers give TOTAL base content: "12 x 1L" => packSize 12, baseUnit "litre"; "4 x 5kg" => packSize 20, baseUnit "kg".
+  - Multipliers give TOTAL base content (multiply the count by the per-unit size): "12 x 1L" => packSize 12, baseUnit "litre"; "4 x 5kg" => packSize 20, baseUnit "kg"; "30 x 400g" / "30x400g" => packSize 12000, baseUnit "g"; "24 x 500ml" => packSize 12, baseUnit "litre".
   - Even when the price is quoted per gallon/litre/each, STILL fill packSize/baseUnit from the container named in the description (e.g. a row priced per USG for a "205L DRUM" => unit "USG", packSize 205, baseUnit "litre").
 - Do NOT duplicate the size in productName: if you put the container size into packSize/baseUnit, include it at most once in the name. Never repeat it (e.g. output "ACCUFLO TK 68 1040L IBC", never "ACCUFLO TK 68 1040L IBC 1040L IBC").
 - Dimensions/specs that are NOT pack quantities (e.g. "M8 x 50mm" bolt size, "2400 x 1200" sheet size) belong in the product name, NOT packSize.

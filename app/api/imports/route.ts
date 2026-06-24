@@ -91,6 +91,8 @@ const GALLON_ALIASES = new Set([
 // Similarly, weight-based container capacities are normalized to pounds so
 // kilogram-quoted vendors compare directly against pound-quoted ones.
 const KG_PER_LB = 0.45359237
+const GRAMS_PER_LB = 453.59237
+const KG_PER_TONNE = 1000
 const KILOGRAM_ALIASES = new Set([
   'kg',
   'kgs',
@@ -98,6 +100,26 @@ const KILOGRAM_ALIASES = new Set([
   'kilos',
   'kilogram',
   'kilograms',
+])
+const GRAM_ALIASES = new Set([
+  'g',
+  'gr',
+  'gm',
+  'gms',
+  'gram',
+  'grams',
+  'gramme',
+  'grammes',
+])
+const TONNE_ALIASES = new Set([
+  't',
+  'mt',
+  'tonne',
+  'tonnes',
+  'metric ton',
+  'metric tons',
+  'metric tonne',
+  'metric tonnes',
 ])
 const POUND_ALIASES = new Set([
   'lb',
@@ -122,6 +144,12 @@ function normalizeContainer(
   }
   if (KILOGRAM_ALIASES.has(u)) {
     return { packSize: (packSize / KG_PER_LB).toFixed(4), baseUnit: 'lb' }
+  }
+  if (GRAM_ALIASES.has(u)) {
+    return { packSize: (packSize / GRAMS_PER_LB).toFixed(4), baseUnit: 'lb' }
+  }
+  if (TONNE_ALIASES.has(u)) {
+    return { packSize: ((packSize * KG_PER_TONNE) / KG_PER_LB).toFixed(4), baseUnit: 'lb' }
   }
   if (POUND_ALIASES.has(u)) {
     return { packSize: packSize.toFixed(4), baseUnit: 'lb' }
