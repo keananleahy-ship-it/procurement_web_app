@@ -47,6 +47,7 @@ export type StagingRow = {
   freightTerms: string
   deliveredPrice: string | null
   currency: string
+  unit: string | null
   packSize: string
   baseUnit: string | null
   needsReview: boolean
@@ -199,6 +200,7 @@ export function ImportReview({
               <TableHead className="min-w-40">Vendor</TableHead>
               <TableHead className="min-w-36">Freight</TableHead>
               <TableHead className="text-right">Unit price</TableHead>
+              <TableHead className="min-w-28">Unit of measure</TableHead>
               <TableHead className="text-right">Freight / unit</TableHead>
               <TableHead className="text-right">Delivered</TableHead>
               <TableHead className="text-right">Container (gal)</TableHead>
@@ -304,6 +306,17 @@ export function ImportReview({
                       }
                       onBlur={(e) =>
                         persist(r.id, { unitPrice: e.target.value === '' ? null : e.target.value })
+                      }
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      className="h-8 w-28"
+                      placeholder="e.g. lb"
+                      value={r.unit ?? ''}
+                      onChange={(e) => patchRow(r.id, { unit: e.target.value })}
+                      onBlur={(e) =>
+                        persist(r.id, { unit: e.target.value.trim() || null })
                       }
                     />
                   </TableCell>
