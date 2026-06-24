@@ -143,6 +143,23 @@ Rules:
   - When in doubt, prefer flagging (true) over a silent guess — a human will verify flagged rows.
   - If a value is not present, return null for it.`
 
+type FreightHint = 'fob' | 'delivered' | 'both' | null
+
+// A user-declared file-level freight basis, injected into the prompt so the
+// model reads prices on the right basis when the sheet doesn't state terms.
+function freightHintText(hint: FreightHint): string {
+  switch (hint) {
+    case 'fob':
+      return 'IMPORTANT — the user has confirmed this ENTIRE price list is FOB origin (freight NOT included). Set freightTerms "fob" for every row and treat unitPrice as the origin price. Only deviate if a row very explicitly states a delivered price.\n\n'
+    case 'delivered':
+      return 'IMPORTANT — the user has confirmed this ENTIRE price list is DELIVERED pricing (freight already included). Set freightTerms "delivered" for every row, put the all-in price in unitPrice, and set shippingCost to 0. Only deviate if a row very explicitly states an FOB/origin price.\n\n'
+    case 'both':
+      return 'IMPORTANT — the user has confirmed this price list shows BOTH an FOB price and a delivered price per item. Set freightTerms "both", put the FOB price in unitPrice and the delivered price in deliveredPrice for every row.\n\n'
+    default:
+      return ''
+  }
+}
+
 type ExtractInput =
   | { kind: 'text'; text: string }
   | { kind: 'pdf'; data: Buffer | Uint8Array; filename: string }
@@ -223,7 +240,11 @@ const ROWS_PER_CHUNK = 40
 const CONCURRENCY = 8
 const CHUNK_MAX_TOKENS = 24_000
 
-async function extractTextChunked(text: string): Promise<ExtractionResult> {
+async function extractTextChunked(
+  text: string,
+  hint: FreightHint,
+): Promise<ExtractionResult> {
+  const hintText = freightHintText(hint)
   const allLines = text.split('\n')
 
   // The first non-blank, non-"# Sheet:" line is the column header; prepend it
@@ -253,7 +274,7 @@ async function extractTextChunked(text: string): Promise<ExtractionResult> {
       [
         {
           type: 'text',
-          text: `Extract all priced line items from this price list:\n\n${text}`,
+          text: `${hintText}Extract all priced line items from this price list:\n\n${text}`,
         },
       ],
       CHUNK_MAX_TOKENS,
@@ -275,7 +296,7 @@ async function extractTextChunked(text: string): Promise<ExtractionResult> {
       [
         {
           type: 'text',
-          text: `Extract all priced line items from this section of a vendor price list. Use the document header/vendor context to set defaultVendorName. The first line after the context is the column header.\n\n${vendorContext}${chunk}`,
+          text: `${hintText}Extract all priced line items from this section of a vendor price list. Use the document header/vendor context to set defaultVendorName. The first line after the context is the column header.\n\n${vendorContext}${chunk}`,
         },
       ],
       CHUNK_MAX_TOKENS,
@@ -305,9 +326,11 @@ async function extractTextChunked(text: string): Promise<ExtractionResult> {
 
 export async function extractPriceRows(
   input: ExtractInput,
+  opts?: { freightHint?: FreightHint },
 ): Promise<ExtractionResult> {
+  const hint = opts?.freightHint ?? null
   if (input.kind === 'text') {
-    return extractTextChunked(input.text)
+    return extractTextChunked(input.text, hint)
   }
 
   // PDFs can't be cheaply split, so send the whole document with a large
@@ -316,7 +339,7 @@ export async function extractPriceRows(
     [
       {
         type: 'text',
-        text: 'Extract all priced line items from this attached price list document.',
+        text: `${freightHintText(hint)}Extract all priced line items from this attached price list document.`,
       },
       {
         type: 'file',

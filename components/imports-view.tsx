@@ -75,6 +75,7 @@ export function ImportsView({
   const [open, setOpen] = useState(false)
   const [locationName, setLocationName] = useState('')
   const [vendorName, setVendorName] = useState('')
+  const [freightDefault, setFreightDefault] = useState('auto')
   const canAdmin = useCanAdmin()
   const [effectiveDate, setEffectiveDate] = useState(
     new Date().toISOString().slice(0, 10),
@@ -106,6 +107,7 @@ export function ImportsView({
     body.set('effectiveDate', effectiveDate)
     body.set('vendorName', vendorName.trim())
     body.set('locationName', locationName.trim())
+    body.set('freightDefault', freightDefault)
 
     setUploading(true)
     try {
@@ -119,6 +121,7 @@ export function ImportsView({
       setFileName('')
       setVendorName('')
       setLocationName('')
+      setFreightDefault('auto')
       if (fileRef.current) fileRef.current.value = ''
       router.push(`/imports/${data.importId}`)
     } catch {
@@ -255,6 +258,29 @@ export function ImportsView({
                       </Select>
                     )}
                   </div>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="freightDefault">Freight terms</Label>
+                  <Select
+                    value={freightDefault}
+                    onValueChange={(v) => setFreightDefault(v ?? 'auto')}
+                  >
+                    <SelectTrigger id="freightDefault">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">Detect from file</SelectItem>
+                      <SelectItem value="fob">FOB origin (freight not included)</SelectItem>
+                      <SelectItem value="delivered">Delivered (freight included)</SelectItem>
+                      <SelectItem value="both">Both FOB &amp; delivered prices</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Leave on “Detect from file” to read terms per line. Choose a
+                    value to apply it to every row when the price list doesn’t
+                    state it clearly. You can still adjust individual rows during
+                    review.
+                  </p>
                 </div>
                 {error && (
                   <p className="text-sm text-destructive" role="alert">

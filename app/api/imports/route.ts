@@ -236,6 +236,12 @@ export async function POST(req: NextRequest) {
   const effectiveDate = String(formData.get('effectiveDate') ?? '').trim()
   const vendorName = String(formData.get('vendorName') ?? '').trim()
   const locationName = String(formData.get('locationName') ?? '').trim()
+  const freightDefaultRaw = String(formData.get('freightDefault') ?? 'auto')
+  const freightDefault = (['fob', 'delivered', 'both'] as const).includes(
+    freightDefaultRaw as 'fob' | 'delivered' | 'both',
+  )
+    ? (freightDefaultRaw as 'fob' | 'delivered' | 'both')
+    : null
 
   if (!(file instanceof File)) {
     return NextResponse.json({ error: 'No file provided' }, { status: 400 })
@@ -339,11 +345,14 @@ export async function POST(req: NextRequest) {
   let extraction
   try {
     if (isPdf) {
-      extraction = await extractPriceRows({
-        kind: 'pdf',
-        data: buffer,
-        filename: file.name,
-      })
+      extraction = await extractPriceRows(
+        {
+          kind: 'pdf',
+          data: buffer,
+          filename: file.name,
+        },
+        { freightHint: freightDefault },
+      )
     } else {
       const wb = XLSX.read(buffer, { type: 'buffer' })
       const text = workbookToText(wb)
@@ -356,7 +365,10 @@ export async function POST(req: NextRequest) {
           { status: 422 },
         )
       }
-      extraction = await extractPriceRows({ kind: 'text', text })
+      extraction = await extractPriceRows(
+        { kind: 'text', text },
+        { freightHint: freightDefault },
+      )
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -442,6 +454,14 @@ export async function POST(req: NextRequest) {
           rawPackSize,
           r.baseUnit?.trim() || r.unit?.trim() || null,
         )
+        // A user-declared file-level basis overrides per-row detection. For
+        // delivered, freight is baked into the unit price, so zero out any
+        // separately-extracted shipping to avoid double-counting.
+        const freightTerms = freightDefault ?? normalizeFreight(r.freightTerms)
+        const shippingCost =
+          freightDefault === 'delivered'
+            ? '0'
+            : toNumericString(r.shippingCost) ?? '0'
         return {
           userId,
           importId,
@@ -453,8 +473,8 @@ export async function POST(req: NextRequest) {
           baseUnit,
           category: r.category?.trim() || null,
           unitPrice: toNumericString(r.unitPrice),
-          shippingCost: toNumericString(r.shippingCost) ?? '0',
-          freightTerms: normalizeFreight(r.freightTerms),
+          shippingCost,
+          freightTerms,
           deliveredPrice: toNumericString(r.deliveredPrice),
           currency: (r.currency?.trim() || 'USD').toUpperCase(),
           needsReview: reviewReason !== null,
