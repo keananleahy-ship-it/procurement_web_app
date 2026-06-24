@@ -382,6 +382,15 @@ export function MatchingView({
                               AI
                             </Badge>
                           )}
+                          {r.matchMethod === 'spec' && (
+                            <Badge
+                              variant="outline"
+                              className="gap-1 border-accent-foreground/20 text-xs text-accent-foreground"
+                            >
+                              <Boxes className="size-3" />
+                              Spec
+                            </Badge>
+                          )}
                         </div>
                       </TableCell>
                       {canEdit && (

@@ -3,7 +3,8 @@
 import { db } from '@/lib/db'
 import { canonicalItems, products } from '@/lib/db/schema'
 import { bestMatch } from '@/lib/match'
-import { aiMatchProducts, aiDeriveSpecs } from '@/lib/match-ai'
+import { aiMatchProducts } from '@/lib/match-ai'
+import { parseProductSpec } from '@/lib/spec-parse'
 import { requireUser, requireEditor } from '@/lib/roles'
 import { and, asc, eq, inArray, notInArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
@@ -309,55 +310,7 @@ export async function resetMatch(productId: number) {
   revalidatePath('/')
 }
 
-// Normalize viscosity so equivalent forms collapse to one key:
-// "15W40"/"15w-40"/"15 W 40" -> "15w-40"; "ISO46"/"iso 46" -> "iso 46".
-function normalizeViscosity(v: string | null): string {
-  if (!v) return '-'
-  const s = v.trim().toLowerCase().replace(/\s+/g, ' ')
-  const sae = s.match(/(\d+)\s*w\s*-?\s*(\d+)/) // 15w-40, 15w40, 15 w 40
-  if (sae) return `${sae[1]}w-${sae[2]}`
-  const saeMono = s.match(/^sae\s*(\d+)$/) || s.match(/^(\d+)w$/)
-  if (saeMono) return s.replace(/\s+/g, '')
-  const iso = s.match(/iso\s*(?:vg)?\s*0*(\d+)/) // iso 46, iso46, iso vg 46
-  if (iso) return `iso ${iso[1]}`
-  const nlgi = s.match(/nlgi\s*([\d.]+)/)
-  if (nlgi) return `nlgi ${nlgi[1]}`
-  return s
-}
-
-// Normalize the product kind so phrasing variants collapse to one key.
-function normalizeKind(k: string): string {
-  let s = (k || '').trim().toLowerCase().replace(/\s+/g, ' ')
-  // Collapse common synonyms onto a single canonical category.
-  if (/(hdmo|hdeo|diesel engine|fleet|heavy[- ]duty (engine|motor|diesel))/.test(s))
-    s = 'heavy-duty engine oil'
-  else if (/\batf\b|automatic transmission/.test(s))
-    s = 'automatic transmission fluid'
-  else if (/passenger car|pcmo|motor oil/.test(s) && !/heavy/.test(s))
-    s = 'passenger car motor oil'
-  else if (/hydraulic/.test(s)) s = 'hydraulic fluid'
-  else if (/gear/.test(s)) s = 'gear oil'
-  else if (/grease/.test(s)) s = 'grease'
-  else if (/coolant|antifreeze/.test(s)) s = 'coolant'
-  return s
-}
-
-// Build a deterministic, brand-free grouping key from an AI-derived spec. Built
-// in code (not by the model) so the same spec always yields the same key across
-// batches. The key is product kind + viscosity only: performance grade and base
-// type are inconsistently stated across vendors' product names, so including
-// them fragmented equivalent oils into many single-vendor groups. They are kept
-// in the display name for visibility but do not split the group.
-function specSignature(s: {
-  productKind: string
-  viscosity: string | null
-}): string {
-  return [normalizeKind(s.productKind), normalizeViscosity(s.viscosity)].join(
-    '|',
-  )
-}
-
-const AUTO_GROUP_CHUNK = 50
+const AUTO_GROUP_CHUNK = 200
 
 export type AutoGroupProgress = {
   grouped: number
@@ -422,9 +375,9 @@ export async function autoGroupProducts(opts?: {
     .orderBy(asc(products.id))
 
   const total = undecided.length
-  // Products not yet stamped this run (we reuse matchMethod='ai' as the
+  // Products not yet stamped this run (we reuse matchMethod='spec' as the
   // processed marker so the loop always advances).
-  const pendingThisRun = undecided.filter((p) => p.matchMethod !== 'ai')
+  const pendingThisRun = undecided.filter((p) => p.matchMethod !== 'spec')
   const chunk = pendingThisRun.slice(0, limit)
   if (chunk.length === 0) {
     return {
@@ -437,63 +390,32 @@ export async function autoGroupProducts(opts?: {
     }
   }
 
-  const specs = await aiDeriveSpecs(
-    chunk.map((p) => ({
-      id: p.id,
-      name: p.name,
-      category: p.category,
-      unit: p.unit,
-      baseUnit: p.baseUnit,
-    })),
-  )
-  const specById = new Map(specs.map((s) => [s.productId, s]))
-
   // Load existing canonical items into a signature->id cache so equivalent
   // specs reuse the same canonical item instead of creating duplicates. Items
   // created by this grouper store their exact signature in specKey; for
-  // confirmed/hand-made items we best-effort derive one from category + name.
+  // confirmed/hand-made items we best-effort derive one by parsing the name.
   const existing = await db.select().from(canonicalItems)
   const sigToId = new Map<string, number>()
   for (const c of existing) {
-    const sig =
-      c.specKey ??
-      specSignature({ productKind: c.category ?? c.name, viscosity: c.name })
-    if (!sigToId.has(sig)) sigToId.set(sig, c.id)
+    const sig = c.specKey ?? parseProductSpec(c.name)?.specKey
+    if (sig && !sigToId.has(sig)) sigToId.set(sig, c.id)
   }
 
   let grouped = 0
   let createdItems = 0
+  // Products whose names yield no reliable spec (ATF, grease, antifreeze, etc.)
+  // are not auto-grouped per the chosen policy; we stamp them processed so the
+  // resumable loop advances and leave them unmatched for manual grouping.
   const stampedNoSpec: number[] = []
 
   for (const p of chunk) {
-    const spec = specById.get(p.id)
-    if (!spec || !spec.productKind?.trim()) {
-      // Spec batch failed for this product; stamp it processed so the loop
-      // advances. A later reset run can retry it.
+    const spec = parseProductSpec(p.name)
+    if (!spec) {
       stampedNoSpec.push(p.id)
       continue
     }
 
-    const sig = specSignature(spec)
-    // Build a stable, uniform canonical name from the grouping spec (kind +
-    // viscosity) so equivalent items read consistently regardless of which
-    // product created them. Grade/base type are appended for context only.
-    const kindTitle = normalizeKind(spec.productKind)
-      .split(' ')
-      .map((w) => (w.length > 3 ? w[0].toUpperCase() + w.slice(1) : w))
-      .join(' ')
-    const visc = normalizeViscosity(spec.viscosity)
-    const extras = [spec.performanceGrade?.trim(), spec.baseType !== 'unknown' ? spec.baseType : null]
-      .filter(Boolean)
-      .join(', ')
-    const displayName = [
-      kindTitle,
-      visc !== '-' ? visc.toUpperCase() : '',
-      extras ? `(${extras})` : '',
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .trim()
+    const sig = spec.specKey
     let canonicalId = sigToId.get(sig)
 
     if (!canonicalId) {
@@ -501,8 +423,8 @@ export async function autoGroupProducts(opts?: {
         .insert(canonicalItems)
         .values({
           userId,
-          name: displayName,
-          category: normalizeKind(spec.productKind),
+          name: spec.displayName,
+          category: spec.category,
           unit: p.unit ?? null,
           baseUnit: p.baseUnit ?? null,
           specKey: sig,
@@ -519,8 +441,8 @@ export async function autoGroupProducts(opts?: {
         canonicalItemId: canonicalId,
         matchStatus: 'suggested',
         matchScore: '0.9000',
-        matchMethod: 'ai',
-        matchReason: `Spec: ${displayName}`.slice(0, 280),
+        matchMethod: 'spec',
+        matchReason: `Spec match: ${spec.displayName}`.slice(0, 280),
       })
       .where(eq(products.id, p.id))
     grouped++
@@ -529,7 +451,7 @@ export async function autoGroupProducts(opts?: {
   if (stampedNoSpec.length > 0) {
     await db
       .update(products)
-      .set({ matchMethod: 'ai' })
+      .set({ matchMethod: 'spec' })
       .where(inArray(products.id, stampedNoSpec))
   }
 
