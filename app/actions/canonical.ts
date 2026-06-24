@@ -3,7 +3,7 @@
 import { db } from '@/lib/db'
 import { canonicalItems, products } from '@/lib/db/schema'
 import { bestMatch } from '@/lib/match'
-import { aiMatchProducts } from '@/lib/match-ai'
+import { aiMatchProducts, aiDeriveSpecs } from '@/lib/match-ai'
 import { requireUser, requireEditor } from '@/lib/roles'
 import { and, asc, eq, inArray, notInArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
@@ -307,6 +307,174 @@ export async function resetMatch(productId: number) {
   revalidatePath('/matching')
   revalidatePath('/compare')
   revalidatePath('/')
+}
+
+// Build a deterministic, brand-free grouping key from an AI-derived spec. Built
+// in code (not by the model) so the same spec always yields the same key across
+// batches. Strictness here = product kind + viscosity + performance grade +
+// base type, keeping synthetic/conventional and different grades separate.
+function specSignature(s: {
+  productKind: string
+  viscosity: string | null
+  performanceGrade: string | null
+  baseType: string
+}): string {
+  return [
+    s.productKind?.trim().toLowerCase(),
+    s.viscosity?.trim().toLowerCase() || '-',
+    s.performanceGrade?.trim().toLowerCase() || '-',
+    s.baseType && s.baseType !== 'unknown' ? s.baseType : '-',
+  ].join('|')
+}
+
+const AUTO_GROUP_CHUNK = 50
+
+export type AutoGroupProgress = {
+  grouped: number
+  createdItems: number
+  processed: number
+  remaining: number
+  total: number
+  done: boolean
+}
+
+/**
+ * Seed the canonical catalog from the products themselves — chunked and
+ * resumable. For each undecided product it derives a brand-free specification,
+ * finds or creates a canonical item for that spec signature, and links the
+ * product as a 'suggested' match. This makes cross-vendor, cross-brand
+ * comparison possible when no canonical catalog has been built yet.
+ *
+ * Pass { reset: true } on the first call to reconsider all undecided products.
+ */
+export async function autoGroupProducts(opts?: {
+  reset?: boolean
+  limit?: number
+}): Promise<AutoGroupProgress> {
+  const { id: userId } = await requireEditor()
+  const limit = Math.max(1, opts?.limit ?? AUTO_GROUP_CHUNK)
+
+  if (opts?.reset) {
+    await db
+      .update(products)
+      .set({ matchMethod: null })
+      .where(notInArray(products.matchStatus, ['confirmed', 'rejected']))
+  }
+
+  const undecided = await db
+    .select()
+    .from(products)
+    .where(notInArray(products.matchStatus, ['confirmed', 'rejected']))
+    .orderBy(asc(products.id))
+
+  const total = undecided.length
+  // Products not yet stamped this run (we reuse matchMethod='ai' as the
+  // processed marker so the loop always advances).
+  const pendingThisRun = undecided.filter((p) => p.matchMethod !== 'ai')
+  const chunk = pendingThisRun.slice(0, limit)
+  if (chunk.length === 0) {
+    return {
+      grouped: 0,
+      createdItems: 0,
+      processed: 0,
+      remaining: 0,
+      total,
+      done: true,
+    }
+  }
+
+  const specs = await aiDeriveSpecs(
+    chunk.map((p) => ({
+      id: p.id,
+      name: p.name,
+      category: p.category,
+      unit: p.unit,
+      baseUnit: p.baseUnit,
+    })),
+  )
+  const specById = new Map(specs.map((s) => [s.productId, s]))
+
+  // Load existing canonical items into a signature->id cache so equivalent
+  // specs reuse the same canonical item instead of creating duplicates.
+  const existing = await db.select().from(canonicalItems)
+  const sigToId = new Map<string, number>()
+  for (const c of existing) {
+    // Canonical items created by this seeder store their signature in a stable
+    // form; match on lowercased name as a fallback for hand-created items.
+    sigToId.set(c.name.trim().toLowerCase(), c.id)
+  }
+
+  let grouped = 0
+  let createdItems = 0
+  const stampedNoSpec: number[] = []
+
+  for (const p of chunk) {
+    const spec = specById.get(p.id)
+    if (!spec || !spec.productKind?.trim()) {
+      // Spec batch failed for this product; stamp it processed so the loop
+      // advances. A later reset run can retry it.
+      stampedNoSpec.push(p.id)
+      continue
+    }
+
+    const sig = specSignature(spec)
+    const displayName = spec.displayName?.trim() || spec.productKind.trim()
+    // Use the signature as the lookup key; fall back to display name dedupe.
+    const cacheKey = sig
+    let canonicalId = sigToId.get(cacheKey)
+
+    if (!canonicalId) {
+      const [created] = await db
+        .insert(canonicalItems)
+        .values({
+          userId,
+          name: displayName,
+          category: spec.productKind.trim(),
+          unit: p.unit ?? null,
+          baseUnit: p.baseUnit ?? null,
+        })
+        .returning({ id: canonicalItems.id })
+      canonicalId = created.id
+      sigToId.set(cacheKey, canonicalId)
+      sigToId.set(displayName.trim().toLowerCase(), canonicalId)
+      createdItems++
+    }
+
+    await db
+      .update(products)
+      .set({
+        canonicalItemId: canonicalId,
+        matchStatus: 'suggested',
+        matchScore: '0.9000',
+        matchMethod: 'ai',
+        matchReason: `Spec: ${displayName}`.slice(0, 280),
+      })
+      .where(eq(products.id, p.id))
+    grouped++
+  }
+
+  if (stampedNoSpec.length > 0) {
+    await db
+      .update(products)
+      .set({ matchMethod: 'ai' })
+      .where(inArray(products.id, stampedNoSpec))
+  }
+
+  const processed = chunk.length
+  const remaining = pendingThisRun.length - processed
+
+  revalidatePath('/matching')
+  revalidatePath('/canonical')
+  revalidatePath('/compare')
+  revalidatePath('/')
+  return {
+    grouped,
+    createdItems,
+    processed,
+    remaining,
+    total,
+    done: remaining <= 0,
+  }
 }
 
 export type MatchRow = {

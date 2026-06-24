@@ -4,6 +4,7 @@ import { useMemo, useState, useTransition } from 'react'
 import type { MatchRow } from '@/app/actions/canonical'
 import {
   assignMatch,
+  autoGroupProducts,
   confirmMatch,
   generateAiSuggestions,
   generateSuggestions,
@@ -38,6 +39,7 @@ import {
   Sparkles,
   ListChecks,
   AlertCircle,
+  Boxes,
 } from 'lucide-react'
 
 type CanonicalOption = { id: number; name: string }
@@ -120,7 +122,11 @@ export function MatchingView({
   } | null>(null)
   const [aiError, setAiError] = useState<string | null>(null)
 
+  // What the running loop is doing, so the progress UI can label itself.
+  const [aiMode, setAiMode] = useState<'match' | 'group'>('match')
+
   async function runAiMatching() {
+    setAiMode('match')
     setAiRunning(true)
     setAiError(null)
     setAiProgress({ done: 0, total: 0 })
@@ -136,6 +142,31 @@ export function MatchingView({
     } catch (err) {
       setAiError(
         err instanceof Error ? err.message : 'AI matching failed. Try again.',
+      )
+    } finally {
+      setAiRunning(false)
+      setAiProgress(null)
+    }
+  }
+
+  async function runAutoGroup() {
+    setAiMode('group')
+    setAiRunning(true)
+    setAiError(null)
+    setAiProgress({ done: 0, total: 0 })
+    try {
+      let reset = true
+      for (let i = 0; i < 1000; i++) {
+        const res = await autoGroupProducts({ reset })
+        reset = false
+        setAiProgress({ done: res.total - res.remaining, total: res.total })
+        if (res.done) break
+      }
+    } catch (err) {
+      setAiError(
+        err instanceof Error
+          ? err.message
+          : 'Auto-grouping failed. Try again.',
       )
     } finally {
       setAiRunning(false)
@@ -173,14 +204,26 @@ export function MatchingView({
               Auto-match products to canonical items
             </p>
             <p className="text-sm text-muted-foreground">
-              Run a fast name-similarity pass, then an AI pass that catches
-              synonyms and pack-size variants. You confirm or reject each one —
-              nothing is grouped until you approve it.
+              No catalog yet? Use <span className="font-medium">Auto-group by
+              spec</span> to build canonical items from your products by
+              specification (viscosity, grade, type) regardless of brand. Or run
+              a name-similarity pass and an AI pass against existing items. You
+              confirm or reject each suggestion — nothing is grouped until you
+              approve it.
             </p>
           </div>
         </div>
         {canEdit && (
           <div className="flex flex-wrap items-center gap-2">
+            <Button
+              disabled={aiRunning || genPending}
+              onClick={() => void runAutoGroup()}
+            >
+              <Boxes className="size-4" />
+              {aiRunning && aiMode === 'group'
+                ? 'Grouping…'
+                : 'Auto-group by spec'}
+            </Button>
             <Button
               variant="outline"
               disabled={genPending || aiRunning || noCanonical}
@@ -194,11 +237,12 @@ export function MatchingView({
               {genPending ? 'Scanning…' : 'Name match'}
             </Button>
             <Button
+              variant="outline"
               disabled={aiRunning || genPending || noCanonical}
               onClick={() => void runAiMatching()}
             >
               <Sparkles className="size-4" />
-              {aiRunning ? 'Matching…' : 'AI match pass'}
+              {aiRunning && aiMode === 'match' ? 'Matching…' : 'AI match pass'}
             </Button>
           </div>
         )}
@@ -209,7 +253,9 @@ export function MatchingView({
           <div className="flex items-center justify-between text-sm text-foreground">
             <span className="flex items-center gap-2">
               <Sparkles className="size-4 text-accent-foreground" />
-              Matching products with AI…
+              {aiMode === 'group'
+                ? 'Grouping products by specification…'
+                : 'Matching products with AI…'}
             </span>
             <span className="tabular-nums text-muted-foreground">
               {aiProgress.total > 0
