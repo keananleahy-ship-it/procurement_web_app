@@ -202,25 +202,47 @@ export function detectUnitSystem(
 const VOL_UNIT_RE =
   /(\d+(?:\.\d+)?)\s*(usg|u\.?s\.?\s?gal(?:lon)?s?|gal(?:lon)?s?|litres?|liters?|ltrs?|millilitres?|milliliters?|ml|quarts?|qts?|l)\b/i
 
+const VOL_UNIT_GROUP =
+  'usg|gal(?:lon)?s?|litres?|liters?|ltrs?|ml|millilitres?|milliliters?|quarts?|qts?|pints?|pts?|fl\\s?oz|l'
+
 // Case-pack notation like "12/1 QT" (12 containers of 1 quart) or "4/1 GAL"
 // (4 jugs of 1 gallon). Captures outer count, inner size, and the volume unit.
-const CASE_PACK_RE =
-  /(\d+)\s*\/\s*(\d+(?:\.\d+)?)\s*(usg|gal(?:lon)?s?|litres?|liters?|ltrs?|ml|millilitres?|milliliters?|quarts?|qts?|pints?|pts?|fl\s?oz|l)\b/i
+const CASE_PACK_RE = new RegExp(
+  `(\\d+)\\s*\\/\\s*(\\d+(?:\\.\\d+)?)\\s*(${VOL_UNIT_GROUP})\\b`,
+  'i',
+)
+
+// Spaced case-pack notation like "3 Gal Case" or "12 Qt Pack" — a case/pack
+// holding N of a volume unit (no slash). The "case"/"pack" keyword is required
+// so single containers ("55 Gal Drum", "5 Gal Pail") are NOT treated as packs.
+const SPACED_CASE_PACK_RE = new RegExp(
+  `(\\d+(?:\\.\\d+)?)\\s*(${VOL_UNIT_GROUP})\\s*(?:case|pack)\\b`,
+  'i',
+)
 
 // Resolve a multi-unit case pack into its true total volume in native units.
-// "12/1 QT" → { qty: 12, unit: "quart" } (12 × 1 quart), which normalizeContainer
-// then converts to 3 USG. Returns null when the text isn't a volumetric case
-// pack (e.g. "12/1 Case" with no unit), so the caller can leave it untouched.
+// "12/1 QT" → { qty: 12, unit: "quart" } (12 × 1 quart) and "3 Gal Case" →
+// { qty: 3, unit: "gal" }, which normalizeContainer then converts to gallons.
+// Returns null when the text isn't a volumetric case pack (e.g. "12/1 Case"
+// with no unit), so the caller can leave it untouched.
 export function resolveCasePack(
   text: string,
 ): { qty: number; unit: string } | null {
-  const m = (text || '').match(CASE_PACK_RE)
-  if (!m) return null
-  const outer = Number.parseFloat(m[1])
-  const inner = Number.parseFloat(m[2])
-  const unit = m[3].trim()
-  if (!(outer > 0) || !(inner > 0)) return null
-  return { qty: outer * inner, unit }
+  const t = text || ''
+  const m = t.match(CASE_PACK_RE)
+  if (m) {
+    const outer = Number.parseFloat(m[1])
+    const inner = Number.parseFloat(m[2])
+    const unit = m[3].trim()
+    if (outer > 0 && inner > 0) return { qty: outer * inner, unit }
+  }
+  const s = t.match(SPACED_CASE_PACK_RE)
+  if (s) {
+    const qty = Number.parseFloat(s[1])
+    const unit = s[2].trim()
+    if (qty > 0) return { qty, unit }
+  }
+  return null
 }
 
 // A tote / IBC labelled with a number ("275 Tote", "330 IBC"). In North America

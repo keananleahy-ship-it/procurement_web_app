@@ -405,10 +405,16 @@ export async function POST(req: NextRequest) {
         let deliveredPrice = r.deliveredPrice ?? null
         let shipping =
           freightDefault === 'delivered' ? 0 : (r.shippingCost ?? 0)
+        let displayUnit = r.unit?.trim() || null
 
         // Per-package import: divide every monetary field by the container size
         // to express it per base unit, matching the per-gallon comparison basis.
         if (priceBasis === 'per-package') {
+          // Every price in this file ends up on a per-gallon / per-pound basis,
+          // so report the unit of measure that way rather than echoing the raw
+          // packaging token ("Qt", "tote-275", "each"). The original packaging
+          // text is preserved in containerRaw.
+          displayUnit = baseUnitWord(baseUnit)
           const packGallons = Number(packSize)
           const word = baseUnitWord(baseUnit)
           const ceiling = PER_UNIT_CEILING[baseKind(baseUnit)]
@@ -446,7 +452,7 @@ export async function POST(req: NextRequest) {
           productName: r.productName.trim(),
           vendorName: resolvedVendorName,
           sku: r.sku?.trim() || null,
-          unit: r.unit?.trim() || null,
+          unit: displayUnit,
           packSize,
           baseUnit,
           containerRaw: r.containerRaw?.trim() || null,
