@@ -160,6 +160,15 @@ function freightHintText(hint: FreightHint): string {
   }
 }
 
+// This vendor's known nomenclature, injected into the prompt so the model
+// intuits THIS vendor's conventions (e.g. "*" = pack multiplier, "ugl" = US
+// gallon) rather than guessing with uniform assumptions across all vendors.
+function vendorHintText(hint: string | null | undefined): string {
+  const body = (hint ?? '').trim()
+  if (!body) return ''
+  return `KNOWN CONVENTIONS FOR THIS VENDOR — apply these when reading sizes/units:\n${body}\n\n`
+}
+
 type ExtractInput =
   | { kind: 'text'; text: string }
   | { kind: 'pdf'; data: Buffer | Uint8Array; filename: string }
@@ -243,8 +252,9 @@ const CHUNK_MAX_TOKENS = 24_000
 async function extractTextChunked(
   text: string,
   hint: FreightHint,
+  vendorHint?: string | null,
 ): Promise<ExtractionResult> {
-  const hintText = freightHintText(hint)
+  const hintText = `${vendorHintText(vendorHint)}${freightHintText(hint)}`
   const allLines = text.split('\n')
 
   // The first non-blank, non-"# Sheet:" line is the column header; prepend it
@@ -326,11 +336,12 @@ async function extractTextChunked(
 
 export async function extractPriceRows(
   input: ExtractInput,
-  opts?: { freightHint?: FreightHint },
+  opts?: { freightHint?: FreightHint; vendorHint?: string | null },
 ): Promise<ExtractionResult> {
   const hint = opts?.freightHint ?? null
+  const vendorHint = opts?.vendorHint ?? null
   if (input.kind === 'text') {
-    return extractTextChunked(input.text, hint)
+    return extractTextChunked(input.text, hint, vendorHint)
   }
 
   // PDFs can't be cheaply split, so send the whole document with a large
@@ -339,7 +350,7 @@ export async function extractPriceRows(
     [
       {
         type: 'text',
-        text: `${freightHintText(hint)}Extract all priced line items from this attached price list document.`,
+        text: `${vendorHintText(vendorHint)}${freightHintText(hint)}Extract all priced line items from this attached price list document.`,
       },
       {
         type: 'file',

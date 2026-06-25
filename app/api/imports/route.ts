@@ -3,8 +3,14 @@ import { put } from '@vercel/blob'
 import * as XLSX from 'xlsx'
 import { getCurrentUser, canEdit, canAdmin } from '@/lib/roles'
 import { db } from '@/lib/db'
-import { imports, importRows, vendors, locations } from '@/lib/db/schema'
-import { asc } from 'drizzle-orm'
+import {
+  imports,
+  importRows,
+  vendors,
+  locations,
+  vendorTokenMappings,
+} from '@/lib/db/schema'
+import { asc, eq, and } from 'drizzle-orm'
 import { extractPriceRows, type ExtractedRow } from '@/lib/extract'
 import {
   normalizeContainer,
@@ -20,6 +26,12 @@ import {
   baseUnitWord,
   PER_UNIT_CEILING,
 } from '@/lib/price-basis'
+import {
+  buildVendorProfile,
+  describeProfileForPrompt,
+  type VendorTokenRow,
+} from '@/lib/vendor-profile'
+import { deriveUnitClass } from '@/lib/unit-class'
 
 export const maxDuration = 120
 
@@ -155,6 +167,41 @@ export async function POST(req: NextRequest) {
     )
   }
 
+  // Load THIS vendor's learned nomenclature so the parser and AI extractor use
+  // its conventions instead of assuming uniformity across vendors. A brand-new
+  // vendor simply has no rows yet (profile = seed defaults).
+  const [vendorRow] = await db
+    .select({ id: vendors.id })
+    .from(vendors)
+    .where(and(eq(vendors.userId, userId), eq(vendors.name, resolvedVendorName)))
+    .limit(1)
+  const vendorId = vendorRow?.id ?? null
+  const tokenRows: VendorTokenRow[] = vendorId
+    ? (
+        await db
+          .select({
+            token: vendorTokenMappings.token,
+            kind: vendorTokenMappings.kind,
+            value: vendorTokenMappings.value,
+            source: vendorTokenMappings.source,
+          })
+          .from(vendorTokenMappings)
+          .where(
+            and(
+              eq(vendorTokenMappings.userId, userId),
+              eq(vendorTokenMappings.vendorId, vendorId),
+            ),
+          )
+      ).map((r) => ({
+        token: r.token,
+        kind: r.kind as VendorTokenRow['kind'],
+        value: r.value,
+        source: r.source as VendorTokenRow['source'],
+      }))
+    : []
+  const vendorProfile = buildVendorProfile(tokenRows)
+  const vendorHint = describeProfileForPrompt(tokenRows)
+
   // Resolve the location the same way: snap to an existing location
   // case-insensitively, otherwise create it (admins only) so we never end up
   // with near-duplicate location names.
@@ -219,7 +266,7 @@ export async function POST(req: NextRequest) {
           data: buffer,
           filename: file.name,
         },
-        { freightHint: freightDefault },
+        { freightHint: freightDefault, vendorHint },
       )
     } else {
       const wb = XLSX.read(buffer, { type: 'buffer' })
@@ -235,7 +282,7 @@ export async function POST(req: NextRequest) {
       }
       extraction = await extractPriceRows(
         { kind: 'text', text },
-        { freightHint: freightDefault },
+        { freightHint: freightDefault, vendorHint },
       )
     }
   } catch (err) {
@@ -355,7 +402,9 @@ export async function POST(req: NextRequest) {
       // notation. The extractor often stores the outer count (12) with a
       // non-volumetric unit ("each"), so prefer the parsed pack volume — 12
       // quarts here, which normalizes to 3 gal — for an accurate per-gallon basis.
-      const casePack = isBulkDecant ? null : resolveCasePack(containerText)
+      const casePack = isBulkDecant
+        ? null
+        : resolveCasePack(containerText, vendorProfile)
       if (tote) {
         nativeSize = tote.gallons
         nativeUnit = 'USG'
@@ -363,7 +412,7 @@ export async function POST(req: NextRequest) {
         nativeSize = casePack.qty
         nativeUnit = casePack.unit
       } else if (!isBulkDecant && rawPackSize === 1) {
-        const inf = inferContainer(containerText, unitSystem)
+        const inf = inferContainer(containerText, unitSystem, vendorProfile)
         if (inf) {
           nativeSize = inf.packSize
           nativeUnit = inf.baseUnit
@@ -374,7 +423,14 @@ export async function POST(req: NextRequest) {
         }
       }
       const { packSize, baseUnit } = normalizeContainer(nativeSize, nativeUnit)
-      return { r, isBulkDecant, packSize, baseUnit, inferredNote }
+      // Classify the item's comparison dimension (volume/weight/each). Per-piece
+      // items (filters, parts) end up 'each' and are excluded from the gallon/
+      // pound comparison engine downstream.
+      const unitClass = deriveUnitClass(baseUnit, {
+        profile: vendorProfile,
+        text: containerText,
+      })
+      return { r, isBulkDecant, packSize, baseUnit, unitClass, inferredNote }
     })
 
     // Detect whether this import quotes per single unit (per gallon/lb) or per
@@ -389,7 +445,8 @@ export async function POST(req: NextRequest) {
     )
 
     await db.insert(importRows).values(
-      sized.map(({ r, isBulkDecant, packSize, baseUnit, inferredNote }) => {
+      sized.map(
+        ({ r, isBulkDecant, packSize, baseUnit, unitClass, inferredNote }) => {
         let reviewReason = reviewFor(r)
         if (inferredNote) {
           reviewReason = reviewReason
@@ -455,6 +512,7 @@ export async function POST(req: NextRequest) {
           unit: displayUnit,
           packSize,
           baseUnit,
+          unitClass,
           containerRaw: r.containerRaw?.trim() || null,
           category: r.category?.trim() || null,
           unitPrice: toNumericString(unitPrice),

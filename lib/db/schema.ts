@@ -124,6 +124,10 @@ export const products = pgTable('products', {
     .default('1'),
   // The base unit of measure for packSize (e.g. 'each', 'litre', 'kg').
   baseUnit: text('baseUnit'),
+  // Unit class derived from baseUnit: 'volume' (->gal) | 'weight' (->lb) |
+  // 'each' (per-piece, e.g. filters/parts). Per-piece items are excluded from
+  // the gallon/pound comparison engine.
+  unitClass: text('unitClass'),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 
@@ -142,6 +146,36 @@ export const matchOverrides = pgTable('match_overrides', {
   canonicalItemId: integer('canonicalItemId').notNull(),
   // The product name as last seen, for display/debugging.
   sampleName: text('sampleName'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+  updatedAt: timestamp('updatedAt').notNull().defaultNow(),
+})
+
+// Per-vendor nomenclature dictionary. Each vendor accumulates its own
+// token->meaning mappings so the parser/extractor can intuit that vendor's
+// conventions instead of assuming all vendors are uniform. Seeded with common
+// industry tokens, then grows automatically as reviewers correct rows
+// (source='learned') or edit the dictionary directly (source='manual').
+export const vendorTokenMappings = pgTable('vendor_token_mappings', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  vendorId: integer('vendorId').notNull(),
+  // Raw token as printed by the vendor, lowercased (e.g. 'ugl', 'kar',
+  // 'epack', '*').
+  token: text('token').notNull(),
+  // What the token represents:
+  //  'unit'       -> a unit of measure; value is a canonical alias
+  //                  normalizeContainer understands (e.g. 'ugl' -> 'gal').
+  //  'separator'  -> a pack multiplier separator; value is the literal char
+  //                  (e.g. '*' -> '*', meaning "N<sep>M = N times M").
+  //  'container'  -> a fixed-size container; value is capacity in US gallons
+  //                  as a string (e.g. 'epack' -> '6').
+  //  'unit_class' -> forces a unit class; value is 'volume' | 'weight' | 'each'.
+  kind: text('kind').notNull(),
+  value: text('value').notNull(),
+  // 'seed' | 'learned' | 'manual'. Manual wins over learned wins over seed.
+  source: text('source').notNull().default('learned'),
+  // How many times a reviewer correction reinforced this mapping.
+  confirmations: integer('confirmations').notNull().default(1),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
   updatedAt: timestamp('updatedAt').notNull().defaultNow(),
 })
@@ -176,6 +210,9 @@ export const vendorPrices = pgTable('vendor_prices', {
     .notNull()
     .default('1'),
   baseUnit: text('baseUnit'),
+  // Unit class: 'volume' | 'weight' | 'each'. Per-piece ('each') offers are
+  // listed but excluded from the gallon/pound comparison + savings math.
+  unitClass: text('unitClass'),
   // Vendor part number for this specific container/offer.
   sku: text('sku'),
   // The date this pricing is effective (chosen by the uploader). Falls back to
@@ -235,6 +272,8 @@ export const importRows = pgTable('import_rows', {
     .default('1'),
   // Base unit of measure for packSize (e.g. 'each', 'litre', 'kg', 'USG').
   baseUnit: text('baseUnit'),
+  // Unit class derived from baseUnit: 'volume' | 'weight' | 'each'.
+  unitClass: text('unitClass'),
   // The exact container/size text as printed in the source (e.g. "12/1",
   // "40/14 LB"). Used to group rows sharing the same shorthand so an ambiguous
   // definition can be resolved once for all matching rows.

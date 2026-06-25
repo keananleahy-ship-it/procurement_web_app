@@ -1,3 +1,5 @@
+import type { VendorProfile } from './vendor-profile'
+
 // Container-size normalization and inference for imported price rows.
 //
 // Two responsibilities:
@@ -205,42 +207,71 @@ const VOL_UNIT_RE =
 const VOL_UNIT_GROUP =
   'usg|gal(?:lon)?s?|litres?|liters?|ltrs?|ml|millilitres?|milliliters?|quarts?|qts?|pints?|pts?|fl\\s?oz|l'
 
-// Case-pack notation like "12/1 QT" (12 containers of 1 quart) or "4/1 GAL"
-// (4 jugs of 1 gallon). Captures outer count, inner size, and the volume unit.
-const CASE_PACK_RE = new RegExp(
-  `(\\d+)\\s*\\/\\s*(\\d+(?:\\.\\d+)?)\\s*(${VOL_UNIT_GROUP})\\b`,
-  'i',
-)
+// Weight units, so weight-based packs ("30*0.4kg" = 12 kg) resolve too.
+const WEIGHT_UNIT_GROUP =
+  'kilograms?|kilos?|kgs?|grammes?|grams?|gms?|gr|pounds?|lbs?|ounces?|ozs?|tonnes?|mt|g'
 
-// Spaced case-pack notation like "3 Gal Case" or "12 Qt Pack" — a case/pack
-// holding N of a volume unit (no slash). The "case"/"pack" keyword is required
-// so single containers ("55 Gal Drum", "5 Gal Pail") are NOT treated as packs.
-const SPACED_CASE_PACK_RE = new RegExp(
-  `(\\d+(?:\\.\\d+)?)\\s*(${VOL_UNIT_GROUP})\\s*(?:case|pack)\\b`,
-  'i',
-)
+// All units a pack's inner size may be expressed in (volume + weight).
+const PACK_UNIT_GROUP = `${VOL_UNIT_GROUP}|${WEIGHT_UNIT_GROUP}`
 
-// Resolve a multi-unit case pack into its true total volume in native units.
-// "12/1 QT" → { qty: 12, unit: "quart" } (12 × 1 quart) and "3 Gal Case" →
-// { qty: 3, unit: "gal" }, which normalizeContainer then converts to gallons.
-// Returns null when the text isn't a volumetric case pack (e.g. "12/1 Case"
-// with no unit), so the caller can leave it untouched.
+// Escape a literal string for safe inclusion in a RegExp.
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// Build the case-pack regex for a given separator set and extra unit tokens.
+// Separators default to "/"; vendors may add others (e.g. "*"). Extra units are
+// vendor aliases (e.g. "ugl") appended to the recognized unit alternation.
+function buildCasePackRe(separators: string[], extraUnits: string[]): RegExp {
+  const sepClass = ['/', ...separators].map(escapeRe).join('')
+  const units = [PACK_UNIT_GROUP, ...extraUnits.map(escapeRe)]
+    .filter(Boolean)
+    .join('|')
+  return new RegExp(
+    `(\\d+)\\s*[${sepClass}]\\s*(\\d+(?:\\.\\d+)?)\\s*(${units})\\b`,
+    'i',
+  )
+}
+
+function buildSpacedCasePackRe(extraUnits: string[]): RegExp {
+  const units = [PACK_UNIT_GROUP, ...extraUnits.map(escapeRe)]
+    .filter(Boolean)
+    .join('|')
+  return new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(${units})\\s*(?:case|pack)\\b`, 'i')
+}
+
+// Resolve a multi-unit case pack into its true total quantity in native units.
+// "12/1 QT" → { qty: 12, unit: "quart" }, "6*1qt" → { qty: 6, unit: "qt" },
+// "30*0.4kg" → { qty: 12, unit: "kg" }, "3 Gal Case" → { qty: 3, unit: "gal" } —
+// which normalizeContainer then folds into gallons or pounds. When a vendor
+// profile is supplied, its separators (e.g. "*") and unit aliases (e.g.
+// "ugl"→"gal") are recognized too. Returns null when the text isn't a
+// quantifiable pack (e.g. "12/1 Case" with no unit), so the caller leaves it be.
 export function resolveCasePack(
   text: string,
+  profile?: VendorProfile,
 ): { qty: number; unit: string } | null {
   const t = text || ''
-  const m = t.match(CASE_PACK_RE)
+  const separators = profile ? [...profile.separators] : []
+  const aliasKeys = profile ? [...profile.unitAliases.keys()] : []
+
+  const translate = (unit: string): string => {
+    if (!profile) return unit
+    return profile.unitAliases.get(unit.trim().toLowerCase()) ?? unit
+  }
+
+  const m = t.match(buildCasePackRe(separators, aliasKeys))
   if (m) {
     const outer = Number.parseFloat(m[1])
     const inner = Number.parseFloat(m[2])
-    const unit = m[3].trim()
-    if (outer > 0 && inner > 0) return { qty: outer * inner, unit }
+    if (outer > 0 && inner > 0) {
+      return { qty: outer * inner, unit: translate(m[3].trim()) }
+    }
   }
-  const s = t.match(SPACED_CASE_PACK_RE)
+  const s = t.match(buildSpacedCasePackRe(aliasKeys))
   if (s) {
     const qty = Number.parseFloat(s[1])
-    const unit = s[2].trim()
-    if (qty > 0) return { qty, unit }
+    if (qty > 0) return { qty, unit: translate(s[2].trim()) }
   }
   return null
 }
@@ -298,6 +329,7 @@ const CONTAINER_WORD_RE =
 export function inferContainer(
   text: string,
   unitSystem: UnitSystem = 'imperial',
+  profile?: VendorProfile,
 ): InferredContainer | null {
   const t = (text || '').toLowerCase()
   if (!t.trim()) return null
@@ -321,7 +353,18 @@ export function inferContainer(
     }
   }
 
-  // 2) A branded fixed-size box (E-Pack/PetroPak = 6 USG) with no printed size.
+  // 2) A vendor-specific fixed-size container learned for THIS vendor (e.g. a
+  //    branded box) takes precedence over the global defaults below.
+  if (profile) {
+    for (const [token, gallons] of profile.containers) {
+      const re = new RegExp(`(?<![a-z0-9])${escapeRe(token)}(?![a-z0-9])`, 'i')
+      if (re.test(t)) {
+        return { packSize: gallons, baseUnit: 'USG', inferred: true }
+      }
+    }
+  }
+
+  // 3) A branded fixed-size box (E-Pack/PetroPak = 6 USG) with no printed size.
   //    These have one capacity regardless of the vendor's unit system.
   for (const f of FIXED_CONTAINERS) {
     if (f.re.test(t)) {
@@ -329,7 +372,7 @@ export function inferContainer(
     }
   }
 
-  // 3) A known container with a standard capacity but no explicit size printed,
+  // 4) A known container with a standard capacity but no explicit size printed,
   //    resolved in the vendor's own unit system.
   for (const d of CONTAINER_DEFAULTS) {
     if (d.re.test(t)) {

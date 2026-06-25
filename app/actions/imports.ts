@@ -9,6 +9,7 @@ import {
   vendorPrices,
 } from '@/lib/db/schema'
 import { requireUser, requireEditor } from '@/lib/roles'
+import { deriveUnitClass } from '@/lib/unit-class'
 import { desc, eq, and } from 'drizzle-orm'
 import { del } from '@vercel/blob'
 import { revalidatePath } from 'next/cache'
@@ -47,6 +48,7 @@ type RowPatch = {
   category?: string | null
   packSize?: string
   baseUnit?: string | null
+  unitClass?: string | null
   containerRaw?: string | null
   needsReview?: boolean
   reviewReason?: string | null
@@ -55,7 +57,13 @@ type RowPatch = {
 
 export async function updateImportRow(rowId: number, patch: RowPatch) {
   await requireEditor()
-  await db.update(importRows).set(patch).where(eq(importRows.id, rowId))
+  // Keep the unit class consistent with a corrected base unit so the row's
+  // comparison eligibility (per-piece vs gallon/pound) stays accurate.
+  const next: RowPatch = { ...patch }
+  if (patch.baseUnit !== undefined && patch.unitClass === undefined) {
+    next.unitClass = deriveUnitClass(patch.baseUnit)
+  }
+  await db.update(importRows).set(next).where(eq(importRows.id, rowId))
   revalidatePath('/imports')
 }
 
