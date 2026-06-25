@@ -17,10 +17,18 @@ import {
 import { Card } from '@/components/ui/card'
 import { EmptyState } from '@/components/empty-state'
 import { useCanEdit } from '@/components/role-provider'
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from '@/components/ui/chart'
+import { Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis } from 'recharts'
 import { formatCurrency, formatDate } from '@/lib/format'
 import {
   ArrowDownNarrowWide,
   CalendarClock,
+  ChevronDown,
   GitCompareArrows,
   Layers,
   Package,
@@ -441,6 +449,7 @@ export function CompareView({
                 })}
               </TableBody>
             </Table>
+            <PackSizeCurve comparison={c} />
           </Card>
           ))}
         </div>
@@ -513,5 +522,146 @@ function FreightEstimateEditor({ offer }: { offer: PriceRow }) {
         Save
       </Button>
     </span>
+  )
+}
+
+// Per-base-unit cost as a function of container size. Collapsible because it
+// only adds value when an item is offered in more than one pack size.
+function PackSizeCurve({ comparison }: { comparison: ProductComparison }) {
+  const [open, setOpen] = useState(false)
+
+  // Cheapest comparable offer at each distinct container size, sorted by size.
+  const points = useMemo(() => {
+    const bySize = new Map<number, PriceRow>()
+    for (const o of comparison.offers) {
+      if (!o.comparable || o.packSize <= 1) continue
+      const existing = bySize.get(o.packSize)
+      if (!existing || o.pricePerBaseUnit < existing.pricePerBaseUnit) {
+        bySize.set(o.packSize, o)
+      }
+    }
+    return [...bySize.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([size, offer]) => ({
+        size,
+        label: `${size.toLocaleString(undefined, {
+          maximumFractionDigits: 2,
+        })}${offer.baseUnit ? ` ${offer.baseUnit}` : ''}`,
+        perUnit: offer.pricePerBaseUnit,
+        vendor: offer.vendorName,
+      }))
+  }, [comparison.offers])
+
+  if (points.length < 2) return null
+
+  const cheapest = points.reduce((m, p) => (p.perUnit < m.perUnit ? p : m))
+  // Bulk anomaly: the cheapest per-unit price is NOT the largest container.
+  const largest = points[points.length - 1]
+  const bulkAnomaly = cheapest.size !== largest.size
+
+  const config: ChartConfig = {
+    perUnit: { label: `Per ${comparison.baseUnit ?? 'unit'}`, color: 'var(--chart-1)' },
+  }
+
+  return (
+    <div className="border-t border-border">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 px-5 py-3 text-sm font-medium text-foreground transition-colors hover:bg-muted/40"
+        aria-expanded={open}
+      >
+        <span className="inline-flex items-center gap-2">
+          <Package className="size-4 text-muted-foreground" />
+          Pack-size cost curve
+          {bulkAnomaly && (
+            <Badge
+              variant="outline"
+              className="gap-1 border-warning/40 text-warning"
+            >
+              <TriangleAlert className="size-3" />
+              Bigger isn&apos;t cheaper
+            </Badge>
+          )}
+        </span>
+        <ChevronDown
+          className={cn(
+            'size-4 text-muted-foreground transition-transform',
+            open && 'rotate-180',
+          )}
+        />
+      </button>
+      {open && (
+        <div className="px-5 pb-5">
+          <p className="mb-3 text-sm text-muted-foreground text-pretty">
+            Best landed cost per {comparison.baseUnit ?? 'unit'} at each
+            container size.{' '}
+            {bulkAnomaly ? (
+              <span className="text-warning">
+                The cheapest per-unit price is the{' '}
+                {cheapest.label} pack — a larger container costs more per{' '}
+                {comparison.baseUnit ?? 'unit'} here.
+              </span>
+            ) : (
+              <span>
+                The {cheapest.label} pack gives the lowest per-unit cost.
+              </span>
+            )}
+          </p>
+          <ChartContainer config={config} className="h-48 w-full">
+            <BarChart
+              data={points}
+              margin={{ left: 4, right: 8, top: 4, bottom: 4 }}
+            >
+              <CartesianGrid vertical={false} strokeDasharray="3 3" />
+              <XAxis
+                dataKey="label"
+                tickLine={false}
+                axisLine={false}
+                tickMargin={8}
+                fontSize={11}
+              />
+              <YAxis
+                tickLine={false}
+                axisLine={false}
+                width={56}
+                fontSize={11}
+                tickFormatter={(v) =>
+                  formatCurrency(Number(v), comparison.offers[0]?.currency)
+                }
+              />
+              <ChartTooltip
+                content={
+                  <ChartTooltipContent
+                    labelKey="label"
+                    formatter={(value) => (
+                      <span className="tabular-nums">
+                        {formatCurrency(
+                          Number(value),
+                          comparison.offers[0]?.currency,
+                        )}{' '}
+                        / {comparison.baseUnit ?? 'unit'}
+                      </span>
+                    )}
+                  />
+                }
+              />
+              <Bar dataKey="perUnit" radius={[4, 4, 0, 0]}>
+                {points.map((p) => (
+                  <Cell
+                    key={p.size}
+                    fill={
+                      p.size === cheapest.size
+                        ? 'var(--color-success)'
+                        : 'var(--color-chart-1)'
+                    }
+                  />
+                ))}
+              </Bar>
+            </BarChart>
+          </ChartContainer>
+        </div>
+      )}
+    </div>
   )
 }

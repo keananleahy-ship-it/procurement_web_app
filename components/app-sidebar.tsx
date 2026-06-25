@@ -17,12 +17,18 @@ import {
   ListChecks,
   Upload,
   Users,
+  PiggyBank,
+  LineChart,
+  Map as MapIcon,
 } from 'lucide-react'
 import { type Role, ROLE_LABELS } from '@/lib/roles-shared'
 
 const nav = [
   { href: '/', label: 'Overview', icon: LayoutDashboard },
+  { href: '/savings', label: 'Savings', icon: PiggyBank },
   { href: '/compare', label: 'Compare Products', icon: GitCompareArrows },
+  { href: '/by-location', label: 'By Location', icon: MapIcon },
+  { href: '/trends', label: 'Price Trends', icon: LineChart },
   { href: '/matching', label: 'Match Verification', icon: ListChecks },
   { href: '/canonical', label: 'Canonical Items', icon: Layers },
   { href: '/imports', label: 'Data Imports', icon: Upload },

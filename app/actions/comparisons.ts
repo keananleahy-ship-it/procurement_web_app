@@ -385,6 +385,339 @@ export async function getLocationComparisons(): Promise<LocationComparison[]> {
   return result.sort((a, b) => a.avgLandedUnitCost - b.avgLandedUnitCost)
 }
 
+// ----------------------------------------------------------------------------
+// Savings opportunity analysis
+// ----------------------------------------------------------------------------
+
+export type SavingsOpportunity = {
+  key: string
+  displayName: string
+  category: string | null
+  baseUnit: string | null
+  vendorCount: number
+  bestVendor: string
+  worstVendor: string
+  bestPerUnit: number
+  worstPerUnit: number
+  savingsPerUnit: number
+  // savings on one container fill of the cheapest offer (per-unit * capacity)
+  savingsPerContainer: number
+  packSize: number
+  currency: string
+}
+
+export type VendorAward = {
+  vendorId: number
+  vendorName: string
+  // number of comparable items where this vendor is the cheapest
+  itemsWon: number
+}
+
+export type SavingsPlan = {
+  totalSavingsPerUnit: number
+  totalSavingsPerContainer: number
+  comparableItems: number
+  singleSourceCount: number
+  opportunities: SavingsOpportunity[]
+  singleSource: {
+    key: string
+    displayName: string
+    category: string | null
+    vendorName: string
+    perUnit: number
+    baseUnit: string | null
+    currency: string
+  }[]
+  awards: VendorAward[]
+}
+
+export async function getSavingsPlan(): Promise<SavingsPlan> {
+  await requireUser()
+  const comparisons = await getProductComparisons()
+
+  const opportunities: SavingsOpportunity[] = []
+  const singleSource: SavingsPlan['singleSource'] = []
+  const awardMap = new Map<number, VendorAward>()
+
+  for (const c of comparisons) {
+    // A vendor "wins" an item only when it beat at least one competitor —
+    // winning an uncontested single-source item isn't a real win.
+    if (c.best && c.vendorCount > 1) {
+      const a = awardMap.get(c.best.vendorId) ?? {
+        vendorId: c.best.vendorId,
+        vendorName: c.best.vendorName,
+        itemsWon: 0,
+      }
+      a.itemsWon += 1
+      awardMap.set(c.best.vendorId, a)
+    }
+
+    // Single-source risk: only one vendor quotes this item.
+    if (c.vendorCount < 2) {
+      if (c.best) {
+        singleSource.push({
+          key: c.key,
+          displayName: c.displayName,
+          category: c.category,
+          vendorName: c.best.vendorName,
+          perUnit: c.best.pricePerBaseUnit,
+          baseUnit: c.baseUnit,
+          currency: c.best.currency,
+        })
+      }
+      continue
+    }
+
+    if (c.best && c.worst && c.potentialSavings > 0) {
+      opportunities.push({
+        key: c.key,
+        displayName: c.displayName,
+        category: c.category,
+        baseUnit: c.baseUnit,
+        vendorCount: c.vendorCount,
+        bestVendor: c.best.vendorName,
+        worstVendor: c.worst.vendorName,
+        bestPerUnit: c.best.pricePerBaseUnit,
+        worstPerUnit: c.worst.pricePerBaseUnit,
+        savingsPerUnit: c.potentialSavings,
+        savingsPerContainer: c.potentialSavings * (c.best.packSize ?? 1),
+        packSize: c.best.packSize ?? 1,
+        currency: c.best.currency,
+      })
+    }
+  }
+
+  opportunities.sort((a, b) => b.savingsPerContainer - a.savingsPerContainer)
+
+  return {
+    totalSavingsPerUnit: opportunities.reduce(
+      (s, o) => s + o.savingsPerUnit,
+      0,
+    ),
+    totalSavingsPerContainer: opportunities.reduce(
+      (s, o) => s + o.savingsPerContainer,
+      0,
+    ),
+    comparableItems: comparisons.filter((c) => c.vendorCount > 1).length,
+    singleSourceCount: singleSource.length,
+    opportunities,
+    singleSource: singleSource.sort((a, b) => b.perUnit - a.perUnit),
+    awards: [...awardMap.values()].sort((a, b) => b.itemsWon - a.itemsWon),
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Price trend over time
+// ----------------------------------------------------------------------------
+
+export type TrendPoint = { date: string; pricePerBaseUnit: number }
+
+export type PriceTrend = {
+  key: string
+  displayName: string
+  vendorName: string
+  baseUnit: string | null
+  currency: string
+  points: TrendPoint[]
+  latest: number
+  previous: number | null
+  // percentage change from previous to latest (null when only one data point)
+  pctChange: number | null
+}
+
+export async function getPriceTrends(): Promise<{
+  trends: PriceTrend[]
+  dateCount: number
+}> {
+  await requireUser()
+  const rows = await getAllRows()
+
+  // A trend series is one vendor's offers for one comparison group over time.
+  const bySeries = new Map<string, PriceRow[]>()
+  for (const r of rows) {
+    const groupKey =
+      r.matchStatus === 'confirmed' && r.canonicalItemId !== null
+        ? `c${r.canonicalItemId}`
+        : `p${r.productId}`
+    const seriesKey = `${groupKey}::${r.vendorId}`
+    const list = bySeries.get(seriesKey) ?? []
+    list.push(r)
+    bySeries.set(seriesKey, list)
+  }
+
+  const allDates = new Set<string>()
+  const trends: PriceTrend[] = []
+  for (const [seriesKey, offers] of bySeries) {
+    // Collapse to one point per date (cheapest comparable offer that day).
+    const byDate = new Map<string, number>()
+    for (const o of offers) {
+      const d = o.effectiveDate
+      if (!d) continue
+      allDates.add(d)
+      const prev = byDate.get(d)
+      if (prev === undefined || o.pricePerBaseUnit < prev) {
+        byDate.set(d, o.pricePerBaseUnit)
+      }
+    }
+    const points = [...byDate.entries()]
+      .map(([date, pricePerBaseUnit]) => ({ date, pricePerBaseUnit }))
+      .sort((a, b) => a.date.localeCompare(b.date))
+    if (points.length === 0) continue
+
+    const sample = offers[0]
+    const isCanonical = seriesKey.startsWith('c')
+    const displayName = isCanonical
+      ? (offers.find((o) => o.canonicalItemName)?.canonicalItemName ??
+        sample.productName)
+      : sample.productName
+    const latest = points[points.length - 1].pricePerBaseUnit
+    const previous =
+      points.length > 1 ? points[points.length - 2].pricePerBaseUnit : null
+    const pctChange =
+      previous !== null && previous !== 0
+        ? ((latest - previous) / previous) * 100
+        : null
+
+    trends.push({
+      key: seriesKey,
+      displayName,
+      vendorName: sample.vendorName,
+      baseUnit: sample.baseUnit,
+      currency: sample.currency,
+      points,
+      latest,
+      previous,
+      pctChange,
+    })
+  }
+
+  // Series with real movement first, then by magnitude of change.
+  trends.sort((a, b) => {
+    const am = a.pctChange === null ? -1 : 0
+    const bm = b.pctChange === null ? -1 : 0
+    if (am !== bm) return bm - am
+    return Math.abs(b.pctChange ?? 0) - Math.abs(a.pctChange ?? 0)
+  })
+
+  return { trends, dateCount: allDates.size }
+}
+
+// ----------------------------------------------------------------------------
+// Cross-location comparison
+// ----------------------------------------------------------------------------
+
+export type LocationCell = {
+  locationId: number | null
+  locationName: string
+  bestPerUnit: number
+  bestVendor: string
+}
+
+export type LocationItemRow = {
+  key: string
+  displayName: string
+  category: string | null
+  baseUnit: string | null
+  currency: string
+  cells: LocationCell[]
+  // cheapest and dearest location prices for this item
+  minPerUnit: number
+  maxPerUnit: number
+  // spread between locations (arbitrage opportunity), 0 when only one location
+  spread: number
+  cheapestLocation: string
+  dearestLocation: string
+}
+
+export async function getLocationMatrix(): Promise<{
+  locations: { id: number | null; name: string }[]
+  items: LocationItemRow[]
+}> {
+  await requireUser()
+  const rows = await getAllRows()
+
+  const locSet = new Map<string, { id: number | null; name: string }>()
+  const byGroup = new Map<string, PriceRow[]>()
+  for (const r of rows) {
+    const lk = r.locationId === null ? 'none' : String(r.locationId)
+    if (!locSet.has(lk)) {
+      locSet.set(lk, {
+        id: r.locationId,
+        name: r.locationName ?? 'Unassigned',
+      })
+    }
+    const groupKey =
+      r.matchStatus === 'confirmed' && r.canonicalItemId !== null
+        ? `c${r.canonicalItemId}`
+        : `p${r.productId}`
+    const list = byGroup.get(groupKey) ?? []
+    list.push(r)
+    byGroup.set(groupKey, list)
+  }
+
+  const locations = [...locSet.values()].sort((a, b) =>
+    a.name.localeCompare(b.name),
+  )
+
+  const items: LocationItemRow[] = []
+  for (const [groupKey, offers] of byGroup) {
+    // Best comparable offer per location.
+    const byLoc = new Map<string, PriceRow[]>()
+    for (const o of offers) {
+      const lk = o.locationId === null ? 'none' : String(o.locationId)
+      const list = byLoc.get(lk) ?? []
+      list.push(o)
+      byLoc.set(lk, list)
+    }
+
+    const cells: LocationCell[] = []
+    for (const [lk, locOffers] of byLoc) {
+      const comparable = locOffers
+        .filter((o) => o.comparable)
+        .sort((a, b) => a.pricePerBaseUnit - b.pricePerBaseUnit)
+      const best = comparable[0]
+      if (!best) continue
+      cells.push({
+        locationId: best.locationId,
+        locationName: best.locationName ?? 'Unassigned',
+        bestPerUnit: best.pricePerBaseUnit,
+        bestVendor: best.vendorName,
+      })
+    }
+    if (cells.length === 0) continue
+
+    const sample = offers[0]
+    const isCanonical = groupKey.startsWith('c')
+    const displayName = isCanonical
+      ? (offers.find((o) => o.canonicalItemName)?.canonicalItemName ??
+        sample.productName)
+      : sample.productName
+
+    const sorted = [...cells].sort((a, b) => a.bestPerUnit - b.bestPerUnit)
+    const min = sorted[0]
+    const max = sorted[sorted.length - 1]
+
+    items.push({
+      key: groupKey,
+      displayName,
+      category: sample.category,
+      baseUnit: sample.baseUnit,
+      currency: sample.currency,
+      cells,
+      minPerUnit: min.bestPerUnit,
+      maxPerUnit: max.bestPerUnit,
+      spread: max.bestPerUnit - min.bestPerUnit,
+      cheapestLocation: min.locationName,
+      dearestLocation: max.locationName,
+    })
+  }
+
+  // Biggest cross-location spread (arbitrage) first.
+  items.sort((a, b) => b.spread - a.spread)
+
+  return { locations, items }
+}
+
 export async function getDashboardStats() {
   await requireUser()
   const rows = await getAllRows()
