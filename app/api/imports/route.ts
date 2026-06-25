@@ -6,7 +6,11 @@ import { db } from '@/lib/db'
 import { imports, importRows, vendors, locations } from '@/lib/db/schema'
 import { asc } from 'drizzle-orm'
 import { extractPriceRows, type ExtractedRow } from '@/lib/extract'
-import { normalizeContainer, inferContainer } from '@/lib/container-infer'
+import {
+  normalizeContainer,
+  inferContainer,
+  detectUnitSystem,
+} from '@/lib/container-infer'
 
 export const maxDuration = 120
 
@@ -265,6 +269,21 @@ export async function POST(req: NextRequest) {
   // against; a file with no consistent unit shouldn't flag everything.
   const hasDominant = dominantUnit !== null && dominantCount >= 2
 
+  // Determine this vendor's container-sizing convention (metric vs imperial) so
+  // a bare container keyword ("DRUM", "IBC") resolves to the right standard size
+  // (205 L vs 55 USG). This reads the explicit size tokens printed in product
+  // names — independent of how price is quoted, since some vendors price per
+  // US gallon yet describe containers in litres.
+  const unitSystem = detectUnitSystem(
+    rows.flatMap((r) => [r.productName, r.containerRaw ?? null]),
+    rows.flatMap((r) => [r.baseUnit ?? null, r.unit ?? null]),
+  )
+
+  // Sold-loose ("BULK") and decanted ("DRUM DECANT", "IBC DECANT") lines are
+  // priced per single unit, so their pack size must be 1 even if the extractor
+  // read a container size off the surrounding text.
+  const BULK_DECANT_RE = /\b(bulk|decant|dcnt)\b/i
+
   function reviewFor(r: (typeof rows)[number]): string | null {
     const reasons: string[] = []
     const u = r.unit?.trim().toLowerCase() || null
@@ -304,17 +323,23 @@ export async function POST(req: NextRequest) {
     await db.insert(importRows).values(
       rows.map((r) => {
         let reviewReason = reviewFor(r)
-        const rawPackSize = r.packSize && r.packSize > 0 ? r.packSize : 1
+        const containerText = `${r.productName} ${r.sku ?? ''} ${r.containerRaw ?? ''}`
+        const isBulkDecant = BULK_DECANT_RE.test(containerText)
+        // Bulk/decant lines are a per-unit basis; ignore any extracted container
+        // size and treat as 1. Everything else keeps its extracted size.
+        const rawPackSize = isBulkDecant
+          ? 1
+          : r.packSize && r.packSize > 0
+            ? r.packSize
+            : 1
         // When the extractor found no container size, fall back to a
         // deterministic resolver for known industry shorthands (e.g.
         // "6 USG PETROPAK", a bare "IBC" or "DRUM"). Inferred-by-default sizes
         // are flagged for review.
         let nativeSize = rawPackSize
         let nativeUnit = r.baseUnit?.trim() || r.unit?.trim() || null
-        if (rawPackSize === 1) {
-          const inf = inferContainer(
-            `${r.productName} ${r.sku ?? ''} ${r.containerRaw ?? ''}`,
-          )
+        if (!isBulkDecant && rawPackSize === 1) {
+          const inf = inferContainer(containerText, unitSystem)
           if (inf) {
             nativeSize = inf.packSize
             nativeUnit = inf.baseUnit

@@ -148,22 +148,72 @@ export type InferredContainer = {
   inferred: boolean
 }
 
+// A vendor's container-sizing convention: do they describe containers in metric
+// (205 L drum, 1000 L IBC) or imperial (55 gal drum, 275 gal tote)? This is
+// distinct from how they quote *price* — e.g. Petro-Canada prices per US gallon
+// but sizes its containers in litres — so a bare "DRUM"/"IBC" must be resolved
+// using the sizing convention, not the pricing unit.
+export type UnitSystem = 'metric' | 'imperial'
+
+// Size tokens like "205L", "20 L", "1040 litre" (metric) vs "55 gal", "275 USG"
+// (imperial), as they appear inside product names / container descriptors.
+const METRIC_SIZE_RE = /\d+(?:\.\d+)?\s?(?:l|litres?|liters?|ltrs?|ml)\b/gi
+const IMPERIAL_SIZE_RE =
+  /\d+(?:\.\d+)?\s?(?:usg|gal(?:lon)?s?|qts?|quarts?|pts?|pints?|fl\s?oz)\b/gi
+
+const METRIC_UNIT_WORDS = new Set([...LITRE_ALIASES, ...ML_ALIASES])
+const IMPERIAL_UNIT_WORDS = new Set([
+  ...GALLON_ALIASES,
+  ...QUART_ALIASES,
+  ...PINT_ALIASES,
+  ...FLOZ_ALIASES,
+])
+
+// Decide a vendor's container-sizing convention. Explicit size tokens printed in
+// product names ("205L DRUM") are the strongest signal and dominate; the
+// vendor's pricing units ("USG") act as a lighter-weight tiebreaker for vendors
+// who rarely print container sizes. Defaults to imperial for these North
+// American suppliers when there's no signal at all.
+export function detectUnitSystem(
+  texts: (string | null)[],
+  pricingUnits: (string | null)[] = [],
+): UnitSystem {
+  let metric = 0
+  let imperial = 0
+  // Strong signal: explicit sized container tokens in names (weight 3).
+  for (const raw of texts) {
+    const t = raw ?? ''
+    if (!t) continue
+    metric += (t.match(METRIC_SIZE_RE) ?? []).length * 3
+    imperial += (t.match(IMPERIAL_SIZE_RE) ?? []).length * 3
+  }
+  // Weak signal: how the vendor quotes price (weight 1).
+  for (const raw of pricingUnits) {
+    const u = raw?.trim().toLowerCase() ?? ''
+    if (!u) continue
+    if (METRIC_UNIT_WORDS.has(u)) metric += 1
+    else if (IMPERIAL_UNIT_WORDS.has(u)) imperial += 1
+  }
+  return metric > imperial ? 'metric' : 'imperial'
+}
+
 // An explicit "<number> <volume unit>" anywhere in the text (e.g. "6 USG",
 // "20 L"). Longer unit spellings come first so they win over the bare "l".
 const VOL_UNIT_RE =
   /(\d+(?:\.\d+)?)\s*(usg|u\.?s\.?\s?gal(?:lon)?s?|gal(?:lon)?s?|litres?|liters?|ltrs?|millilitres?|milliliters?|ml|quarts?|qts?|l)\b/i
 
-// Container keywords with a standard capacity for these lubricant/fluid vendors
-// when no explicit size is printed. Capacities are in litres.
-const CONTAINER_DEFAULTS: { re: RegExp; packSize: number; baseUnit: string }[] =
-  [
-    // Intermediate bulk container / tote: standard 1000 L.
-    { re: /\b(ibc|tote)\b/, packSize: 1000, baseUnit: 'litre' },
-    // Steel/poly drum: standard 205 L for oils on these sheets.
-    { re: /\bdrums?\b/, packSize: 205, baseUnit: 'litre' },
-    // Pail: standard 20 L.
-    { re: /\bpails?\b/, packSize: 20, baseUnit: 'litre' },
-  ]
+// Container keywords with a standard capacity, given per unit system. A bare
+// "DRUM" from a metric vendor is a 205 L drum; from an imperial vendor it's a
+// 55 US gallon drum. These are the common North American lubricant sizes.
+type ContainerDefault = { re: RegExp; metric: number; imperial: number }
+const CONTAINER_DEFAULTS: ContainerDefault[] = [
+  // Intermediate bulk container / tote: 1000 L metric, 275 USG imperial.
+  { re: /\b(ibc|tote)\b/, metric: 1000, imperial: 275 },
+  // Steel/poly drum: 205 L metric, 55 USG imperial.
+  { re: /\bdrums?\b/, metric: 205, imperial: 55 },
+  // Pail: 20 L metric, 5 USG imperial.
+  { re: /\bpails?\b/, metric: 20, imperial: 5 },
+]
 
 // Any recognizable container word — used to gate explicit-size acceptance so we
 // never grab a stray number (e.g. a viscosity grade) as a capacity.
@@ -171,9 +221,14 @@ const CONTAINER_WORD_RE =
   /\b(ibc|tote|drums?|pails?|jugs?|kegs?|cases?|packs?|petro-?pak|e-?pack|ecopack|bottles?|jerry|petropak)\b/
 
 // Infer a container capacity from a product name (+ sku/container text) when
-// the extractor found none. Returns null when nothing can be inferred
-// confidently — those rows stay genuinely unspecified.
-export function inferContainer(text: string): InferredContainer | null {
+// the extractor found none. `unitSystem` is the source vendor's system, used to
+// resolve keyword defaults (a "DRUM" is 205 L for a metric vendor, 55 USG for an
+// imperial one). Returns null when nothing can be inferred confidently — those
+// rows stay genuinely unspecified.
+export function inferContainer(
+  text: string,
+  unitSystem: UnitSystem = 'imperial',
+): InferredContainer | null {
   const t = (text || '').toLowerCase()
   if (!t.trim()) return null
 
@@ -184,7 +239,8 @@ export function inferContainer(text: string): InferredContainer | null {
   const hasContainerWord = CONTAINER_WORD_RE.test(t)
 
   // 1) Explicit capacity + volume unit. Accept when a container word is present
-  //    or the unit is gallon-class (a strong volume signal on its own).
+  //    or the unit is gallon-class (a strong volume signal on its own). An
+  //    explicit printed size always wins over the system default.
   const m = t.match(VOL_UNIT_RE)
   if (m) {
     const size = Number.parseFloat(m[1])
@@ -195,10 +251,13 @@ export function inferContainer(text: string): InferredContainer | null {
     }
   }
 
-  // 2) A known container with a standard capacity but no explicit size printed.
+  // 2) A known container with a standard capacity but no explicit size printed,
+  //    resolved in the vendor's own unit system.
   for (const d of CONTAINER_DEFAULTS) {
     if (d.re.test(t)) {
-      return { packSize: d.packSize, baseUnit: d.baseUnit, inferred: true }
+      return unitSystem === 'metric'
+        ? { packSize: d.metric, baseUnit: 'litre', inferred: true }
+        : { packSize: d.imperial, baseUnit: 'USG', inferred: true }
     }
   }
 
