@@ -11,6 +11,13 @@ import {
   inferContainer,
   detectUnitSystem,
 } from '@/lib/container-infer'
+import {
+  detectPriceBasis,
+  toPerUnit,
+  baseKind,
+  baseUnitWord,
+  PER_UNIT_CEILING,
+} from '@/lib/price-basis'
 
 export const maxDuration = 120
 
@@ -320,48 +327,97 @@ export async function POST(req: NextRequest) {
   const importId = created.id
 
   if (rows.length > 0) {
-    await db.insert(importRows).values(
-      rows.map((r) => {
-        let reviewReason = reviewFor(r)
-        const containerText = `${r.productName} ${r.sku ?? ''} ${r.containerRaw ?? ''}`
-        const isBulkDecant = BULK_DECANT_RE.test(containerText)
-        // Bulk/decant lines are a per-unit basis; ignore any extracted container
-        // size and treat as 1. Everything else keeps its extracted size.
-        const rawPackSize = isBulkDecant
-          ? 1
-          : r.packSize && r.packSize > 0
-            ? r.packSize
-            : 1
-        // When the extractor found no container size, fall back to a
-        // deterministic resolver for known industry shorthands (e.g.
-        // "6 USG PETROPAK", a bare "IBC" or "DRUM"). Inferred-by-default sizes
-        // are flagged for review.
-        let nativeSize = rawPackSize
-        let nativeUnit = r.baseUnit?.trim() || r.unit?.trim() || null
-        if (!isBulkDecant && rawPackSize === 1) {
-          const inf = inferContainer(containerText, unitSystem)
-          if (inf) {
-            nativeSize = inf.packSize
-            nativeUnit = inf.baseUnit
-            if (inf.inferred) {
-              const note =
-                'Container size inferred from a standard size — verify the pack size.'
-              reviewReason = reviewReason ? `${reviewReason} ${note}` : note
-            }
+    // First pass: resolve each row's container size (in gallons/lb), reusing the
+    // bulk/decant rule and the standard-size inference for missing containers.
+    const sized = rows.map((r) => {
+      const containerText = `${r.productName} ${r.sku ?? ''} ${r.containerRaw ?? ''}`
+      const isBulkDecant = BULK_DECANT_RE.test(containerText)
+      // Bulk/decant lines are a per-unit basis; ignore any extracted container
+      // size and treat as 1. Everything else keeps its extracted size.
+      const rawPackSize = isBulkDecant
+        ? 1
+        : r.packSize && r.packSize > 0
+          ? r.packSize
+          : 1
+      // When the extractor found no container size, fall back to a deterministic
+      // resolver for known industry shorthands (e.g. "6 USG PETROPAK", a bare
+      // "IBC" or "DRUM"). Inferred-by-default sizes are flagged for review.
+      let nativeSize = rawPackSize
+      let nativeUnit = r.baseUnit?.trim() || r.unit?.trim() || null
+      let inferredNote: string | null = null
+      if (!isBulkDecant && rawPackSize === 1) {
+        const inf = inferContainer(containerText, unitSystem)
+        if (inf) {
+          nativeSize = inf.packSize
+          nativeUnit = inf.baseUnit
+          if (inf.inferred) {
+            inferredNote =
+              'Container size inferred from a standard size — verify the pack size.'
           }
         }
-        const { packSize, baseUnit } = normalizeContainer(
-          nativeSize,
-          nativeUnit,
-        )
+      }
+      const { packSize, baseUnit } = normalizeContainer(nativeSize, nativeUnit)
+      return { r, isBulkDecant, packSize, baseUnit, inferredNote }
+    })
+
+    // Detect whether this import quotes per single unit (per gallon/lb) or per
+    // whole package (per drum/case/pail). Per-package quotes are converted to a
+    // per-unit basis below so they compare against per-gallon vendors.
+    const priceBasis = detectPriceBasis(
+      sized.map((s) => ({
+        packSize: Number(s.packSize),
+        baseUnit: s.baseUnit,
+        unitPrice: s.r.unitPrice ?? null,
+      })),
+    )
+
+    await db.insert(importRows).values(
+      sized.map(({ r, isBulkDecant, packSize, baseUnit, inferredNote }) => {
+        let reviewReason = reviewFor(r)
+        if (inferredNote) {
+          reviewReason = reviewReason
+            ? `${reviewReason} ${inferredNote}`
+            : inferredNote
+        }
+
         // A user-declared file-level basis overrides per-row detection. For
         // delivered, freight is baked into the unit price, so zero out any
         // separately-extracted shipping to avoid double-counting.
         const freightTerms = freightDefault ?? normalizeFreight(r.freightTerms)
-        const shippingCost =
-          freightDefault === 'delivered'
-            ? '0'
-            : toNumericString(r.shippingCost) ?? '0'
+        let unitPrice = r.unitPrice ?? null
+        let deliveredPrice = r.deliveredPrice ?? null
+        let shipping =
+          freightDefault === 'delivered' ? 0 : (r.shippingCost ?? 0)
+
+        // Per-package import: divide every monetary field by the container size
+        // to express it per base unit, matching the per-gallon comparison basis.
+        if (priceBasis === 'per-package') {
+          const packGallons = Number(packSize)
+          const word = baseUnitWord(baseUnit)
+          const ceiling = PER_UNIT_CEILING[baseKind(baseUnit)]
+          if (!isBulkDecant && packGallons <= 1) {
+            // The price is a package total but we couldn't size the package
+            // (e.g. an un-parseable "EPACK"/"CASE"), so leave it and flag it.
+            const note = `This file is priced per package but the container size couldn't be determined — the price shown may be a package total. Verify the pack size.`
+            reviewReason = reviewReason ? `${reviewReason} ${note}` : note
+          } else if (packGallons > 1) {
+            const orig = unitPrice
+            unitPrice = toPerUnit(unitPrice, packGallons)
+            deliveredPrice = toPerUnit(deliveredPrice, packGallons)
+            shipping = toPerUnit(shipping, packGallons) ?? 0
+            if (orig != null && unitPrice != null) {
+              const note = `Converted to per-${word}: $${orig.toFixed(2)} ÷ ${packGallons.toFixed(2)} ${word} = $${unitPrice.toFixed(2)}/${word}.`
+              reviewReason = reviewReason ? `${reviewReason} ${note}` : note
+            }
+            // A still-high per-unit price usually means the container size is
+            // wrong (e.g. a tote mis-read as litres) — flag it to be checked.
+            if (unitPrice != null && unitPrice > ceiling) {
+              const note = `The converted per-${word} price looks high — verify the container size is correct.`
+              reviewReason = reviewReason ? `${reviewReason} ${note}` : note
+            }
+          }
+        }
+
         return {
           userId,
           importId,
@@ -373,10 +429,10 @@ export async function POST(req: NextRequest) {
           baseUnit,
           containerRaw: r.containerRaw?.trim() || null,
           category: r.category?.trim() || null,
-          unitPrice: toNumericString(r.unitPrice),
-          shippingCost,
+          unitPrice: toNumericString(unitPrice),
+          shippingCost: toNumericString(shipping) ?? '0',
           freightTerms,
-          deliveredPrice: toNumericString(r.deliveredPrice),
+          deliveredPrice: toNumericString(deliveredPrice),
           currency: (r.currency?.trim() || 'USD').toUpperCase(),
           needsReview: reviewReason !== null,
           reviewReason,
