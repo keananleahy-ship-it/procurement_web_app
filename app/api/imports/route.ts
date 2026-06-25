@@ -21,7 +21,7 @@ import {
   translateUnit,
 } from '@/lib/container-infer'
 import {
-  detectPriceBasis,
+  isPackagePrice,
   toPerUnit,
   baseKind,
   baseUnitWord,
@@ -447,19 +447,15 @@ export async function POST(req: NextRequest) {
         unitClass,
         inferredNote,
         resolvedConfidently,
+        // Multi-unit case pack ("24*1qt", "12/1gal") — these price lists quote
+        // such packs as a case total, so the price is divided per-row below.
+        isCasePack: !!casePack,
       }
     })
 
-    // Detect whether this import quotes per single unit (per gallon/lb) or per
-    // whole package (per drum/case/pail). Per-package quotes are converted to a
-    // per-unit basis below so they compare against per-gallon vendors.
-    const priceBasis = detectPriceBasis(
-      sized.map((s) => ({
-        packSize: Number(s.packSize),
-        baseUnit: s.baseUnit,
-        unitPrice: s.r.unitPrice ?? null,
-      })),
-    )
+    // Pricing basis is now decided per row (see isPackagePrice below), because a
+    // single file can mix bases — e.g. bulk lines quoted per gallon alongside
+    // case packs quoted as a case total. A file-level basis can't resolve that.
 
     // Distribution of unit classes across the file. A genuinely mixed catalog
     // (cartons + bulk + greases + parts) is normal; we only treat a class as an
@@ -495,21 +491,25 @@ export async function POST(req: NextRequest) {
           unitClass,
           inferredNote,
           resolvedConfidently,
+          isCasePack,
         }) => {
-        let reviewReason = reviewFor(
+        // Two kinds of annotation are kept separate: `flags` are genuine
+        // concerns that require a human to look (they set needsReview), while
+        // `notes` are informational transparency (e.g. the conversion math) that
+        // are stored on the row but do NOT force a review. This keeps confident,
+        // successful parses out of the review queue.
+        const flags: string[] = []
+        const notes: string[] = []
+        const baseFlag = reviewFor(
           r,
           unitClass,
           isBasisOutlier(unitClass),
           resolvedConfidently,
         )
-        if (inferredNote) {
-          reviewReason = reviewReason
-            ? `${reviewReason} ${inferredNote}`
-            : inferredNote
-        }
+        if (baseFlag) flags.push(baseFlag)
+        if (inferredNote) flags.push(inferredNote)
 
-        // A user-declared file-level basis overrides per-row detection. For
-        // delivered, freight is baked into the unit price, so zero out any
+        // For delivered, freight is baked into the unit price, so zero out any
         // separately-extracted shipping to avoid double-counting.
         const freightTerms = freightDefault ?? normalizeFreight(r.freightTerms)
         let unitPrice = r.unitPrice ?? null
@@ -520,19 +520,24 @@ export async function POST(req: NextRequest) {
 
         // Per-piece items (filters, parts) are priced per piece and excluded
         // from the gallon/pound comparison, so never divide their price by a
-        // pack size. Just give them a clean "each" label instead of a raw
-        // vendor token ("KAR").
+        // pack size. Give them a clean "each" label instead of a raw vendor
+        // token ("KAR").
         if (unitClass === 'each') {
-          displayUnit = baseUnitWord(baseUnit) || 'each'
+          displayUnit = 'each'
         }
 
-        // Per-package import: divide every monetary field by the container size
-        // to express it per base unit, matching the per-gallon comparison basis.
-        if (priceBasis === 'per-package' && unitClass !== 'each') {
-          // Every price in this file ends up on a per-gallon / per-pound basis,
-          // so report the unit of measure that way rather than echoing the raw
-          // packaging token ("Qt", "tote-275", "each"). The original packaging
-          // text is preserved in containerRaw.
+        // Per-row package pricing: a case pack ("24*1qt") or a single large
+        // container priced as a total ($899/55-gal drum) is divided by its
+        // container size to express it per base unit, matching the per-gallon
+        // comparison basis. Bulk/per-gallon lines in the same file are left as-is.
+        const isPackage = isPackagePrice(
+          { packSize: Number(packSize), baseUnit, unitPrice },
+          isCasePack,
+        )
+        if (isPackage && unitClass !== 'each') {
+          // The converted price ends up per gallon / per pound, so label it that
+          // way rather than echoing the raw packaging token ("Qt", "tote-275").
+          // The original packaging text is preserved in containerRaw.
           displayUnit = baseUnitWord(baseUnit)
           const packGallons = Number(packSize)
           const word = baseUnitWord(baseUnit)
@@ -542,47 +547,50 @@ export async function POST(req: NextRequest) {
           // figure, so dividing by it would invent a wrong per-gallon price.
           const sizeIsMeasured = baseKind(baseUnit) !== 'other'
           if (!isBulkDecant && (packGallons <= 1 || !sizeIsMeasured)) {
-            // The price is a package total but we couldn't size the package in a
-            // real unit (e.g. an un-parseable "EPACK"/"12/1 Case"), so leave the
-            // price as-is and flag it for a manual pack size.
-            const note = `This file is priced per package but the container size couldn't be determined — the price shown may be a package total. Verify the pack size.`
-            reviewReason = reviewReason ? `${reviewReason} ${note}` : note
+            // Package total we couldn't size in a real unit — genuine concern.
+            flags.push(
+              `This line looks priced per package but the container size couldn't be determined — the price may be a package total. Verify the pack size.`,
+            )
           } else if (packGallons > 1) {
             const orig = unitPrice
             unitPrice = toPerUnit(unitPrice, packGallons)
             deliveredPrice = toPerUnit(deliveredPrice, packGallons)
             shipping = toPerUnit(shipping, packGallons) ?? 0
+            // Transparency only — a confident, successful conversion is not a
+            // reason to demand review.
             if (orig != null && unitPrice != null) {
-              const note = `Converted to per-${word}: $${orig.toFixed(2)} ÷ ${packGallons.toFixed(2)} ${word} = $${unitPrice.toFixed(2)}/${word}.`
-              reviewReason = reviewReason ? `${reviewReason} ${note}` : note
+              notes.push(
+                `Converted to per-${word}: $${orig.toFixed(2)} ÷ ${packGallons.toFixed(2)} ${word} = $${unitPrice.toFixed(2)}/${word}.`,
+              )
             }
             // A still-high per-unit price usually means the container size is
-            // wrong (e.g. a tote mis-read as litres) — flag it to be checked.
+            // wrong (e.g. a tote mis-read as litres) — genuine concern.
             if (unitPrice != null && unitPrice > ceiling) {
-              const note = `The converted per-${word} price looks high — verify the container size is correct.`
-              reviewReason = reviewReason ? `${reviewReason} ${note}` : note
+              flags.push(
+                `The converted per-${word} price looks high — verify the container size is correct.`,
+              )
             }
           }
         }
 
-        // Basis-independent safety net. A file can MIX pricing bases — e.g. bulk
-        // lines quoted per gallon alongside case lines quoted as a package total
-        // — which a single file-level basis can't resolve. Any comparable
-        // (volume/weight) row whose final per-unit price exceeds the plausible
-        // ceiling is most likely an undivided package total or a sizing error.
-        // We flag it for a human rather than guess, since we can't reliably tell
-        // a $600 case total from a genuinely premium product. (Skip if the
-        // per-package block above already noted a high price.)
+        // Basis-independent safety net for any comparable row we did NOT divide
+        // whose per-unit price is still implausibly high — most likely an
+        // undivided package total or a sizing error. (Skip if a high-price flag
+        // was already raised above.)
         if (
           unitClass !== 'each' &&
           unitPrice != null &&
           unitPrice > PER_UNIT_CEILING[baseKind(baseUnit)] &&
-          !/looks high/.test(reviewReason ?? '')
+          !flags.some((f) => /looks high|unusually high/.test(f))
         ) {
           const word = baseUnitWord(baseUnit)
-          const note = `The price works out to $${unitPrice.toFixed(2)}/${word}, which is unusually high — verify it isn't a package total or a pack-size error.`
-          reviewReason = reviewReason ? `${reviewReason} ${note}` : note
+          flags.push(
+            `The price works out to $${unitPrice.toFixed(2)}/${word}, which is unusually high — verify it isn't a package total or a pack-size error.`,
+          )
         }
+
+        const reviewReason = [...flags, ...notes].join(' ') || null
+        const needsReview = flags.length > 0
 
         return {
           userId,
@@ -601,7 +609,7 @@ export async function POST(req: NextRequest) {
           freightTerms,
           deliveredPrice: toNumericString(deliveredPrice),
           currency: (r.currency?.trim() || 'USD').toUpperCase(),
-          needsReview: reviewReason !== null,
+          needsReview,
           reviewReason,
           include: true,
         }

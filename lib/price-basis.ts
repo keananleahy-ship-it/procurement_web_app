@@ -102,6 +102,34 @@ export function detectPriceBasis(rows: PricedRow[]): PriceBasis {
   return 'per-unit'
 }
 
+// Decide, for a SINGLE row, whether its price is a whole-package total that
+// must be divided by the container size to get a per-base-unit price. This is
+// the per-row counterpart to detectPriceBasis, needed because one file can mix
+// bases (e.g. bulk lines quoted per gallon alongside case lines quoted as a
+// case total). Two independent signals mark a row as per-package:
+//
+//   1. isCasePack — the container used multi-unit case notation ("24*1qt",
+//      "12/1gal"). In these price lists such packs are quoted as a case total,
+//      so we divide even when the total happens to fall under the ceiling
+//      (e.g. $65.96 for a 6-gal case = ~$11/gal).
+//   2. The ceiling heuristic — a multi-unit container whose raw price is
+//      implausibly high for one base unit yet sane once divided (e.g. $899 for
+//      a 55-gal drum). This catches single large containers (drums/totes) that
+//      aren't case packs but are still quoted as a total.
+//
+// A bulk or single-unit line quoted per gallon (price already under the
+// ceiling, no case notation) is left untouched.
+export function isPackagePrice(
+  row: PricedRow,
+  isCasePack: boolean,
+): boolean {
+  if (row.unitPrice == null) return false
+  if (!(row.packSize >= 2)) return false
+  if (isCasePack) return true
+  const ceiling = PER_UNIT_CEILING[baseKind(row.baseUnit)]
+  return row.unitPrice > ceiling && row.unitPrice / row.packSize <= ceiling
+}
+
 // Convert a package-total price to a per-base-unit price. Returns the price
 // unchanged when there's nothing sensible to divide by.
 export function toPerUnit(
