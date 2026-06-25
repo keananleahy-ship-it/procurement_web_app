@@ -306,26 +306,6 @@ export async function POST(req: NextRequest) {
   const rows = (extraction.rows ?? []).filter((r) => r.productName?.trim())
   const fileType = isPdf ? 'pdf' : 'xls'
 
-  // Determine the file's dominant pricing unit so we can flag outlier rows
-  // (e.g. a single "case"-priced line in a file otherwise quoted per "USG")
-  // for manual review rather than silently mixing pricing bases.
-  const unitCounts = new Map<string, number>()
-  for (const r of rows) {
-    const u = r.unit?.trim().toLowerCase()
-    if (u) unitCounts.set(u, (unitCounts.get(u) ?? 0) + 1)
-  }
-  let dominantUnit: string | null = null
-  let dominantCount = 0
-  for (const [u, c] of unitCounts) {
-    if (c > dominantCount) {
-      dominantUnit = u
-      dominantCount = c
-    }
-  }
-  // Only treat a unit as "dominant" when there's a real majority to compare
-  // against; a file with no consistent unit shouldn't flag everything.
-  const hasDominant = dominantUnit !== null && dominantCount >= 2
-
   // Determine this vendor's container-sizing convention (metric vs imperial) so
   // a bare container keyword ("DRUM", "IBC") resolves to the right standard size
   // (205 L vs 55 USG). This reads the explicit size tokens printed in product
@@ -341,15 +321,29 @@ export async function POST(req: NextRequest) {
   // read a container size off the surrounding text.
   const BULK_DECANT_RE = /\b(bulk|decant|dcnt)\b/i
 
-  function reviewFor(r: (typeof rows)[number]): string | null {
+  // Flag a row for review based on its unit CLASS (volume/weight/each), not a
+  // raw unit token. A mixed catalog (e.g. cartons + bulk gallons + greases +
+  // parts) is normal and shouldn't flag everything; we only surface a row whose
+  // pricing basis is a genuine rarity, or a sizing ambiguity that actually
+  // affects a comparable (gallon/pound) item.
+  function reviewFor(
+    r: (typeof rows)[number],
+    unitClass: string | null,
+    isBasisOutlier: boolean,
+    resolvedConfidently: boolean,
+  ): string | null {
     const reasons: string[] = []
-    const u = r.unit?.trim().toLowerCase() || null
-    if (hasDominant && u && u !== dominantUnit) {
+    if (isBasisOutlier) {
       reasons.push(
-        `Unit "${r.unit?.trim()}" differs from the file's usual "${dominantUnit}" — verify the price basis and pack size.`,
+        `This line is priced on a ${unitClass ?? 'different'} basis, which is rare in this file — verify its unit and pack size.`,
       )
     }
-    if (r.containerAmbiguous) {
+    // Sizing ambiguity only matters for items we compare on a gallon/pound
+    // basis. Per-piece items (filters/parts) are excluded from comparison, so an
+    // unparsed pack size is harmless and shouldn't be flagged as uncertain.
+    // We also drop the AI's ambiguity flag when our deterministic parser
+    // confidently resolved the size (it understands notations the AI doesn't).
+    if (r.containerAmbiguous && unitClass !== 'each' && !resolvedConfidently) {
       const raw = r.containerRaw?.trim()
       reasons.push(
         `Container size${raw ? ` "${raw}"` : ''} could not be confidently parsed — verify the pack size and unit.`,
@@ -412,12 +406,20 @@ export async function POST(req: NextRequest) {
       const casePack = isBulkDecant
         ? null
         : resolveCasePack(containerText, vendorProfile)
+      // True when our deterministic parser confidently sized the container from
+      // an explicit notation (a numbered tote or an "N/M unit" / "N*M unit"
+      // case pack). In that case we trust our parse over the AI extractor's
+      // ambiguity flag — the AI often marks notations it doesn't understand
+      // (e.g. "24*1qt") as ambiguous even though we resolve them exactly.
+      let resolvedConfidently = false
       if (tote) {
         nativeSize = tote.gallons
         nativeUnit = 'USG'
+        resolvedConfidently = true
       } else if (casePack) {
         nativeSize = casePack.qty
         nativeUnit = casePack.unit
+        resolvedConfidently = true
       } else if (!isBulkDecant && rawPackSize === 1) {
         const inf = inferContainer(containerText, unitSystem, vendorProfile)
         if (inf) {
@@ -437,7 +439,15 @@ export async function POST(req: NextRequest) {
         profile: vendorProfile,
         text: containerText,
       })
-      return { r, isBulkDecant, packSize, baseUnit, unitClass, inferredNote }
+      return {
+        r,
+        isBulkDecant,
+        packSize,
+        baseUnit,
+        unitClass,
+        inferredNote,
+        resolvedConfidently,
+      }
     })
 
     // Detect whether this import quotes per single unit (per gallon/lb) or per
@@ -451,10 +461,47 @@ export async function POST(req: NextRequest) {
       })),
     )
 
+    // Distribution of unit classes across the file. A genuinely mixed catalog
+    // (cartons + bulk + greases + parts) is normal; we only treat a class as an
+    // outlier worth flagging when one class clearly dominates and another shows
+    // up in just a handful of rows (a likely mis-parse, not a real segment).
+    const classCounts = new Map<string, number>()
+    for (const s of sized) {
+      const c = s.unitClass ?? 'unknown'
+      classCounts.set(c, (classCounts.get(c) ?? 0) + 1)
+    }
+    let dominantClass: string | null = null
+    let dominantClassCount = 0
+    for (const [c, n] of classCounts) {
+      if (n > dominantClassCount) {
+        dominantClass = c
+        dominantClassCount = n
+      }
+    }
+    const hasDominantClass =
+      dominantClass !== null && dominantClassCount / sized.length > 0.6
+    const isBasisOutlier = (unitClass: string | null) =>
+      hasDominantClass &&
+      unitClass !== dominantClass &&
+      (classCounts.get(unitClass ?? 'unknown') ?? 0) <= 3
+
     await db.insert(importRows).values(
       sized.map(
-        ({ r, isBulkDecant, packSize, baseUnit, unitClass, inferredNote }) => {
-        let reviewReason = reviewFor(r)
+        ({
+          r,
+          isBulkDecant,
+          packSize,
+          baseUnit,
+          unitClass,
+          inferredNote,
+          resolvedConfidently,
+        }) => {
+        let reviewReason = reviewFor(
+          r,
+          unitClass,
+          isBasisOutlier(unitClass),
+          resolvedConfidently,
+        )
         if (inferredNote) {
           reviewReason = reviewReason
             ? `${reviewReason} ${inferredNote}`
@@ -471,9 +518,17 @@ export async function POST(req: NextRequest) {
           freightDefault === 'delivered' ? 0 : (r.shippingCost ?? 0)
         let displayUnit = r.unit?.trim() || null
 
+        // Per-piece items (filters, parts) are priced per piece and excluded
+        // from the gallon/pound comparison, so never divide their price by a
+        // pack size. Just give them a clean "each" label instead of a raw
+        // vendor token ("KAR").
+        if (unitClass === 'each') {
+          displayUnit = baseUnitWord(baseUnit) || 'each'
+        }
+
         // Per-package import: divide every monetary field by the container size
         // to express it per base unit, matching the per-gallon comparison basis.
-        if (priceBasis === 'per-package') {
+        if (priceBasis === 'per-package' && unitClass !== 'each') {
           // Every price in this file ends up on a per-gallon / per-pound basis,
           // so report the unit of measure that way rather than echoing the raw
           // packaging token ("Qt", "tote-275", "each"). The original packaging
@@ -508,6 +563,25 @@ export async function POST(req: NextRequest) {
               reviewReason = reviewReason ? `${reviewReason} ${note}` : note
             }
           }
+        }
+
+        // Basis-independent safety net. A file can MIX pricing bases — e.g. bulk
+        // lines quoted per gallon alongside case lines quoted as a package total
+        // — which a single file-level basis can't resolve. Any comparable
+        // (volume/weight) row whose final per-unit price exceeds the plausible
+        // ceiling is most likely an undivided package total or a sizing error.
+        // We flag it for a human rather than guess, since we can't reliably tell
+        // a $600 case total from a genuinely premium product. (Skip if the
+        // per-package block above already noted a high price.)
+        if (
+          unitClass !== 'each' &&
+          unitPrice != null &&
+          unitPrice > PER_UNIT_CEILING[baseKind(baseUnit)] &&
+          !/looks high/.test(reviewReason ?? '')
+        ) {
+          const word = baseUnitWord(baseUnit)
+          const note = `The price works out to $${unitPrice.toFixed(2)}/${word}, which is unusually high — verify it isn't a package total or a pack-size error.`
+          reviewReason = reviewReason ? `${reviewReason} ${note}` : note
         }
 
         return {
