@@ -150,6 +150,33 @@ export const matchOverrides = pgTable('match_overrides', {
   updatedAt: timestamp('updatedAt').notNull().defaultNow(),
 })
 
+// Remembers why a reviewer rejected a suggested match so future matching can
+// learn from it. Keyed by normalized product name (not product id) so the
+// lesson survives re-imports and resets. These reasons are fed to the AI
+// matcher as guidance ("do not match X to Y because…") — they guide the model
+// but do not hard-block a pairing.
+export const matchRejections = pgTable('match_rejections', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  // Normalized product name this rejection applies to (lowercased, collapsed
+  // whitespace). Upserted per (userId, productNameKey, canonicalItemId).
+  productNameKey: text('productNameKey').notNull(),
+  // The canonical item the reviewer said this product does NOT belong to.
+  // Null when the product had no suggested target at reject time.
+  canonicalItemId: integer('canonicalItemId'),
+  // Structured quick-pick reason, e.g. 'wrong_viscosity' | 'different_base_oil'
+  // | 'oem_specific' | 'different_product_kind' | 'wrong_pack_unit' | 'other'.
+  reasonCode: text('reasonCode'),
+  // Optional free-text note the reviewer typed.
+  note: text('note'),
+  // The product name as last seen, for display/debugging.
+  sampleName: text('sampleName'),
+  // The rejected canonical item's name as last seen, for prompt context.
+  canonicalItemName: text('canonicalItemName'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+  updatedAt: timestamp('updatedAt').notNull().defaultNow(),
+})
+
 // Per-vendor nomenclature dictionary. Each vendor accumulates its own
 // token->meaning mappings so the parser/extractor can intuit that vendor's
 // conventions instead of assuming all vendors are uniform. Seeded with common

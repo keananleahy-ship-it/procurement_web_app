@@ -83,8 +83,15 @@ const MAX_CONCURRENCY = 4
 async function matchBatch(
   batch: ProductInput[],
   canonicalOptions: CanonicalInput[],
+  rejectionGuidance?: string,
 ): Promise<AiMatch[]> {
   const payload = { products: batch, canonicalItems: canonicalOptions }
+  // Reviewers have previously rejected some pairings and told us why. Surface
+  // those lessons so the model avoids re-proposing matches a human already
+  // turned down. This guides — it does not hard-block — the model.
+  const guidanceBlock = rejectionGuidance
+    ? `\n\nLESSONS FROM PREVIOUS HUMAN REJECTIONS — a reviewer rejected these pairings for the stated reasons. Treat them as strong evidence: do NOT re-propose a rejected product↔item pairing, and apply the same reasoning to similar products. If a listed product genuinely has no good canonical item, return null.\n${rejectionGuidance}`
+    : ''
   const { output } = await generateText({
     model: 'google/gemini-2.5-flash',
     system: SYSTEM_PROMPT,
@@ -92,7 +99,7 @@ async function matchBatch(
     messages: [
       {
         role: 'user',
-        content: `Match these products to canonical items. Respond with one entry per product.\n\n${JSON.stringify(
+        content: `Match these products to canonical items. Respond with one entry per product.${guidanceBlock}\n\n${JSON.stringify(
           payload,
           null,
           2,
@@ -106,6 +113,7 @@ async function matchBatch(
 export async function aiMatchProducts(
   productsToMatch: ProductInput[],
   canonicalOptions: CanonicalInput[],
+  rejectionGuidance?: string,
 ): Promise<AiMatch[]> {
   if (productsToMatch.length === 0 || canonicalOptions.length === 0) {
     return []
@@ -123,7 +131,7 @@ export async function aiMatchProducts(
   for (let i = 0; i < batches.length; i += MAX_CONCURRENCY) {
     const wave = batches.slice(i, i + MAX_CONCURRENCY)
     const settled = await Promise.allSettled(
-      wave.map((b) => matchBatch(b, canonicalOptions)),
+      wave.map((b) => matchBatch(b, canonicalOptions, rejectionGuidance)),
     )
     for (const s of settled) {
       if (s.status === 'fulfilled') {

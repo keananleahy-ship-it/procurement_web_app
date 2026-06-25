@@ -4,6 +4,7 @@ import { db } from '@/lib/db'
 import {
   canonicalItems,
   matchOverrides,
+  matchRejections,
   products,
   vendorPrices,
   vendorTokenMappings,
@@ -13,7 +14,7 @@ import { aiMatchProducts } from '@/lib/match-ai'
 import { parseProductSpec, normalizeNameKey } from '@/lib/spec-parse'
 import { normalizeTier, type BaseOilTier } from '@/lib/oil-tier'
 import { requireUser, requireEditor } from '@/lib/roles'
-import { and, asc, eq, inArray, notInArray } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, notInArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 
 // Build a per-product map of base-oil tier markers contributed by the vendors
@@ -84,6 +85,108 @@ async function rememberOverride(
       target: [matchOverrides.userId, matchOverrides.productNameKey],
       set: { canonicalItemId, sampleName: productName, updatedAt: new Date() },
     })
+}
+
+// Structured quick-pick reasons a reviewer can give when rejecting a suggested
+// match. Kept in sync with the dialog in components/matching-view.tsx. The
+// human-readable label is what gets fed to the AI matcher as guidance.
+export const REJECT_REASONS = [
+  { code: 'wrong_viscosity', label: 'Wrong viscosity / grade' },
+  { code: 'different_base_oil', label: 'Different base-oil tier (e.g. synthetic vs conventional)' },
+  { code: 'oem_specific', label: 'OEM-specific / proprietary product' },
+  { code: 'different_product_kind', label: 'Different product kind' },
+  { code: 'wrong_pack_unit', label: 'Wrong pack size / unit of measure' },
+  { code: 'other', label: 'Other' },
+] as const
+
+export type RejectReasonCode = (typeof REJECT_REASONS)[number]['code']
+
+export type RejectReason = {
+  code: RejectReasonCode
+  note?: string
+}
+
+const REJECT_REASON_LABELS = new Map(
+  REJECT_REASONS.map((r) => [r.code, r.label]),
+)
+
+// Remember why a product was rejected from a specific canonical item so the AI
+// matcher can learn the lesson on future passes. Keyed by normalized product
+// name (survives re-imports/resets). Upserts on
+// (userId, productNameKey, canonicalItemId).
+async function rememberRejection(
+  userId: string,
+  productName: string,
+  canonicalItemId: number | null,
+  canonicalItemName: string | null,
+  reason: RejectReason | undefined,
+) {
+  if (!reason) return
+  const productNameKey = normalizeNameKey(productName)
+  if (!productNameKey) return
+  const note = reason.note?.trim().slice(0, 280) || null
+  await db
+    .insert(matchRejections)
+    .values({
+      userId,
+      productNameKey,
+      canonicalItemId,
+      reasonCode: reason.code,
+      note,
+      sampleName: productName,
+      canonicalItemName,
+    })
+    .onConflictDoUpdate({
+      target: [
+        matchRejections.userId,
+        matchRejections.productNameKey,
+        matchRejections.canonicalItemId,
+      ],
+      set: {
+        reasonCode: reason.code,
+        note,
+        sampleName: productName,
+        canonicalItemName,
+        updatedAt: new Date(),
+      },
+    })
+}
+
+/** Human-readable one-liner for a stored rejection, used in AI guidance. */
+function describeRejection(r: {
+  sampleName: string | null
+  canonicalItemName: string | null
+  reasonCode: string | null
+  note: string | null
+}): string {
+  const label = r.reasonCode
+    ? REJECT_REASON_LABELS.get(r.reasonCode as RejectReasonCode) ?? r.reasonCode
+    : 'rejected'
+  const target = r.canonicalItemName ? `"${r.canonicalItemName}"` : 'a suggested item'
+  const note = r.note ? ` — note: ${r.note}` : ''
+  return `"${r.sampleName ?? ''}" is NOT ${target} (${label})${note}`
+}
+
+// Most recent rejections to fold into the AI matcher prompt. Capped so the
+// guidance block stays compact even after many corrections.
+const MAX_REJECTION_LESSONS = 40
+
+/** Build a bullet list of this user's recent rejection lessons for the AI. */
+async function buildRejectionGuidance(userId: string): Promise<string | undefined> {
+  const rows = await db
+    .select({
+      sampleName: matchRejections.sampleName,
+      canonicalItemName: matchRejections.canonicalItemName,
+      reasonCode: matchRejections.reasonCode,
+      note: matchRejections.note,
+    })
+    .from(matchRejections)
+    .where(eq(matchRejections.userId, userId))
+    .orderBy(desc(matchRejections.updatedAt))
+    .limit(MAX_REJECTION_LESSONS)
+
+  if (rows.length === 0) return undefined
+  return rows.map((r) => `- ${describeRejection(r)}`).join('\n')
 }
 
 export async function getCanonicalItems() {
@@ -206,7 +309,7 @@ export async function generateAiSuggestions(opts?: {
   reset?: boolean
   limit?: number
 }): Promise<AiMatchProgress> {
-  await requireEditor()
+  const { id: userId } = await requireEditor()
   const limit = Math.max(1, opts?.limit ?? AI_CHUNK_SIZE)
 
   // A fresh run clears the 'ai' processing stamp on undecided products so the
@@ -244,6 +347,10 @@ export async function generateAiSuggestions(opts?: {
     return { suggested: 0, cleared: 0, processed: 0, remaining: 0, total, done: true }
   }
 
+  // Feed this user's accumulated rejection reasons to the matcher as guidance
+  // so it learns from past corrections. Bounded so the prompt stays compact.
+  const rejectionGuidance = await buildRejectionGuidance(userId)
+
   const matches = await aiMatchProducts(
     chunk.map((p) => ({
       id: p.id,
@@ -253,6 +360,7 @@ export async function generateAiSuggestions(opts?: {
       baseUnit: p.baseUnit,
     })),
     canonicalOptions,
+    rejectionGuidance,
   )
 
   const validCanonicalIds = new Set(canonicalOptions.map((c) => c.id))
@@ -335,8 +443,33 @@ export async function confirmMatch(productId: number) {
   revalidatePath('/')
 }
 
-export async function rejectMatch(productId: number) {
-  await requireEditor()
+export async function rejectMatch(productId: number, reason?: RejectReason) {
+  const { id: userId } = await requireEditor()
+
+  // Capture what was being suggested BEFORE we clear it, so the rejection
+  // lesson records which product↔canonical-item pairing the reviewer turned
+  // down (and why). Scoped to this user's product.
+  const [prod] = await db
+    .select({
+      name: products.name,
+      canonicalItemId: products.canonicalItemId,
+      canonicalItemName: canonicalItems.name,
+    })
+    .from(products)
+    .leftJoin(canonicalItems, eq(canonicalItems.id, products.canonicalItemId))
+    .where(and(eq(products.id, productId), eq(products.userId, userId)))
+    .limit(1)
+
+  if (prod && reason) {
+    await rememberRejection(
+      userId,
+      prod.name,
+      prod.canonicalItemId,
+      prod.canonicalItemName,
+      reason,
+    )
+  }
+
   await db
     .update(products)
     .set({
@@ -345,7 +478,7 @@ export async function rejectMatch(productId: number) {
       matchScore: null,
       matchReason: null,
     })
-    .where(eq(products.id, productId))
+    .where(and(eq(products.id, productId), eq(products.userId, userId)))
   revalidatePath('/matching')
   revalidatePath('/compare')
   revalidatePath('/')

@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useState, useTransition } from 'react'
-import type { MatchRow } from '@/app/actions/canonical'
+import type { MatchRow, RejectReason, RejectReasonCode } from '@/app/actions/canonical'
 import {
   assignMatch,
   autoGroupProducts,
@@ -10,8 +10,10 @@ import {
   generateAiSuggestions,
   generateSuggestions,
   rejectMatch,
+  REJECT_REASONS,
   resetMatch,
 } from '@/app/actions/canonical'
+import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -217,6 +219,111 @@ function ReassignControl({
   )
 }
 
+// What the reviewer is currently rejecting (drives the reason dialog).
+type RejectTarget = { productId: number; productName: string; itemName: string | null }
+
+// Asks the reviewer WHY a suggested match is wrong. The reason is recorded and
+// fed back into future AI matching as guidance, so the same mistake is less
+// likely to be re-suggested.
+function RejectReasonDialog({
+  target,
+  disabled,
+  onClose,
+  onConfirm,
+}: {
+  target: RejectTarget | null
+  disabled?: boolean
+  onClose: () => void
+  onConfirm: (productId: number, reason: RejectReason) => void
+}) {
+  const [code, setCode] = useState<RejectReasonCode | null>(null)
+  const [note, setNote] = useState('')
+
+  // Reset the form whenever a new row is opened.
+  const open = target !== null
+  function handleOpenChange(next: boolean) {
+    if (!next) {
+      onClose()
+      setCode(null)
+      setNote('')
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Why isn&apos;t this a match?</DialogTitle>
+          <DialogDescription>
+            {target?.itemName ? (
+              <>
+                Tell us why{' '}
+                <span className="font-medium text-foreground">
+                  {target.productName}
+                </span>{' '}
+                is not{' '}
+                <span className="font-medium text-foreground">
+                  {target.itemName}
+                </span>
+                . We use this to improve future matching.
+              </>
+            ) : (
+              'Tell us why this suggestion is wrong. We use this to improve future matching.'
+            )}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2">
+            <Label>Reason</Label>
+            <div className="flex flex-wrap gap-2">
+              {REJECT_REASONS.map((r) => (
+                <Button
+                  key={r.code}
+                  type="button"
+                  size="sm"
+                  variant={code === r.code ? 'default' : 'outline'}
+                  onClick={() => setCode(r.code)}
+                >
+                  {r.label}
+                </Button>
+              ))}
+            </div>
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="reject-note">
+              Note <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <Textarea
+              id="reject-note"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Add any detail that would help the matcher next time…"
+              rows={3}
+              maxLength={280}
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => handleOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            disabled={!code || disabled}
+            onClick={() => {
+              if (!target || !code) return
+              onConfirm(target.productId, { code, note: note.trim() || undefined })
+              handleOpenChange(false)
+            }}
+          >
+            <X className="size-4" />
+            Reject match
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export function MatchingView({
   rows,
   canonicalItems,
@@ -227,6 +334,9 @@ export function MatchingView({
   const [isPending, startTransition] = useTransition()
   const [genPending, startGen] = useTransition()
   const canEdit = useCanEdit()
+
+  // The suggested match the reviewer is rejecting; opens the reason dialog.
+  const [rejecting, setRejecting] = useState<RejectTarget | null>(null)
 
   // The AI pass is chunked and resumable: we loop the server action until the
   // whole catalog is processed, tracking progress so a single request never
@@ -534,7 +644,13 @@ export function MatchingView({
                               size="sm"
                               variant="outline"
                               disabled={isPending}
-                              onClick={() => run(() => rejectMatch(r.productId))}
+                              onClick={() =>
+                                setRejecting({
+                                  productId: r.productId,
+                                  productName: r.productName,
+                                  itemName: r.canonicalItemName,
+                                })
+                              }
                             >
                               <X className="size-4" />
                               Reject
@@ -690,6 +806,16 @@ export function MatchingView({
           )}
         </TabsContent>
       </Tabs>
+
+      <RejectReasonDialog
+        target={rejecting}
+        disabled={isPending}
+        onClose={() => setRejecting(null)}
+        onConfirm={(productId, reason) => {
+          setRejecting(null)
+          run(() => rejectMatch(productId, reason))
+        }}
+      />
     </div>
   )
 }
