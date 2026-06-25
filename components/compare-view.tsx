@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, useTransition } from 'react'
+import { useEffect, useMemo, useState, useTransition } from 'react'
 import type { ProductComparison, PriceRow } from '@/app/actions/comparisons'
 import { setFreightEstimate } from '@/app/actions/prices'
 import { Badge } from '@/components/ui/badge'
@@ -48,6 +48,11 @@ export function CompareView({
   const [query, setQuery] = useState('')
   // Empty set = show all containers; otherwise only the selected container keys.
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
+  // How many comparison cards to render at once. Each card mounts a table and a
+  // chart, so rendering thousands at once would freeze the browser — we page
+  // through them instead and let the user load more on demand.
+  const PAGE_SIZE = 25
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
 
   // Distinct container buckets across all offers (e.g. "205 litre",
   // "1 gal (bulk)", "Unspecified"), sorted by capacity for the filter control.
@@ -130,6 +135,16 @@ export function CompareView({
     })
   }, [comparisons, query, selectedKeys])
 
+  // Reset paging back to the first page whenever the result set changes.
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE)
+  }, [query, selectedKeys])
+
+  // Only the slice we actually render. Keeps the DOM (and the per-card charts)
+  // light even when there are thousands of comparison groups.
+  const visible = filtered.slice(0, visibleCount)
+  const hasMore = visibleCount < filtered.length
+
   if (comparisons.length === 0) {
     return (
       <div className="p-6">
@@ -201,7 +216,7 @@ export function CompareView({
         />
       ) : (
         <div className="scroll-pane flex max-h-[calc(100vh-16rem)] flex-col gap-6 pr-2">
-          {filtered.map((c) => (
+          {visible.map((c) => (
           <Card key={c.key} className="overflow-hidden p-0">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
               <div className="min-w-0">
@@ -507,6 +522,23 @@ export function CompareView({
             <PackSizeCurve comparison={c} />
           </Card>
           ))}
+          {hasMore && (
+            <div className="flex flex-col items-center gap-2 py-2">
+              <span className="text-xs text-muted-foreground">
+                Showing {visible.length} of {filtered.length} comparisons
+              </span>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  setVisibleCount((n) =>
+                    Math.min(n + PAGE_SIZE, filtered.length),
+                  )
+                }
+              >
+                Load more
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </div>
