@@ -217,7 +217,7 @@ export function CompareView({
       ) : (
         <div className="scroll-pane flex max-h-[calc(100vh-16rem)] flex-col gap-6 pr-2">
           {visible.map((c) => (
-          <Card key={c.key} className="overflow-hidden p-0">
+          <Card key={c.key} className="shrink-0 overflow-hidden p-0">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
