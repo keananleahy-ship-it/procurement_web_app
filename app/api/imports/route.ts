@@ -11,6 +11,7 @@ import {
   inferContainer,
   detectUnitSystem,
   resolveCasePack,
+  resolveNumberedTote,
 } from '@/lib/container-infer'
 import {
   detectPriceBasis,
@@ -346,12 +347,19 @@ export async function POST(req: NextRequest) {
       let nativeSize = rawPackSize
       let nativeUnit = r.baseUnit?.trim() || r.unit?.trim() || null
       let inferredNote: string | null = null
+      // A numbered tote/IBC ("275 Tote") is rated in US gallons in North
+      // America; extractors often misread the number as litres. Trust the
+      // gallon reading and override any extracted unit.
+      const tote = isBulkDecant ? null : resolveNumberedTote(containerText)
       // Multi-unit case packs ("12/1 QT") carry their true volume in the
       // notation. The extractor often stores the outer count (12) with a
       // non-volumetric unit ("each"), so prefer the parsed pack volume — 12
       // quarts here, which normalizes to 3 gal — for an accurate per-gallon basis.
       const casePack = isBulkDecant ? null : resolveCasePack(containerText)
-      if (casePack) {
+      if (tote) {
+        nativeSize = tote.gallons
+        nativeUnit = 'USG'
+      } else if (casePack) {
         nativeSize = casePack.qty
         nativeUnit = casePack.unit
       } else if (!isBulkDecant && rawPackSize === 1) {
@@ -404,9 +412,14 @@ export async function POST(req: NextRequest) {
           const packGallons = Number(packSize)
           const word = baseUnitWord(baseUnit)
           const ceiling = PER_UNIT_CEILING[baseKind(baseUnit)]
-          if (!isBulkDecant && packGallons <= 1) {
-            // The price is a package total but we couldn't size the package
-            // (e.g. an un-parseable "EPACK"/"CASE"), so leave it and flag it.
+          // Only divide by a size expressed in a real volume/weight unit. A bare
+          // count ("12 each" from an unparsed "12/1 Case") is NOT a gallon
+          // figure, so dividing by it would invent a wrong per-gallon price.
+          const sizeIsMeasured = baseKind(baseUnit) !== 'other'
+          if (!isBulkDecant && (packGallons <= 1 || !sizeIsMeasured)) {
+            // The price is a package total but we couldn't size the package in a
+            // real unit (e.g. an un-parseable "EPACK"/"12/1 Case"), so leave the
+            // price as-is and flag it for a manual pack size.
             const note = `This file is priced per package but the container size couldn't be determined — the price shown may be a package total. Verify the pack size.`
             reviewReason = reviewReason ? `${reviewReason} ${note}` : note
           } else if (packGallons > 1) {

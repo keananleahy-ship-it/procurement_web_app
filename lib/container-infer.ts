@@ -223,6 +223,25 @@ export function resolveCasePack(
   return { qty: outer * inner, unit }
 }
 
+// A tote / IBC labelled with a number ("275 Tote", "330 IBC"). In North America
+// these vessels are rated in US gallons (275 and 330 are the standard sizes; a
+// 275-gal tote is the same physical container as a 1000 L IBC), and extractors
+// frequently misread the bare number as litres. So whenever a number sits next
+// to tote/IBC, treat it as gallons — this overrides any AI-guessed unit.
+const NUMBERED_TOTE_RE =
+  /(\d+(?:\.\d+)?)\s*(?:us\s*)?(?:gal(?:lon)?s?\s*)?(?:tote|ibc)\b/i
+
+// Resolve a numbered tote/IBC to its gallon capacity, or null if not present.
+export function resolveNumberedTote(
+  text: string,
+): { gallons: number } | null {
+  const m = (text || '').match(NUMBERED_TOTE_RE)
+  if (!m) return null
+  const n = Number.parseFloat(m[1])
+  if (!(n > 0)) return null
+  return { gallons: n }
+}
+
 // Container keywords with a standard capacity, given per unit system. A bare
 // "DRUM" from a metric vendor is a 205 L drum; from an imperial vendor it's a
 // 55 US gallon drum. These are the common North American lubricant sizes.
@@ -234,6 +253,14 @@ const CONTAINER_DEFAULTS: ContainerDefault[] = [
   { re: /\bdrums?\b/, metric: 205, imperial: 55 },
   // Pail: 20 L metric, 5 USG imperial.
   { re: /\bpails?\b/, metric: 20, imperial: 5 },
+]
+
+// Branded boxes with a fixed capacity regardless of the vendor's unit system.
+// A Sunoco "E-Pack" / Petro-Canada "PetroPak" is a 6 US gallon box (24 L),
+// like a bag-in-box bulk pack.
+type FixedContainer = { re: RegExp; gallons: number }
+const FIXED_CONTAINERS: FixedContainer[] = [
+  { re: /\b(e-?pack|ecopack|petro-?pak|petropak)\b/, gallons: 6 },
 ]
 
 // Any recognizable container word — used to gate explicit-size acceptance so we
@@ -272,7 +299,15 @@ export function inferContainer(
     }
   }
 
-  // 2) A known container with a standard capacity but no explicit size printed,
+  // 2) A branded fixed-size box (E-Pack/PetroPak = 6 USG) with no printed size.
+  //    These have one capacity regardless of the vendor's unit system.
+  for (const f of FIXED_CONTAINERS) {
+    if (f.re.test(t)) {
+      return { packSize: f.gallons, baseUnit: 'USG', inferred: true }
+    }
+  }
+
+  // 3) A known container with a standard capacity but no explicit size printed,
   //    resolved in the vendor's own unit system.
   for (const d of CONTAINER_DEFAULTS) {
     if (d.re.test(t)) {
