@@ -106,7 +106,7 @@ export function ProductsView({ products }: { products: Product[] }) {
           description="Add the products you purchase, then record vendor prices for each."
         />
       ) : (
-        <div className="rounded-lg border border-border bg-card">
+        <div className="scroll-pane max-h-[calc(100vh-18rem)] rounded-lg border border-border bg-card">
           <Table>
             <TableHeader>
               <TableRow>

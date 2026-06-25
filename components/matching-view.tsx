@@ -455,7 +455,7 @@ export function MatchingView({
               description="Generate suggestions to surface fuzzy matches that need your verification."
             />
           ) : (
-            <div className="rounded-lg border border-border bg-card">
+            <div className="scroll-pane max-h-[32rem] rounded-lg border border-border bg-card">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -567,7 +567,7 @@ export function MatchingView({
               description="Confirmed matches group vendor products under one canonical item in the Compare view."
             />
           ) : (
-            <div className="rounded-lg border border-border bg-card">
+            <div className="scroll-pane max-h-[32rem] rounded-lg border border-border bg-card">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -617,7 +617,7 @@ export function MatchingView({
               description="No unmatched or rejected products right now."
             />
           ) : (
-            <div className="rounded-lg border border-border bg-card">
+            <div className="scroll-pane max-h-[32rem] rounded-lg border border-border bg-card">
               <Table>
                 <TableHeader>
                   <TableRow>
