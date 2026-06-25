@@ -32,6 +32,7 @@ import {
   ChevronDown,
   GitCompareArrows,
   Layers,
+  Lock,
   Package,
   Search,
   TrendingDown,
@@ -199,7 +200,7 @@ export function CompareView({
           description="No comparisons match your search and pack-size filters. Try clearing a filter."
         />
       ) : (
-        <div className="flex flex-col gap-6">
+        <div className="scroll-pane flex max-h-[calc(100vh-16rem)] flex-col gap-6 pr-2">
           {filtered.map((c) => (
           <Card key={c.key} className="overflow-hidden p-0">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
@@ -230,6 +231,12 @@ export function CompareView({
                     <span className="inline-flex items-center gap-1 text-muted-foreground">
                       <Package className="size-3.5" />
                       Per-piece item — listed for reference, not price-compared
+                    </span>
+                  )}
+                  {c.isOemOnly && (
+                    <span className="inline-flex items-center gap-1 text-muted-foreground">
+                      <Lock className="size-3.5" />
+                      OEM-specific — listed for reference, not price-compared
                     </span>
                   )}
                   {c.mixedPackSizes && (
@@ -444,7 +451,16 @@ export function CompareView({
                         {formatDate(o.effectiveDate)}
                       </TableCell>
                       <TableCell className="text-right">
-                        {o.perEachExcluded ? (
+                        {o.oemExcluded ? (
+                          <Badge
+                            variant="outline"
+                            className="gap-1 border-border text-muted-foreground"
+                            title="Proprietary OEM-branded fluid (e.g. Honda/Acura genuine) — listed for reference but not cross-vendor price-compared"
+                          >
+                            <Lock className="size-3" />
+                            OEM-specific
+                          </Badge>
+                        ) : o.perEachExcluded ? (
                           <Badge
                             variant="outline"
                             className="gap-1 border-border text-muted-foreground"

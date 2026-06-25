@@ -113,6 +113,7 @@ export function SavingsView({ plan }: { plan: SavingsPlan }) {
             No multi-vendor price gaps found yet.
           </p>
         ) : (
+          <div className="scroll-pane max-h-[28rem]">
           <Table>
             <TableHeader>
               <TableRow>
@@ -164,6 +165,7 @@ export function SavingsView({ plan }: { plan: SavingsPlan }) {
               ))}
             </TableBody>
           </Table>
+          </div>
         )}
       </Card>
 
@@ -181,6 +183,7 @@ export function SavingsView({ plan }: { plan: SavingsPlan }) {
               No comparable items yet.
             </p>
           ) : (
+            <div className="scroll-pane max-h-96">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -209,6 +212,7 @@ export function SavingsView({ plan }: { plan: SavingsPlan }) {
                 ))}
               </TableBody>
             </Table>
+            </div>
           )}
         </Card>
 
@@ -228,6 +232,7 @@ export function SavingsView({ plan }: { plan: SavingsPlan }) {
               Every tracked item has more than one supplier.
             </p>
           ) : (
+            <div className="scroll-pane max-h-96">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -255,6 +260,7 @@ export function SavingsView({ plan }: { plan: SavingsPlan }) {
                 ))}
               </TableBody>
             </Table>
+            </div>
           )}
         </Card>
       </div>

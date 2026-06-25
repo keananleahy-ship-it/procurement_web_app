@@ -27,6 +27,7 @@ import {
   TIER_LABEL,
   type BaseOilTier,
 } from '@/lib/oil-tier'
+import { isOemSpecific } from '@/lib/oem'
 
 export type ParsedSpec = {
   // Stable, lowercase grouping key, e.g. "engine oil|15w-40".
@@ -79,12 +80,35 @@ function detectEngineDuty(name: string): 'hd' | 'pc' | null {
     /\bGF-?[3-7]\b/.test(name) ||
     /\bILSAC\b/.test(name) ||
     /\bDEXOS\b/.test(name) ||
-    /\b(SUPREME|GASOLINE|PCMO|GT-?1|SHIELD|HONDA|MOTORCYCLE|4-?STROKE|2-?STROKE|SCOOTER|EURO)\b/.test(
+    /\b(SUPREME|GASOLINE|PCMO|GT-?1|SHIELD|MOTORCYCLE|4-?STROKE|2-?STROKE|SCOOTER|EURO)\b/.test(
       name,
     )
   if (pc) return 'pc'
 
   return null
+}
+
+// Hydraulic oils split into two non-interchangeable performance classes:
+//  - 'mv'  multigrade / high-viscosity-index oils (MV, HV, HVI, HVLP, "multi
+//          viscosity", "all season") that hold viscosity across a wide temp
+//          range — a different product class than a standard monograde oil.
+//  - 'aw'  standard anti-wear hydraulic oil (the industry default), including
+//          names marked "AW" and plain hydraulic oils with no VI marker.
+// Returns null for non-hydraulic industrial oils (no sub-class distinction).
+function detectHydraulicSubtype(name: string): 'mv' | 'aw' {
+  if (
+    /\b(HVI|HVLP|MV|HV)\b/.test(name) ||
+    /\bMULTI[- ]?(?:VISCOSITY|GRADE|V)\b/.test(name) ||
+    /\bALL[- ]?SEASON\b/.test(name)
+  ) {
+    return 'mv'
+  }
+  return 'aw'
+}
+
+const HYDRAULIC_SUBTYPE_LABEL: Record<'mv' | 'aw', string> = {
+  mv: 'Multigrade (MV/HVI)',
+  aw: 'AW',
 }
 
 // Stable key for a product name, used to remember and re-apply manual matching
@@ -125,6 +149,11 @@ export function parseProductSpec(
   opts?: SpecParseOptions,
 ): ParsedSpec | null {
   if (!rawName) return null
+
+  // Proprietary OEM-branded fluids (e.g. "Honda Genuine 0W20") are not
+  // cross-shoppable against generic products, so they are never auto-grouped.
+  if (isOemSpecific(rawName)) return null
+
   const name = ` ${rawName.toUpperCase()} `
 
   // Base-oil composition tier (global markers + any vendor-specific codes).
@@ -205,11 +234,20 @@ export function parseProductSpec(
         const n = Number(tok)
         if (ISO_VG.has(n)) {
           const viscosity = `ISO ${n}`
+          // Hydraulic oils split by performance class (multigrade/high-VI vs
+          // standard anti-wear) so they never wrongly merge; other industrial
+          // oils carry no sub-class.
+          const sub =
+            industrialCat === 'hydraulic oil'
+              ? detectHydraulicSubtype(name)
+              : null
+          const subKey = sub ? `|${sub}` : ''
+          const subLabel = sub ? `${HYDRAULIC_SUBTYPE_LABEL[sub]} ` : ''
           return {
             ...applyTier(
               {
-                specKey: `${industrialCat}|iso ${n}`,
-                displayName: `${titleCase(industrialCat)} ${viscosity}`,
+                specKey: `${industrialCat}|iso ${n}${subKey}`,
+                displayName: `${subLabel}${titleCase(industrialCat)} ${viscosity}`,
               },
               tier,
             ),

@@ -181,3 +181,29 @@
     @apply font-sans;
   }
 }
+
+@layer utilities {
+  /* Bounded, vertically scrollable region for long lists. Keeps a visible,
+     themed slider bar so users can tell there is more content and can scroll
+     within the pane instead of growing the whole page. */
+  .scroll-pane {
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .scroll-pane::-webkit-scrollbar {
+    width: 10px;
+  }
+  .scroll-pane::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scroll-pane::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  .scroll-pane::-webkit-scrollbar-thumb:hover {
+    background-color: var(--muted-foreground);
+  }
+}

@@ -9,6 +9,7 @@ import {
   vendors,
 } from '@/lib/db/schema'
 import { requireUser } from '@/lib/roles'
+import { isOemSpecific } from '@/lib/oem'
 import { eq } from 'drizzle-orm'
 
 export type PriceRow = {
@@ -51,6 +52,9 @@ export type PriceRow = {
   unitClass: string | null
   // true when this offer is excluded from ranking because it is per-piece
   perEachExcluded: boolean
+  // true when this offer is a proprietary OEM-branded fluid (e.g. "Honda
+  // Genuine 0W20"), which isn't cross-shoppable and is excluded from ranking
+  oemExcluded: boolean
   // the canonical item's base unit, when this offer belongs to a canonical
   // group; used to detect when an offer can't be compared apples-to-apples
   canonicalBaseUnit: string | null
@@ -97,6 +101,9 @@ export type ProductComparison = {
   // true when this group is per-piece (filters/parts): listed for reference but
   // excluded from price comparison and savings for now
   isPerEach: boolean
+  // true when every offer in this group is a proprietary OEM-branded fluid:
+  // listed for reference but excluded from cross-vendor comparison and savings
+  isOemOnly: boolean
   offers: PriceRow[]
   best: PriceRow | null
   worst: PriceRow | null
@@ -236,6 +243,7 @@ async function getAllRows(): Promise<PriceRow[]> {
       baseUnit: r.offerBaseUnit ?? r.baseUnit ?? r.unit ?? null,
       unitClass: r.offerUnitClass ?? r.productUnitClass ?? null,
       perEachExcluded: false,
+      oemExcluded: isOemSpecific(r.productName),
       canonicalBaseUnit: r.canonicalBaseUnit ?? null,
       unitMismatch: false,
       comparable: true,
@@ -317,13 +325,21 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
       // Per-piece items (filters, parts) are listed for reference but kept out
       // of the gallon/pound comparison + savings math for now.
       const perEachExcluded = o.unitClass === 'each'
+      // Proprietary OEM-branded fluids (Honda/Acura/etc.) aren't cross-shoppable
+      // against generic products, so they're listed but never ranked.
+      const oemExcluded = o.oemExcluded
       return {
         ...o,
         unitMismatch,
         perEachExcluded,
+        oemExcluded,
         // not directly comparable for ranking: wrong unit, understated cost,
-        // or a per-piece item we don't yet compare.
-        comparable: !unitMismatch && !freightExcluded && !perEachExcluded,
+        // a per-piece item, or a proprietary OEM fluid.
+        comparable:
+          !unitMismatch &&
+          !freightExcluded &&
+          !perEachExcluded &&
+          !oemExcluded,
       }
     })
 
@@ -331,6 +347,10 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
     // basis — i.e. every offer is a per-piece item excluded from comparison.
     const isPerEach =
       flagged.length > 0 && flagged.every((o) => o.unitClass === 'each')
+
+    // A group is "OEM-only" when every offer is a proprietary OEM-branded fluid.
+    const isOemOnly =
+      flagged.length > 0 && flagged.every((o) => o.oemExcluded)
 
     // Rank only comparable offers by normalized per-base-unit cost. Excluded
     // offers still display, but sort after and never win best/worst.
@@ -361,6 +381,7 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
       hasUnitMismatch,
       hasIncompleteFreight,
       isPerEach,
+      isOemOnly,
       offers: offersSorted,
       best,
       worst,
@@ -391,9 +412,12 @@ export async function getLocationComparisons(): Promise<LocationComparison[]> {
   const result: LocationComparison[] = []
   for (const [, offers] of byLocation) {
     // Average landed cost mixes prices on one basis, so exclude per-piece items
-    // (their $/each isn't comparable to $/gallon). Fall back to all offers if a
-    // location somehow has only per-each items, so the row still appears.
-    const comparableOffers = offers.filter((o) => o.unitClass !== 'each')
+    // (their $/each isn't comparable to $/gallon) and proprietary OEM fluids.
+    // Fall back to all offers if a location somehow has only excluded items, so
+    // the row still appears.
+    const comparableOffers = offers.filter(
+      (o) => o.unitClass !== 'each' && !o.oemExcluded,
+    )
     const costBasis = comparableOffers.length > 0 ? comparableOffers : offers
     const totalAcquisitionCost = costBasis.reduce(
       (sum, o) => sum + o.acquisitionCost,
@@ -468,9 +492,10 @@ export async function getSavingsPlan(): Promise<SavingsPlan> {
   const awardMap = new Map<number, VendorAward>()
 
   for (const c of comparisons) {
-    // Per-piece groups (filters/parts) aren't compared on a gallon/pound basis
-    // yet, so they don't contribute savings, awards, or single-source risk.
-    if (c.isPerEach) continue
+    // Per-piece groups (filters/parts) and proprietary OEM-only groups aren't
+    // cross-shoppable, so they don't contribute savings, awards, or
+    // single-source risk.
+    if (c.isPerEach || c.isOemOnly) continue
 
     // A vendor "wins" an item only when it beat at least one competitor —
     // winning an uncontested single-source item isn't a real win.
