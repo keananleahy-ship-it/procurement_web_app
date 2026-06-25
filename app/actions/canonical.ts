@@ -1,13 +1,72 @@
 'use server'
 
 import { db } from '@/lib/db'
-import { canonicalItems, matchOverrides, products } from '@/lib/db/schema'
+import {
+  canonicalItems,
+  matchOverrides,
+  products,
+  vendorPrices,
+  vendorTokenMappings,
+} from '@/lib/db/schema'
 import { bestMatch } from '@/lib/match'
 import { aiMatchProducts } from '@/lib/match-ai'
 import { parseProductSpec, normalizeNameKey } from '@/lib/spec-parse'
+import { normalizeTier, type BaseOilTier } from '@/lib/oil-tier'
 import { requireUser, requireEditor } from '@/lib/roles'
 import { and, asc, eq, inArray, notInArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
+
+// Build a per-product map of base-oil tier markers contributed by the vendors
+// that sell each product. Vendors brand-code composition differently (e.g.
+// Petro-Canada UHP/SHP/HP), and those codes are stored per-vendor in the
+// nomenclature dictionary. We resolve each product's vendor(s) via its price
+// rows and merge their oil_tier tokens, so spec parsing reads a product's name
+// with its own vendor's vocabulary. Distinctive codes only appear in their
+// owning vendor's names, so merging across a product's vendors is safe.
+async function buildProductTierMarkers(
+  productIds: number[],
+): Promise<Map<number, Map<string, BaseOilTier>>> {
+  const result = new Map<number, Map<string, BaseOilTier>>()
+  if (productIds.length === 0) return result
+
+  // vendorId -> (token -> tier)
+  const tierRows = await db
+    .select({
+      vendorId: vendorTokenMappings.vendorId,
+      token: vendorTokenMappings.token,
+      value: vendorTokenMappings.value,
+    })
+    .from(vendorTokenMappings)
+    .where(eq(vendorTokenMappings.kind, 'oil_tier'))
+  if (tierRows.length === 0) return result
+
+  const byVendor = new Map<number, Map<string, BaseOilTier>>()
+  for (const r of tierRows) {
+    const tier = normalizeTier(r.value)
+    if (!tier) continue
+    if (!byVendor.has(r.vendorId)) byVendor.set(r.vendorId, new Map())
+    byVendor.get(r.vendorId)!.set(r.token.trim().toLowerCase(), tier)
+  }
+  if (byVendor.size === 0) return result
+
+  // productId -> set of vendorIds
+  const priceRows = await db
+    .select({
+      productId: vendorPrices.productId,
+      vendorId: vendorPrices.vendorId,
+    })
+    .from(vendorPrices)
+    .where(inArray(vendorPrices.productId, productIds))
+
+  for (const pr of priceRows) {
+    const vendorMarkers = byVendor.get(pr.vendorId)
+    if (!vendorMarkers) continue
+    if (!result.has(pr.productId)) result.set(pr.productId, new Map())
+    const merged = result.get(pr.productId)!
+    for (const [token, tier] of vendorMarkers) merged.set(token, tier)
+  }
+  return result
+}
 
 // Remember a manual matching decision so future auto-group runs re-apply it to
 // the same product name. Upserts on (userId, productNameKey).
@@ -515,6 +574,10 @@ export async function autoGroupProducts(opts?: {
     }
   }
 
+  // Per-product vendor oil-tier markers so each name is parsed with its own
+  // vendor's composition vocabulary.
+  const tierMarkers = await buildProductTierMarkers(chunk.map((p) => p.id))
+
   let grouped = 0
   let createdItems = 0
   // Products whose names yield no reliable spec (ATF, grease, antifreeze, etc.)
@@ -540,8 +603,11 @@ export async function autoGroupProducts(opts?: {
       continue
     }
 
-    // 2) Otherwise derive a spec from the name and group by signature.
-    const spec = parseProductSpec(p.name)
+    // 2) Otherwise derive a spec from the name and group by signature, reading
+    // the name with this product's vendor oil-tier vocabulary.
+    const spec = parseProductSpec(p.name, {
+      oilTierMarkers: tierMarkers.get(p.id),
+    })
     if (!spec) {
       stampedNoSpec.push(p.id)
       continue

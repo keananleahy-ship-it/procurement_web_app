@@ -17,6 +17,7 @@ const VALID_KINDS: TokenKind[] = [
   'separator',
   'container',
   'unit_class',
+  'oil_tier',
 ]
 
 // Load a vendor's stored token mappings (manual + learned). Seed tokens are not

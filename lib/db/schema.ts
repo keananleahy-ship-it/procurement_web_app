@@ -170,6 +170,9 @@ export const vendorTokenMappings = pgTable('vendor_token_mappings', {
   //  'container'  -> a fixed-size container; value is capacity in US gallons
   //                  as a string (e.g. 'epack' -> '6').
   //  'unit_class' -> forces a unit class; value is 'volume' | 'weight' | 'each'.
+  //  'oil_tier'   -> base-oil composition the token encodes; value is one of
+  //                  'full-synthetic' | 'synthetic' | 'synthetic-blend' |
+  //                  'conventional' (e.g. Petro-Canada 'uhp' -> full-synthetic).
   kind: text('kind').notNull(),
   value: text('value').notNull(),
   // 'seed' | 'learned' | 'manual'. Manual wins over learned wins over seed.

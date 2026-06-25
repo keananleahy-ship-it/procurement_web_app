@@ -35,7 +35,12 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { BookA, Plus, Trash2 } from 'lucide-react'
 
-type TokenKind = 'unit' | 'separator' | 'container' | 'unit_class'
+type TokenKind =
+  | 'unit'
+  | 'separator'
+  | 'container'
+  | 'unit_class'
+  | 'oil_tier'
 
 type TokenRow = {
   id: number
@@ -54,6 +59,10 @@ const KIND_HELP: Record<TokenKind, { label: string; placeholder: string }> = {
   unit_class: {
     label: 'Force unit class',
     placeholder: 'volume | weight | each',
+  },
+  oil_tier: {
+    label: 'Base-oil tier',
+    placeholder: 'full-synthetic | synthetic | synthetic-blend | conventional',
   },
 }
 
@@ -146,6 +155,7 @@ export function VendorNomenclatureDialog({
                   <SelectItem value="separator">Pack separator</SelectItem>
                   <SelectItem value="container">Fixed container</SelectItem>
                   <SelectItem value="unit_class">Force unit class</SelectItem>
+                  <SelectItem value="oil_tier">Base-oil tier</SelectItem>
                 </SelectContent>
               </Select>
             </div>

@@ -11,7 +11,14 @@
 // rows loaded from the database) into a fast lookup structure. DB access lives
 // in the route/actions, never here.
 
-export type TokenKind = 'unit' | 'separator' | 'container' | 'unit_class'
+import { normalizeTier, type BaseOilTier } from '@/lib/oil-tier'
+
+export type TokenKind =
+  | 'unit'
+  | 'separator'
+  | 'container'
+  | 'unit_class'
+  | 'oil_tier'
 export type TokenSource = 'seed' | 'learned' | 'manual'
 export type UnitClass = 'volume' | 'weight' | 'each'
 
@@ -34,6 +41,11 @@ export type VendorProfile = {
   containers: Map<string, number>
   // token -> forced unit class (e.g. an 'af' filter code -> 'each').
   unitClasses: Map<string, UnitClass>
+  // token -> base-oil composition tier (e.g. Petro-Canada 'uhp' ->
+  // 'full-synthetic', 'shp' -> 'synthetic-blend', 'hp' -> 'conventional').
+  // Used by spec parsing so this vendor's brand-coded composition is observed
+  // when matching products across vendors.
+  oilTiers: Map<string, BaseOilTier>
 }
 
 // Seed dictionary applied to EVERY vendor. These reproduce the conventions that
@@ -82,6 +94,7 @@ export function buildVendorProfile(rows: VendorTokenRow[]): VendorProfile {
   const separators = new Set<string>()
   const containers = new Map<string, number>()
   const unitClasses = new Map<string, UnitClass>()
+  const oilTiers = new Map<string, BaseOilTier>()
 
   for (const row of best.values()) {
     switch (row.kind) {
@@ -103,10 +116,15 @@ export function buildVendorProfile(rows: VendorTokenRow[]): VendorProfile {
         }
         break
       }
+      case 'oil_tier': {
+        const tier = normalizeTier(row.value)
+        if (tier) oilTiers.set(row.token, tier)
+        break
+      }
     }
   }
 
-  return { unitAliases, separators, containers, unitClasses }
+  return { unitAliases, separators, containers, unitClasses, oilTiers }
 }
 
 // An empty profile (seed tokens only) for callers without a specific vendor.
@@ -194,6 +212,11 @@ export function describeProfileForPrompt(rows: VendorTokenRow[]): string {
         break
       case 'unit_class':
         lines.push(`- "${token}" indicates a ${row.value} item`)
+        break
+      case 'oil_tier':
+        lines.push(
+          `- "${token}" indicates a ${row.value.replace(/-/g, ' ')} base oil`,
+        )
         break
     }
   }

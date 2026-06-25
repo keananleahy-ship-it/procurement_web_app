@@ -17,6 +17,16 @@
 //    grouped by category + ISO grade.
 //  - Anything without a parseable SAE/ISO viscosity (ATF, grease, antifreeze,
 //    brake fluid, DEF, monograde, etc.) returns null and is NOT auto-grouped.
+//  - Base-oil composition (full synthetic / synthetic / synthetic blend /
+//    conventional) is a further splitting dimension: oils that otherwise match
+//    on category + viscosity are kept apart when their composition differs, and
+//    products with no composition marker stay in their own "unspecified" group.
+
+import {
+  detectBaseOilTier,
+  TIER_LABEL,
+  type BaseOilTier,
+} from '@/lib/oil-tier'
 
 export type ParsedSpec = {
   // Stable, lowercase grouping key, e.g. "engine oil|15w-40".
@@ -27,6 +37,8 @@ export type ParsedSpec = {
   viscosity: string
   // Brand-free human-readable canonical name, e.g. "Engine Oil 15W-40".
   displayName: string
+  // Base-oil composition tier, or null when the name carries no marker.
+  baseOilTier: BaseOilTier | null
 }
 
 // Standard ISO viscosity grades (ISO 3448). Used to distinguish a real grade
@@ -86,9 +98,37 @@ export function normalizeNameKey(rawName: string): string {
     .trim()
 }
 
-export function parseProductSpec(rawName: string): ParsedSpec | null {
+// Options for spec parsing. oilTierMarkers carries a vendor's brand-coded
+// composition tokens (e.g. Petro-Canada "uhp" -> full-synthetic) so coded names
+// resolve to the right tier; pass it when the product's vendor is known.
+export type SpecParseOptions = {
+  oilTierMarkers?: Map<string, BaseOilTier>
+}
+
+// Append a base-oil tier to a spec key / display name when one is known. The
+// tier becomes part of the grouping signature so different compositions never
+// merge; an unspecified tier adds nothing (its own group).
+function applyTier(
+  base: { specKey: string; displayName: string },
+  tier: BaseOilTier | null,
+): { specKey: string; displayName: string; baseOilTier: BaseOilTier | null } {
+  if (!tier) return { ...base, baseOilTier: null }
+  return {
+    specKey: `${base.specKey}|${tier}`,
+    displayName: `${TIER_LABEL[tier]} ${base.displayName}`,
+    baseOilTier: tier,
+  }
+}
+
+export function parseProductSpec(
+  rawName: string,
+  opts?: SpecParseOptions,
+): ParsedSpec | null {
   if (!rawName) return null
   const name = ` ${rawName.toUpperCase()} `
+
+  // Base-oil composition tier (global markers + any vendor-specific codes).
+  const tier = detectBaseOilTier(rawName, opts?.oilTierMarkers)
 
   // 1) SAE multigrade viscosity: 15W-40, 15W40, 0W20, 5W-30, 20W50, 0W-16...
   // Require a 1-2 digit number, W, optional dash, then 1-3 digit number.
@@ -107,10 +147,15 @@ export function parseProductSpec(rawName: string): ParsedSpec | null {
 
     if (isGear) {
       return {
-        specKey: `gear oil|${viscosity.toLowerCase()}`,
+        ...applyTier(
+          {
+            specKey: `gear oil|${viscosity.toLowerCase()}`,
+            displayName: `Gear Oil ${viscosity}`,
+          },
+          tier,
+        ),
         category: 'gear oil',
         viscosity,
-        displayName: `Gear Oil ${viscosity}`,
       }
     }
 
@@ -126,10 +171,15 @@ export function parseProductSpec(rawName: string): ParsedSpec | null {
     // Keep the duty token in the key so groups never cross duty class.
     const keyCat = duty ? `engine oil ${duty}` : 'engine oil'
     return {
-      specKey: `${keyCat}|${viscosity.toLowerCase()}`,
+      ...applyTier(
+        {
+          specKey: `${keyCat}|${viscosity.toLowerCase()}`,
+          displayName: `${dutyLabel} ${viscosity}`,
+        },
+        tier,
+      ),
       category: dutyLabel.toLowerCase(),
       viscosity,
-      displayName: `${dutyLabel} ${viscosity}`,
     }
   }
 
@@ -156,10 +206,15 @@ export function parseProductSpec(rawName: string): ParsedSpec | null {
         if (ISO_VG.has(n)) {
           const viscosity = `ISO ${n}`
           return {
-            specKey: `${industrialCat}|iso ${n}`,
+            ...applyTier(
+              {
+                specKey: `${industrialCat}|iso ${n}`,
+                displayName: `${titleCase(industrialCat)} ${viscosity}`,
+              },
+              tier,
+            ),
             category: industrialCat,
             viscosity,
-            displayName: `${titleCase(industrialCat)} ${viscosity}`,
           }
         }
       }
