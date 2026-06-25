@@ -75,6 +75,17 @@ function detectEngineDuty(name: string): 'hd' | 'pc' | null {
   return null
 }
 
+// Stable key for a product name, used to remember and re-apply manual matching
+// decisions. Lowercased, punctuation collapsed to spaces, whitespace squeezed,
+// so trivial formatting differences in re-imports still match the same key.
+export function normalizeNameKey(rawName: string): string {
+  return (rawName ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 export function parseProductSpec(rawName: string): ParsedSpec | null {
   if (!rawName) return null
   const name = ` ${rawName.toUpperCase()} `

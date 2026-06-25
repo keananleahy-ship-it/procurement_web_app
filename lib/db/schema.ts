@@ -127,6 +127,25 @@ export const products = pgTable('products', {
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 
+// Remembers manual matching decisions so the auto-grouper can "learn" from
+// them: when a reviewer assigns a product to a canonical item, we store the
+// product's normalized name -> canonical item here. Future auto-group runs
+// apply these overrides first, so the same product (e.g. re-imported next
+// month, or a reset row) lands on the reviewer's chosen item automatically.
+export const matchOverrides = pgTable('match_overrides', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  // Normalized product name this override applies to (lowercased, collapsed
+  // whitespace). One override per (userId, productNameKey) — upserted.
+  productNameKey: text('productNameKey').notNull(),
+  // Target canonical item the reviewer chose for this product name.
+  canonicalItemId: integer('canonicalItemId').notNull(),
+  // The product name as last seen, for display/debugging.
+  sampleName: text('sampleName'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+  updatedAt: timestamp('updatedAt').notNull().defaultNow(),
+})
+
 export const vendorPrices = pgTable('vendor_prices', {
   id: serial('id').primaryKey(),
   userId: text('userId').notNull(),

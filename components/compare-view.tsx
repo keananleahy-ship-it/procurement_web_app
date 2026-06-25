@@ -23,6 +23,7 @@ import {
   CalendarClock,
   GitCompareArrows,
   Layers,
+  Package,
   Search,
   TrendingDown,
   TriangleAlert,
@@ -35,17 +36,86 @@ export function CompareView({
   comparisons: ProductComparison[]
 }) {
   const [query, setQuery] = useState('')
+  // Empty set = show all pack sizes; otherwise only the selected sizes.
+  const [selectedSizes, setSelectedSizes] = useState<Set<number>>(new Set())
 
+  // Distinct container/pack sizes present across all offers, each with a
+  // representative base unit, sorted ascending for the filter control.
+  const packSizes = useMemo(() => {
+    const m = new Map<number, string | null>()
+    for (const c of comparisons) {
+      for (const o of c.offers) {
+        if (!m.has(o.packSize)) m.set(o.packSize, o.baseUnit)
+      }
+    }
+    return [...m.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([size, unit]) => ({ size, unit }))
+  }, [comparisons])
+
+  function toggleSize(size: number) {
+    setSelectedSizes((prev) => {
+      const next = new Set(prev)
+      if (next.has(size)) next.delete(size)
+      else next.add(size)
+      return next
+    })
+  }
+
+  // Apply text + pack-size filters, re-rank the surviving offers in each group
+  // so best/worst/savings reflect only what's visible, then order the list with
+  // canonical (cross-product) comparisons first.
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return comparisons
-    return comparisons.filter(
-      (c) =>
-        c.displayName.toLowerCase().includes(q) ||
-        (c.category ?? '').toLowerCase().includes(q) ||
-        c.offers.some((o) => o.vendorName.toLowerCase().includes(q)),
-    )
-  }, [comparisons, query])
+    const result: ProductComparison[] = []
+    for (const c of comparisons) {
+      if (
+        q &&
+        !(
+          c.displayName.toLowerCase().includes(q) ||
+          (c.category ?? '').toLowerCase().includes(q) ||
+          c.offers.some((o) => o.vendorName.toLowerCase().includes(q))
+        )
+      ) {
+        continue
+      }
+
+      let offers = c.offers
+      if (selectedSizes.size > 0) {
+        offers = offers.filter((o) => selectedSizes.has(o.packSize))
+        if (offers.length === 0) continue
+      }
+
+      // Re-rank only the still-visible, comparable offers.
+      const comparable = offers
+        .filter((o) => o.comparable)
+        .sort((a, b) => a.pricePerBaseUnit - b.pricePerBaseUnit)
+      const excluded = offers.filter((o) => !o.comparable)
+      const best = comparable[0] ?? null
+      const worst = comparable[comparable.length - 1] ?? null
+      const vendorCount = new Set(offers.map((o) => o.vendorId)).size
+
+      result.push({
+        ...c,
+        offers: [...comparable, ...excluded],
+        best,
+        worst,
+        vendorCount,
+        mixedPackSizes: new Set(comparable.map((o) => o.packSize)).size > 1,
+        potentialSavings:
+          best && worst ? worst.pricePerBaseUnit - best.pricePerBaseUnit : 0,
+      })
+    }
+
+    // Canonical comparisons first, then multi-vendor groups, then by savings.
+    return result.sort((a, b) => {
+      if (a.isCanonical !== b.isCanonical) return a.isCanonical ? -1 : 1
+      const aMulti = a.vendorCount > 1
+      const bMulti = b.vendorCount > 1
+      if (aMulti !== bMulti) return aMulti ? -1 : 1
+      return b.potentialSavings - a.potentialSavings
+    })
+  }, [comparisons, query, selectedSizes])
 
   if (comparisons.length === 0) {
     return (
@@ -61,18 +131,68 @@ export function CompareView({
 
   return (
     <div className="flex flex-col gap-6 p-6">
-      <div className="relative max-w-sm">
-        <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search products or categories"
-          className="pl-9"
-        />
+      <div className="flex flex-col gap-3">
+        <div className="relative max-w-sm">
+          <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search products or categories"
+            className="pl-9"
+          />
+        </div>
+
+        {packSizes.length > 1 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+              <Package className="size-4" />
+              Pack size
+            </span>
+            <Button
+              size="sm"
+              variant={selectedSizes.size === 0 ? 'default' : 'outline'}
+              className="h-7 px-2.5 text-xs"
+              onClick={() => setSelectedSizes(new Set())}
+            >
+              All
+            </Button>
+            {packSizes.map(({ size, unit }) => {
+              const active = selectedSizes.has(size)
+              return (
+                <Button
+                  key={size}
+                  size="sm"
+                  variant={active ? 'default' : 'outline'}
+                  className="h-7 px-2.5 text-xs tabular-nums"
+                  aria-pressed={active}
+                  onClick={() => toggleSize(size)}
+                >
+                  {size === 1
+                    ? 'Unspecified'
+                    : `${size.toLocaleString(undefined, {
+                        maximumFractionDigits: 2,
+                      })}${unit ? ` ${unit}` : ''}`}
+                </Button>
+              )
+            })}
+            {selectedSizes.size > 0 && (
+              <span className="text-xs text-muted-foreground">
+                {filtered.length} group{filtered.length === 1 ? '' : 's'} match
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
-      <div className="flex flex-col gap-6">
-        {filtered.map((c) => (
+      {filtered.length === 0 ? (
+        <EmptyState
+          icon={Search}
+          title="No matches"
+          description="No comparisons match your search and pack-size filters. Try clearing a filter."
+        />
+      ) : (
+        <div className="flex flex-col gap-6">
+          {filtered.map((c) => (
           <Card key={c.key} className="overflow-hidden p-0">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
               <div className="min-w-0">
@@ -322,8 +442,9 @@ export function CompareView({
               </TableBody>
             </Table>
           </Card>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

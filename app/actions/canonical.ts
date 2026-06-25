@@ -1,13 +1,31 @@
 'use server'
 
 import { db } from '@/lib/db'
-import { canonicalItems, products } from '@/lib/db/schema'
+import { canonicalItems, matchOverrides, products } from '@/lib/db/schema'
 import { bestMatch } from '@/lib/match'
 import { aiMatchProducts } from '@/lib/match-ai'
-import { parseProductSpec } from '@/lib/spec-parse'
+import { parseProductSpec, normalizeNameKey } from '@/lib/spec-parse'
 import { requireUser, requireEditor } from '@/lib/roles'
 import { and, asc, eq, inArray, notInArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
+
+// Remember a manual matching decision so future auto-group runs re-apply it to
+// the same product name. Upserts on (userId, productNameKey).
+async function rememberOverride(
+  userId: string,
+  productName: string,
+  canonicalItemId: number,
+) {
+  const productNameKey = normalizeNameKey(productName)
+  if (!productNameKey) return
+  await db
+    .insert(matchOverrides)
+    .values({ userId, productNameKey, canonicalItemId, sampleName: productName })
+    .onConflictDoUpdate({
+      target: [matchOverrides.userId, matchOverrides.productNameKey],
+      set: { canonicalItemId, sampleName: productName, updatedAt: new Date() },
+    })
+}
 
 export async function getCanonicalItems() {
   await requireUser()
@@ -276,8 +294,8 @@ export async function rejectMatch(productId: number) {
 
 /** Manually assign (or reassign) a product to a canonical item and confirm it. */
 export async function assignMatch(productId: number, canonicalItemId: number) {
-  await requireEditor()
-  await db
+  const { id: userId } = await requireEditor()
+  const [prod] = await db
     .update(products)
     .set({
       canonicalItemId,
@@ -287,6 +305,11 @@ export async function assignMatch(productId: number, canonicalItemId: number) {
       matchReason: null,
     })
     .where(eq(products.id, productId))
+    .returning({ name: products.name })
+
+  // Learn from this decision: remember name -> canonical item for future runs.
+  if (prod) await rememberOverride(userId, prod.name, canonicalItemId)
+
   revalidatePath('/matching')
   revalidatePath('/compare')
   revalidatePath('/')
@@ -310,7 +333,11 @@ export async function createCanonicalItemAndAssign(input: {
   // Carry the product's unit/baseUnit onto the new item so per-unit price
   // normalization in the Compare view keeps working.
   const [prod] = await db
-    .select({ unit: products.unit, baseUnit: products.baseUnit })
+    .select({
+      name: products.name,
+      unit: products.unit,
+      baseUnit: products.baseUnit,
+    })
     .from(products)
     .where(eq(products.id, input.productId))
     .limit(1)
@@ -338,6 +365,9 @@ export async function createCanonicalItemAndAssign(input: {
     })
     .where(eq(products.id, input.productId))
 
+  // Learn from this decision so the same product name maps here next time.
+  if (prod?.name) await rememberOverride(userId, prod.name, created.id)
+
   revalidatePath('/matching')
   revalidatePath('/canonical')
   revalidatePath('/compare')
@@ -347,8 +377,8 @@ export async function createCanonicalItemAndAssign(input: {
 
 /** Clear a match entirely, returning the product to the unmatched pool. */
 export async function resetMatch(productId: number) {
-  await requireEditor()
-  await db
+  const { id: userId } = await requireEditor()
+  const [prod] = await db
     .update(products)
     .set({
       canonicalItemId: null,
@@ -358,6 +388,21 @@ export async function resetMatch(productId: number) {
       matchReason: null,
     })
     .where(eq(products.id, productId))
+    .returning({ name: products.name })
+
+  // Forget any saved override for this product name so a reset truly clears the
+  // decision and auto-group won't silently re-apply it next run.
+  if (prod) {
+    await db
+      .delete(matchOverrides)
+      .where(
+        and(
+          eq(matchOverrides.userId, userId),
+          eq(matchOverrides.productNameKey, normalizeNameKey(prod.name)),
+        ),
+      )
+  }
+
   revalidatePath('/matching')
   revalidatePath('/compare')
   revalidatePath('/')
@@ -454,6 +499,22 @@ export async function autoGroupProducts(opts?: {
     if (sig && !sigToId.has(sig)) sigToId.set(sig, c.id)
   }
 
+  // Load remembered manual decisions and apply them first. Any product whose
+  // normalized name matches a saved override is assigned to that canonical item
+  // automatically (the reviewer already made this call once). Overrides that
+  // point at a canonical item that no longer exists are ignored.
+  const validCanonical = new Set(existing.map((c) => c.id))
+  const overrides = await db
+    .select()
+    .from(matchOverrides)
+    .where(eq(matchOverrides.userId, userId))
+  const overrideByKey = new Map<string, number>()
+  for (const o of overrides) {
+    if (validCanonical.has(o.canonicalItemId)) {
+      overrideByKey.set(o.productNameKey, o.canonicalItemId)
+    }
+  }
+
   let grouped = 0
   let createdItems = 0
   // Products whose names yield no reliable spec (ATF, grease, antifreeze, etc.)
@@ -462,6 +523,24 @@ export async function autoGroupProducts(opts?: {
   const stampedNoSpec: number[] = []
 
   for (const p of chunk) {
+    // 1) Saved manual decision wins: re-apply the reviewer's earlier choice.
+    const overrideId = overrideByKey.get(normalizeNameKey(p.name))
+    if (overrideId !== undefined) {
+      await db
+        .update(products)
+        .set({
+          canonicalItemId: overrideId,
+          matchStatus: 'confirmed',
+          matchScore: null,
+          matchMethod: 'manual',
+          matchReason: 'Applied from your saved assignment',
+        })
+        .where(eq(products.id, p.id))
+      grouped++
+      continue
+    }
+
+    // 2) Otherwise derive a spec from the name and group by signature.
     const spec = parseProductSpec(p.name)
     if (!spec) {
       stampedNoSpec.push(p.id)
