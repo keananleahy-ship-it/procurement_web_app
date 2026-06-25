@@ -202,6 +202,27 @@ export function detectUnitSystem(
 const VOL_UNIT_RE =
   /(\d+(?:\.\d+)?)\s*(usg|u\.?s\.?\s?gal(?:lon)?s?|gal(?:lon)?s?|litres?|liters?|ltrs?|millilitres?|milliliters?|ml|quarts?|qts?|l)\b/i
 
+// Case-pack notation like "12/1 QT" (12 containers of 1 quart) or "4/1 GAL"
+// (4 jugs of 1 gallon). Captures outer count, inner size, and the volume unit.
+const CASE_PACK_RE =
+  /(\d+)\s*\/\s*(\d+(?:\.\d+)?)\s*(usg|gal(?:lon)?s?|litres?|liters?|ltrs?|ml|millilitres?|milliliters?|quarts?|qts?|pints?|pts?|fl\s?oz|l)\b/i
+
+// Resolve a multi-unit case pack into its true total volume in native units.
+// "12/1 QT" → { qty: 12, unit: "quart" } (12 × 1 quart), which normalizeContainer
+// then converts to 3 USG. Returns null when the text isn't a volumetric case
+// pack (e.g. "12/1 Case" with no unit), so the caller can leave it untouched.
+export function resolveCasePack(
+  text: string,
+): { qty: number; unit: string } | null {
+  const m = (text || '').match(CASE_PACK_RE)
+  if (!m) return null
+  const outer = Number.parseFloat(m[1])
+  const inner = Number.parseFloat(m[2])
+  const unit = m[3].trim()
+  if (!(outer > 0) || !(inner > 0)) return null
+  return { qty: outer * inner, unit }
+}
+
 // Container keywords with a standard capacity, given per unit system. A bare
 // "DRUM" from a metric vendor is a 205 L drum; from an imperial vendor it's a
 // 55 US gallon drum. These are the common North American lubricant sizes.

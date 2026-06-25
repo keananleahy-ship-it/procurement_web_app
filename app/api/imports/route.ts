@@ -10,6 +10,7 @@ import {
   normalizeContainer,
   inferContainer,
   detectUnitSystem,
+  resolveCasePack,
 } from '@/lib/container-infer'
 import {
   detectPriceBasis,
@@ -345,7 +346,15 @@ export async function POST(req: NextRequest) {
       let nativeSize = rawPackSize
       let nativeUnit = r.baseUnit?.trim() || r.unit?.trim() || null
       let inferredNote: string | null = null
-      if (!isBulkDecant && rawPackSize === 1) {
+      // Multi-unit case packs ("12/1 QT") carry their true volume in the
+      // notation. The extractor often stores the outer count (12) with a
+      // non-volumetric unit ("each"), so prefer the parsed pack volume — 12
+      // quarts here, which normalizes to 3 gal — for an accurate per-gallon basis.
+      const casePack = isBulkDecant ? null : resolveCasePack(containerText)
+      if (casePack) {
+        nativeSize = casePack.qty
+        nativeUnit = casePack.unit
+      } else if (!isBulkDecant && rawPackSize === 1) {
         const inf = inferContainer(containerText, unitSystem)
         if (inf) {
           nativeSize = inf.packSize
