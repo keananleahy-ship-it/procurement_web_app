@@ -456,7 +456,7 @@ export function MatchingView({
             />
           ) : (
             <div className="scroll-pane max-h-[32rem] rounded-lg border border-border bg-card">
-              <Table>
+              <Table className="min-w-[60rem]">
                 <TableHeader>
                   <TableRow>
                     <TableHead>Vendor product</TableHead>
@@ -568,7 +568,7 @@ export function MatchingView({
             />
           ) : (
             <div className="scroll-pane max-h-[32rem] rounded-lg border border-border bg-card">
-              <Table>
+              <Table className="min-w-[44rem]">
                 <TableHeader>
                   <TableRow>
                     <TableHead>Vendor product</TableHead>
@@ -618,7 +618,7 @@ export function MatchingView({
             />
           ) : (
             <div className="scroll-pane max-h-[32rem] rounded-lg border border-border bg-card">
-              <Table>
+              <Table className="min-w-[44rem]">
                 <TableHeader>
                   <TableRow>
                     <TableHead>Vendor product</TableHead>

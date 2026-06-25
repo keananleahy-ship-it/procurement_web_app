@@ -183,16 +183,25 @@
 }
 
 @layer utilities {
-  /* Bounded, vertically scrollable region for long lists. Keeps a visible,
-     themed slider bar so users can tell there is more content and can scroll
-     within the pane instead of growing the whole page. */
+  /* Bounded, scrollable region for long/wide lists. Keeps a visible, themed
+     slider bar on both axes so users can tell there is more content and can
+     scroll within the pane instead of growing the whole page. */
   .scroll-pane {
-    overflow-y: auto;
+    overflow: auto;
     scrollbar-width: thin;
     scrollbar-color: var(--border) transparent;
   }
+  /* When a shadcn <Table> lives inside a scroll pane, it adds its own
+     overflow-x-auto wrapper whose horizontal bar sits at the bottom of all rows
+     — below the fold and unreachable in a tall list. Defer scrolling to the
+     bounded pane so a single horizontal slider stays pinned to the pane's
+     bottom edge and is always reachable. */
+  .scroll-pane [data-slot='table-container'] {
+    overflow: visible;
+  }
   .scroll-pane::-webkit-scrollbar {
     width: 10px;
+    height: 10px;
   }
   .scroll-pane::-webkit-scrollbar-track {
     background: transparent;
@@ -205,5 +214,8 @@
   }
   .scroll-pane::-webkit-scrollbar-thumb:hover {
     background-color: var(--muted-foreground);
+  }
+  .scroll-pane::-webkit-scrollbar-corner {
+    background: transparent;
   }
 }
