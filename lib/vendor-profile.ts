@@ -46,6 +46,7 @@ export const SEED_TOKENS: VendorTokenRow[] = [
   // Unit aliases -> canonical words normalizeContainer understands.
   { token: 'ugl', kind: 'unit', value: 'gal', source: 'seed' },
   { token: 'ug', kind: 'unit', value: 'gal', source: 'seed' },
+  { token: 'ug6', kind: 'unit', value: 'gal', source: 'seed' },
   { token: 'usg', kind: 'unit', value: 'gal', source: 'seed' },
   // Fixed-size branded boxes (US gallons).
   { token: 'epack', kind: 'container', value: '6', source: 'seed' },

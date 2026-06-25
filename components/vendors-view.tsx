@@ -25,6 +25,7 @@ import {
 import { Plus, Trash2, Store } from 'lucide-react'
 import { EmptyState } from '@/components/empty-state'
 import { useCanEdit } from '@/components/role-provider'
+import { VendorNomenclatureDialog } from '@/components/vendor-nomenclature-dialog'
 
 type Vendor = {
   id: number
@@ -102,6 +103,7 @@ export function VendorsView({ vendors }: { vendors: Vendor[] }) {
                 <TableHead>Vendor</TableHead>
                 <TableHead>Contact</TableHead>
                 <TableHead>Notes</TableHead>
+                <TableHead className="w-12 text-center">Terms</TableHead>
                 {canEdit && <TableHead className="w-12" />}
               </TableRow>
             </TableHeader>
@@ -116,6 +118,13 @@ export function VendorsView({ vendors }: { vendors: Vendor[] }) {
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {v.notes ?? '—'}
+                  </TableCell>
+                  <TableCell className="text-center">
+                    <VendorNomenclatureDialog
+                      vendorId={v.id}
+                      vendorName={v.name}
+                      canEdit={canEdit}
+                    />
                   </TableCell>
                   {canEdit && (
                     <TableCell>

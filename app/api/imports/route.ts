@@ -18,6 +18,7 @@ import {
   detectUnitSystem,
   resolveCasePack,
   resolveNumberedTote,
+  translateUnit,
 } from '@/lib/container-infer'
 import {
   detectPriceBasis,
@@ -392,7 +393,13 @@ export async function POST(req: NextRequest) {
       // resolver for known industry shorthands (e.g. "6 USG PETROPAK", a bare
       // "IBC" or "DRUM"). Inferred-by-default sizes are flagged for review.
       let nativeSize = rawPackSize
-      let nativeUnit = r.baseUnit?.trim() || r.unit?.trim() || null
+      // Canonicalize the extracted unit via this vendor's aliases first, so a
+      // bare vendor unit code (e.g. Shell's "UG6" bulk-gallon) is understood as
+      // gallons rather than falling through to an unknown 'each'.
+      let nativeUnit = translateUnit(
+        r.baseUnit?.trim() || r.unit?.trim() || null,
+        vendorProfile,
+      )
       let inferredNote: string | null = null
       // A numbered tote/IBC ("275 Tote") is rated in US gallons in North
       // America; extractors often misread the number as litres. Trust the

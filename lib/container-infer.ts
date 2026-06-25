@@ -276,6 +276,17 @@ export function resolveCasePack(
   return null
 }
 
+// Map a vendor's raw unit token to a canonical unit normalizeContainer/baseKind
+// understand (e.g. Shell's "UG6"/"ugl" -> "gal"). Returns the input unchanged
+// when there's no alias, so it's safe to call on every extracted base unit.
+export function translateUnit(
+  unit: string | null,
+  profile?: VendorProfile,
+): string | null {
+  if (!unit || !profile) return unit
+  return profile.unitAliases.get(unit.trim().toLowerCase()) ?? unit
+}
+
 // A tote / IBC labelled with a number ("275 Tote", "330 IBC"). In North America
 // these vessels are rated in US gallons (275 and 330 are the standard sizes; a
 // 275-gal tote is the same physical container as a 1000 L IBC), and extractors
