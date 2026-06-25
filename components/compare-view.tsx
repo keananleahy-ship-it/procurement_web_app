@@ -226,6 +226,12 @@ export function CompareView({
                     {c.vendorCount} vendor{c.vendorCount === 1 ? '' : 's'}
                     {c.baseUnit ? ` · per ${c.baseUnit}` : ''}
                   </span>
+                  {c.isPerEach && (
+                    <span className="inline-flex items-center gap-1 text-muted-foreground">
+                      <Package className="size-3.5" />
+                      Per-piece item — listed for reference, not price-compared
+                    </span>
+                  )}
                   {c.mixedPackSizes && (
                     <span className="inline-flex items-center gap-1 text-primary">
                       <Layers className="size-3.5" />
@@ -438,7 +444,16 @@ export function CompareView({
                         {formatDate(o.effectiveDate)}
                       </TableCell>
                       <TableCell className="text-right">
-                        {o.unitMismatch ? (
+                        {o.perEachExcluded ? (
+                          <Badge
+                            variant="outline"
+                            className="gap-1 border-border text-muted-foreground"
+                            title="Per-piece item (e.g. a filter or part) — listed for reference but not price-compared on a per-gallon/pound basis"
+                          >
+                            <Package className="size-3" />
+                            Per piece
+                          </Badge>
+                        ) : o.unitMismatch ? (
                           <Badge
                             variant="outline"
                             className="gap-1 border-warning/40 text-warning"

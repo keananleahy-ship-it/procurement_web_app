@@ -10,6 +10,10 @@ import {
 } from '@/lib/db/schema'
 import { requireUser, requireEditor } from '@/lib/roles'
 import { deriveUnitClass } from '@/lib/unit-class'
+import {
+  learnFromCorrection,
+  getVendorIdByName,
+} from '@/app/actions/vendor-nomenclature'
 import { desc, eq, and } from 'drizzle-orm'
 import { del } from '@vercel/blob'
 import { revalidatePath } from 'next/cache'
@@ -80,6 +84,7 @@ export async function resolveContainerGroup(
   const set: RowPatch = {
     packSize: patch.packSize,
     baseUnit: patch.baseUnit,
+    unitClass: deriveUnitClass(patch.baseUnit),
     needsReview: false,
     reviewReason: null,
   }
@@ -93,7 +98,26 @@ export async function resolveContainerGroup(
         eq(importRows.containerRaw, containerRaw),
       ),
     )
-    .returning({ id: importRows.id })
+    .returning({ id: importRows.id, vendorName: importRows.vendorName })
+
+  // Auto-learn this vendor's nomenclature from the reviewer's correction so the
+  // next import parses the same token automatically. Best-effort: never let a
+  // learning failure break the resolve.
+  try {
+    const vendorName = updated.find((r) => r.vendorName?.trim())?.vendorName
+    if (vendorName) {
+      const vendorId = await getVendorIdByName(vendorName)
+      await learnFromCorrection({
+        vendorId,
+        containerRaw,
+        packSize: Number(patch.packSize),
+        baseUnit: patch.baseUnit,
+      })
+    }
+  } catch (err) {
+    console.error('[v0] learnFromCorrection failed:', err)
+  }
+
   revalidatePath('/imports')
   return updated.length
 }
@@ -151,12 +175,14 @@ async function resolveProductId(
   category: string | null,
   packSize: string,
   baseUnit: string | null,
+  unitClass: string | null,
   sku: string | null,
   cache: Map<string, number>,
 ) {
   const key = name.trim().toLowerCase()
   const existing = cache.get(key)
   if (existing) return existing
+  const resolvedBaseUnit = baseUnit?.trim() || unit
   const [created] = await db
     .insert(products)
     .values({
@@ -166,7 +192,8 @@ async function resolveProductId(
       category,
       sku: sku?.trim() || null,
       packSize: packSize && Number(packSize) > 0 ? packSize : '1',
-      baseUnit: baseUnit?.trim() || unit,
+      baseUnit: resolvedBaseUnit,
+      unitClass: unitClass ?? deriveUnitClass(resolvedBaseUnit),
     })
     .returning({ id: products.id })
   cache.set(key, created.id)
@@ -219,6 +246,9 @@ export async function commitImport(importId: number): Promise<CommitResult> {
       continue
     }
     const vendorId = await resolveVendorId(userId, r.vendorName, vendorCache)
+    // Use the staged class (set during ingest/review); fall back to deriving it
+    // from the base unit for older rows that predate the column.
+    const unitClass = r.unitClass ?? deriveUnitClass(r.baseUnit ?? r.unit)
     const productId = await resolveProductId(
       userId,
       r.productName,
@@ -226,6 +256,7 @@ export async function commitImport(importId: number): Promise<CommitResult> {
       r.category,
       r.packSize,
       r.baseUnit,
+      unitClass,
       r.sku,
       productCache,
     )
@@ -245,6 +276,7 @@ export async function commitImport(importId: number): Promise<CommitResult> {
       // product remain distinct offers.
       packSize: r.packSize && Number(r.packSize) > 0 ? r.packSize : '1',
       baseUnit: r.baseUnit?.trim() || r.unit || null,
+      unitClass,
       sku: r.sku?.trim() || null,
       effectiveDate: imp.effectiveDate,
       importId: imp.id,

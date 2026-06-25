@@ -113,6 +113,64 @@ export function defaultProfile(): VendorProfile {
   return buildVendorProfile([])
 }
 
+// Infer token->meaning mappings to LEARN from a reviewer's correction. Given the
+// raw container text and the size the reviewer settled on, return the new
+// mappings worth remembering for this vendor. Deliberately CONSERVATIVE: it only
+// emits a mapping when the signal is unambiguous, since a wrong auto-learned rule
+// would silently mis-parse future imports. The manual editor covers the rest.
+//
+//  - separator: a non-alphanumeric char sitting between two numbers (e.g. the
+//    '*' in "6*1qt") that the profile doesn't already know.
+//  - container: a single alphabetic token paired with a leading count, where the
+//    reviewer's gallons divide evenly by that count (e.g. "12 KAR" -> 3 gal each
+//    means 'kar' = 3 gal), OR a bare alphabetic token with the gallons as-is.
+export function inferLearnableTokens(
+  containerRaw: string,
+  corrected: { packSize: number; baseUnit: string | null },
+  profile: VendorProfile,
+): VendorTokenRow[] {
+  const raw = (containerRaw ?? '').trim().toLowerCase()
+  if (!raw) return []
+  const out: VendorTokenRow[] = []
+
+  // 1) Unknown pack separator between two digits.
+  const sepMatch = raw.match(/\d\s*([^a-z0-9\s.])\s*\d/)
+  if (sepMatch) {
+    const sep = sepMatch[1]
+    if (sep !== '/' && !profile.separators.has(sep)) {
+      out.push({ token: sep, kind: 'separator', value: sep, source: 'learned' })
+    }
+  }
+
+  // 2) Fixed container token, only when the corrected size is volume (gallons).
+  const isVolume = /gal|usg/.test((corrected.baseUnit ?? '').toLowerCase())
+  if (isVolume && corrected.packSize > 0) {
+    // "<count> <token>" or just "<token>" — token is purely alphabetic, >=3
+    // chars, and not already a known unit/container/separator word.
+    const m = raw.match(/^(\d+(?:\.\d+)?)?\s*([a-z][a-z-]{2,})$/)
+    if (m) {
+      const count = m[1] ? Number.parseFloat(m[1]) : 1
+      const token = m[2]
+      const known =
+        profile.containers.has(token) ||
+        profile.unitAliases.has(token) ||
+        ['drum', 'pail', 'tote', 'ibc', 'case', 'pack', 'bulk'].includes(token)
+      const perUnit = count > 0 ? corrected.packSize / count : 0
+      // Only learn a clean, sensible capacity (avoids noise from odd splits).
+      if (!known && perUnit > 0 && Number.isFinite(perUnit)) {
+        out.push({
+          token,
+          kind: 'container',
+          value: String(Number(perUnit.toFixed(4))),
+          source: 'learned',
+        })
+      }
+    }
+  }
+
+  return out
+}
+
 // A compact, human-readable summary of a vendor's non-seed conventions, injected
 // into the AI extraction prompt so the model intuits this vendor's style.
 // Returns '' when the vendor has only seed defaults (nothing vendor-specific).

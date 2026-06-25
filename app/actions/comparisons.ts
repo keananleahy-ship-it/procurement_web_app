@@ -46,6 +46,11 @@ export type PriceRow = {
   packSize: number
   // this offer's pricing base unit of measure (gallons for fuel/lube vendors)
   baseUnit: string | null
+  // comparison dimension: 'volume' | 'weight' | 'each'. Per-piece ('each')
+  // offers (filters/parts) are excluded from gallon/pound ranking + savings.
+  unitClass: string | null
+  // true when this offer is excluded from ranking because it is per-piece
+  perEachExcluded: boolean
   // the canonical item's base unit, when this offer belongs to a canonical
   // group; used to detect when an offer can't be compared apples-to-apples
   canonicalBaseUnit: string | null
@@ -89,6 +94,9 @@ export type ProductComparison = {
   // true when one or more FOB offers lack freight (understated cost) and were
   // excluded from ranking because the group has freight-complete offers
   hasIncompleteFreight: boolean
+  // true when this group is per-piece (filters/parts): listed for reference but
+  // excluded from price comparison and savings for now
+  isPerEach: boolean
   offers: PriceRow[]
   best: PriceRow | null
   worst: PriceRow | null
@@ -126,12 +134,14 @@ async function getAllRows(): Promise<PriceRow[]> {
       // for any legacy price rows created before these columns existed.
       offerPackSize: vendorPrices.packSize,
       offerBaseUnit: vendorPrices.baseUnit,
+      offerUnitClass: vendorPrices.unitClass,
       offerSku: vendorPrices.sku,
       productName: products.name,
       category: products.category,
       unit: products.unit,
       packSize: products.packSize,
       baseUnit: products.baseUnit,
+      productUnitClass: products.unitClass,
       productSku: products.sku,
       canonicalItemId: products.canonicalItemId,
       matchStatus: products.matchStatus,
@@ -224,6 +234,8 @@ async function getAllRows(): Promise<PriceRow[]> {
       landedUnitCost,
       packSize,
       baseUnit: r.offerBaseUnit ?? r.baseUnit ?? r.unit ?? null,
+      unitClass: r.offerUnitClass ?? r.productUnitClass ?? null,
+      perEachExcluded: false,
       canonicalBaseUnit: r.canonicalBaseUnit ?? null,
       unitMismatch: false,
       comparable: true,
@@ -302,13 +314,23 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
       const unitMismatch =
         !!groupUnit && !!norm(o.baseUnit) && norm(o.baseUnit) !== groupUnit
       const freightExcluded = o.freightIncomplete && hasFreightComplete
+      // Per-piece items (filters, parts) are listed for reference but kept out
+      // of the gallon/pound comparison + savings math for now.
+      const perEachExcluded = o.unitClass === 'each'
       return {
         ...o,
         unitMismatch,
-        // not directly comparable for ranking: wrong unit, or understated cost
-        comparable: !unitMismatch && !freightExcluded,
+        perEachExcluded,
+        // not directly comparable for ranking: wrong unit, understated cost,
+        // or a per-piece item we don't yet compare.
+        comparable: !unitMismatch && !freightExcluded && !perEachExcluded,
       }
     })
+
+    // A group is "per each" when none of its offers are on a volume/weight
+    // basis — i.e. every offer is a per-piece item excluded from comparison.
+    const isPerEach =
+      flagged.length > 0 && flagged.every((o) => o.unitClass === 'each')
 
     // Rank only comparable offers by normalized per-base-unit cost. Excluded
     // offers still display, but sort after and never win best/worst.
@@ -338,6 +360,7 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
       mixedPackSizes,
       hasUnitMismatch,
       hasIncompleteFreight,
+      isPerEach,
       offers: offersSorted,
       best,
       worst,
@@ -367,12 +390,17 @@ export async function getLocationComparisons(): Promise<LocationComparison[]> {
 
   const result: LocationComparison[] = []
   for (const [, offers] of byLocation) {
-    const totalAcquisitionCost = offers.reduce(
+    // Average landed cost mixes prices on one basis, so exclude per-piece items
+    // (their $/each isn't comparable to $/gallon). Fall back to all offers if a
+    // location somehow has only per-each items, so the row still appears.
+    const comparableOffers = offers.filter((o) => o.unitClass !== 'each')
+    const costBasis = comparableOffers.length > 0 ? comparableOffers : offers
+    const totalAcquisitionCost = costBasis.reduce(
       (sum, o) => sum + o.acquisitionCost,
       0,
     )
     const avgLandedUnitCost =
-      offers.reduce((sum, o) => sum + o.landedUnitCost, 0) / offers.length
+      costBasis.reduce((sum, o) => sum + o.landedUnitCost, 0) / costBasis.length
     result.push({
       locationId: offers[0].locationId,
       locationName: offers[0].locationName ?? 'Unassigned',
@@ -440,6 +468,10 @@ export async function getSavingsPlan(): Promise<SavingsPlan> {
   const awardMap = new Map<number, VendorAward>()
 
   for (const c of comparisons) {
+    // Per-piece groups (filters/parts) aren't compared on a gallon/pound basis
+    // yet, so they don't contribute savings, awards, or single-source risk.
+    if (c.isPerEach) continue
+
     // A vendor "wins" an item only when it beat at least one competitor —
     // winning an uncontested single-source item isn't a real win.
     if (c.best && c.vendorCount > 1) {
