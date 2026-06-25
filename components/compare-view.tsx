@@ -25,6 +25,7 @@ import {
 } from '@/components/ui/chart'
 import { Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis } from 'recharts'
 import { formatCurrency, formatDate } from '@/lib/format'
+import { packInfo } from '@/lib/pack-size'
 import {
   ArrowDownNarrowWide,
   CalendarClock,
@@ -44,28 +45,29 @@ export function CompareView({
   comparisons: ProductComparison[]
 }) {
   const [query, setQuery] = useState('')
-  // Empty set = show all pack sizes; otherwise only the selected sizes.
-  const [selectedSizes, setSelectedSizes] = useState<Set<number>>(new Set())
+  // Empty set = show all containers; otherwise only the selected container keys.
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
 
-  // Distinct container/pack sizes present across all offers, each with a
-  // representative base unit, sorted ascending for the filter control.
-  const packSizes = useMemo(() => {
-    const m = new Map<number, string | null>()
+  // Distinct container buckets across all offers (e.g. "205 litre",
+  // "1 gal (bulk)", "Unspecified"), sorted by capacity for the filter control.
+  const packBuckets = useMemo(() => {
+    const m = new Map<string, { label: string; sort: number }>()
     for (const c of comparisons) {
       for (const o of c.offers) {
-        if (!m.has(o.packSize)) m.set(o.packSize, o.baseUnit)
+        const info = packInfo(o.packSize, o.baseUnit, o.productName)
+        if (!m.has(info.key)) m.set(info.key, { label: info.label, sort: info.sort })
       }
     }
     return [...m.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([size, unit]) => ({ size, unit }))
+      .map(([key, v]) => ({ key, ...v }))
+      .sort((a, b) => a.sort - b.sort || a.label.localeCompare(b.label))
   }, [comparisons])
 
-  function toggleSize(size: number) {
-    setSelectedSizes((prev) => {
+  function toggleKey(key: string) {
+    setSelectedKeys((prev) => {
       const next = new Set(prev)
-      if (next.has(size)) next.delete(size)
-      else next.add(size)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
       return next
     })
   }
@@ -89,8 +91,10 @@ export function CompareView({
       }
 
       let offers = c.offers
-      if (selectedSizes.size > 0) {
-        offers = offers.filter((o) => selectedSizes.has(o.packSize))
+      if (selectedKeys.size > 0) {
+        offers = offers.filter((o) =>
+          selectedKeys.has(packInfo(o.packSize, o.baseUnit, o.productName).key),
+        )
         if (offers.length === 0) continue
       }
 
@@ -123,7 +127,7 @@ export function CompareView({
       if (aMulti !== bMulti) return aMulti ? -1 : 1
       return b.potentialSavings - a.potentialSavings
     })
-  }, [comparisons, query, selectedSizes])
+  }, [comparisons, query, selectedKeys])
 
   if (comparisons.length === 0) {
     return (
@@ -150,7 +154,7 @@ export function CompareView({
           />
         </div>
 
-        {packSizes.length > 1 && (
+        {packBuckets.length > 1 && (
           <div className="flex flex-wrap items-center gap-2">
             <span className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
               <Package className="size-4" />
@@ -158,32 +162,28 @@ export function CompareView({
             </span>
             <Button
               size="sm"
-              variant={selectedSizes.size === 0 ? 'default' : 'outline'}
+              variant={selectedKeys.size === 0 ? 'default' : 'outline'}
               className="h-7 px-2.5 text-xs"
-              onClick={() => setSelectedSizes(new Set())}
+              onClick={() => setSelectedKeys(new Set())}
             >
               All
             </Button>
-            {packSizes.map(({ size, unit }) => {
-              const active = selectedSizes.has(size)
+            {packBuckets.map(({ key, label }) => {
+              const active = selectedKeys.has(key)
               return (
                 <Button
-                  key={size}
+                  key={key}
                   size="sm"
                   variant={active ? 'default' : 'outline'}
                   className="h-7 px-2.5 text-xs tabular-nums"
                   aria-pressed={active}
-                  onClick={() => toggleSize(size)}
+                  onClick={() => toggleKey(key)}
                 >
-                  {size === 1
-                    ? 'Unspecified'
-                    : `${size.toLocaleString(undefined, {
-                        maximumFractionDigits: 2,
-                      })}${unit ? ` ${unit}` : ''}`}
+                  {label}
                 </Button>
               )
             })}
-            {selectedSizes.size > 0 && (
+            {selectedKeys.size > 0 && (
               <span className="text-xs text-muted-foreground">
                 {filtered.length} group{filtered.length === 1 ? '' : 's'} match
               </span>
@@ -336,18 +336,42 @@ export function CompareView({
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">
-                        {o.packSize === 1 ? (
-                          <span className="text-muted-foreground/60">—</span>
-                        ) : (
-                          <span title={`Container holds ${o.packSize} ${o.baseUnit ?? 'units'}`}>
-                            {o.packSize.toLocaleString(undefined, {
-                              maximumFractionDigits: 2,
-                            })}{' '}
-                            <span className="text-xs text-muted-foreground/70">
-                              {o.baseUnit ?? ''}
+                        {(() => {
+                          const info = packInfo(
+                            o.packSize,
+                            o.baseUnit,
+                            o.productName,
+                          )
+                          if (info.kind === 'unspecified') {
+                            return (
+                              <span className="text-muted-foreground/60">—</span>
+                            )
+                          }
+                          if (info.kind === 'sized') {
+                            return (
+                              <span
+                                title={`Container holds ${o.packSize} ${o.baseUnit ?? 'units'}`}
+                              >
+                                {o.packSize.toLocaleString(undefined, {
+                                  maximumFractionDigits: 2,
+                                })}{' '}
+                                <span className="text-xs text-muted-foreground/70">
+                                  {o.baseUnit ?? ''}
+                                </span>
+                              </span>
+                            )
+                          }
+                          // bulk / decant: sold loose per unit, an intentional
+                          // 1-unit basis rather than an unknown container.
+                          return (
+                            <span
+                              title="Sold loose by the gallon (bulk/decant), not in a fixed container"
+                              className="text-xs"
+                            >
+                              {info.label}
                             </span>
-                          </span>
-                        )}
+                          )
+                        })()}
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">
                         {formatCurrency(
