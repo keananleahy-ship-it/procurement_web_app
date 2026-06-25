@@ -55,7 +55,7 @@ export function packInfo(
   if (/\bBULK\b/.test(name)) {
     return { kind: 'bulk', key: 'bulk', sort: 1.0001, label: `1 ${unit} (bulk)` }
   }
-  if (/\bDECANT\b/.test(name)) {
+  if (/\b(DECANT|DCNT)\b/.test(name)) {
     return {
       kind: 'decant',
       key: 'decant',

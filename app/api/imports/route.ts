@@ -6,6 +6,7 @@ import { db } from '@/lib/db'
 import { imports, importRows, vendors, locations } from '@/lib/db/schema'
 import { asc } from 'drizzle-orm'
 import { extractPriceRows, type ExtractedRow } from '@/lib/extract'
+import { normalizeContainer, inferContainer } from '@/lib/container-infer'
 
 export const maxDuration = 120
 
@@ -64,152 +65,6 @@ function normalizeFreight(v: ExtractedRow['freightTerms']): string {
 function toNumericString(n: number | null): string | null {
   if (n === null || Number.isNaN(n)) return null
   return n.toFixed(2)
-}
-
-// Most vendors quote in US gallons, so we normalize litre-based container
-// capacities to gallons at import time for apples-to-apples comparison.
-const LITRES_PER_USG = 3.785411784
-const LITRE_ALIASES = new Set([
-  'l',
-  'litre',
-  'litres',
-  'liter',
-  'liters',
-  'ltr',
-  'ltrs',
-])
-const GALLON_ALIASES = new Set([
-  'usg',
-  'gal',
-  'gals',
-  'gallon',
-  'gallons',
-  'us gal',
-  'us gallon',
-])
-const QUARTS_PER_USG = 4
-const QUART_ALIASES = new Set([
-  'qt',
-  'qts',
-  'quart',
-  'quarts',
-])
-const ML_PER_USG = 3785.411784
-const ML_ALIASES = new Set([
-  'ml',
-  'mls',
-  'millilitre',
-  'millilitres',
-  'milliliter',
-  'milliliters',
-  'cc',
-])
-const FLOZ_PER_USG = 128
-const FLOZ_ALIASES = new Set([
-  'fl oz',
-  'floz',
-  'fl. oz.',
-  'fl oz.',
-  'fluid ounce',
-  'fluid ounces',
-])
-const PINTS_PER_USG = 8
-const PINT_ALIASES = new Set([
-  'pt',
-  'pts',
-  'pint',
-  'pints',
-])
-
-// Similarly, weight-based container capacities are normalized to pounds so
-// kilogram-quoted vendors compare directly against pound-quoted ones.
-const KG_PER_LB = 0.45359237
-const GRAMS_PER_LB = 453.59237
-const KG_PER_TONNE = 1000
-const KILOGRAM_ALIASES = new Set([
-  'kg',
-  'kgs',
-  'kilo',
-  'kilos',
-  'kilogram',
-  'kilograms',
-])
-const GRAM_ALIASES = new Set([
-  'g',
-  'gr',
-  'gm',
-  'gms',
-  'gram',
-  'grams',
-  'gramme',
-  'grammes',
-])
-const TONNE_ALIASES = new Set([
-  't',
-  'mt',
-  'tonne',
-  'tonnes',
-  'metric ton',
-  'metric tons',
-  'metric tonne',
-  'metric tonnes',
-])
-const POUND_ALIASES = new Set([
-  'lb',
-  'lbs',
-  'pound',
-  'pounds',
-])
-const OUNCES_PER_LB = 16
-const OUNCE_ALIASES = new Set([
-  'oz',
-  'ozs',
-  'ounce',
-  'ounces',
-])
-
-// Given a raw container capacity + base unit, return the capacity expressed in
-// a canonical unit: litres → US gallons, kilograms → pounds. Other units
-// (each, case, …) pass through unchanged.
-function normalizeContainer(
-  packSize: number,
-  baseUnit: string | null,
-): { packSize: string; baseUnit: string | null } {
-  const u = baseUnit?.trim().toLowerCase() ?? ''
-  if (LITRE_ALIASES.has(u)) {
-    return { packSize: (packSize / LITRES_PER_USG).toFixed(4), baseUnit: 'USG' }
-  }
-  if (GALLON_ALIASES.has(u)) {
-    return { packSize: packSize.toFixed(4), baseUnit: 'USG' }
-  }
-  if (QUART_ALIASES.has(u)) {
-    return { packSize: (packSize / QUARTS_PER_USG).toFixed(4), baseUnit: 'USG' }
-  }
-  if (PINT_ALIASES.has(u)) {
-    return { packSize: (packSize / PINTS_PER_USG).toFixed(4), baseUnit: 'USG' }
-  }
-  if (FLOZ_ALIASES.has(u)) {
-    return { packSize: (packSize / FLOZ_PER_USG).toFixed(4), baseUnit: 'USG' }
-  }
-  if (ML_ALIASES.has(u)) {
-    return { packSize: (packSize / ML_PER_USG).toFixed(4), baseUnit: 'USG' }
-  }
-  if (KILOGRAM_ALIASES.has(u)) {
-    return { packSize: (packSize / KG_PER_LB).toFixed(4), baseUnit: 'lb' }
-  }
-  if (GRAM_ALIASES.has(u)) {
-    return { packSize: (packSize / GRAMS_PER_LB).toFixed(4), baseUnit: 'lb' }
-  }
-  if (TONNE_ALIASES.has(u)) {
-    return { packSize: ((packSize * KG_PER_TONNE) / KG_PER_LB).toFixed(4), baseUnit: 'lb' }
-  }
-  if (POUND_ALIASES.has(u)) {
-    return { packSize: packSize.toFixed(4), baseUnit: 'lb' }
-  }
-  if (OUNCE_ALIASES.has(u)) {
-    return { packSize: (packSize / OUNCES_PER_LB).toFixed(4), baseUnit: 'lb' }
-  }
-  return { packSize: packSize.toFixed(4), baseUnit: baseUnit?.trim() || null }
 }
 
 export async function POST(req: NextRequest) {
@@ -448,11 +303,31 @@ export async function POST(req: NextRequest) {
   if (rows.length > 0) {
     await db.insert(importRows).values(
       rows.map((r) => {
-        const reviewReason = reviewFor(r)
+        let reviewReason = reviewFor(r)
         const rawPackSize = r.packSize && r.packSize > 0 ? r.packSize : 1
-          const { packSize, baseUnit } = normalizeContainer(
-          rawPackSize,
-          r.baseUnit?.trim() || r.unit?.trim() || null,
+        // When the extractor found no container size, fall back to a
+        // deterministic resolver for known industry shorthands (e.g.
+        // "6 USG PETROPAK", a bare "IBC" or "DRUM"). Inferred-by-default sizes
+        // are flagged for review.
+        let nativeSize = rawPackSize
+        let nativeUnit = r.baseUnit?.trim() || r.unit?.trim() || null
+        if (rawPackSize === 1) {
+          const inf = inferContainer(
+            `${r.productName} ${r.sku ?? ''} ${r.containerRaw ?? ''}`,
+          )
+          if (inf) {
+            nativeSize = inf.packSize
+            nativeUnit = inf.baseUnit
+            if (inf.inferred) {
+              const note =
+                'Container size inferred from a standard size — verify the pack size.'
+              reviewReason = reviewReason ? `${reviewReason} ${note}` : note
+            }
+          }
+        }
+        const { packSize, baseUnit } = normalizeContainer(
+          nativeSize,
+          nativeUnit,
         )
         // A user-declared file-level basis overrides per-row detection. For
         // delivered, freight is baked into the unit price, so zero out any
