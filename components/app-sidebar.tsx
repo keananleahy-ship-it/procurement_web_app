@@ -20,6 +20,7 @@ import {
   PiggyBank,
   LineChart,
   Map as MapIcon,
+  MessageSquareWarning,
 } from 'lucide-react'
 import { type Role, ROLE_LABELS } from '@/lib/roles-shared'
 
@@ -41,9 +42,11 @@ const nav = [
 export function AppSidebar({
   userName,
   role,
+  openFeedbackCount = 0,
 }: {
   userName: string
   role: Role
+  openFeedbackCount?: number
 }) {
   const pathname = usePathname()
   const router = useRouter()
@@ -96,18 +99,37 @@ export function AppSidebar({
           )
         })}
         {role === 'admin' && (
-          <Link
-            href="/admin"
-            className={cn(
-              'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-              pathname.startsWith('/admin')
-                ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground',
-            )}
-          >
-            <Users className="size-4" />
-            User Management
-          </Link>
+          <>
+            <Link
+              href="/admin/feedback"
+              className={cn(
+                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                pathname.startsWith('/admin/feedback')
+                  ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                  : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground',
+              )}
+            >
+              <MessageSquareWarning className="size-4" />
+              <span className="flex-1">Feedback</span>
+              {openFeedbackCount > 0 && (
+                <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground tabular-nums">
+                  {openFeedbackCount}
+                </span>
+              )}
+            </Link>
+            <Link
+              href="/admin"
+              className={cn(
+                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                pathname === '/admin'
+                  ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                  : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground',
+              )}
+            >
+              <Users className="size-4" />
+              User Management
+            </Link>
+          </>
         )}
       </nav>
 

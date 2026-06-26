@@ -177,6 +177,42 @@ export const matchRejections = pgTable('match_rejections', {
   updatedAt: timestamp('updatedAt').notNull().defaultNow(),
 })
 
+// User-submitted feedback raised from the Compare tab — e.g. "this match looks
+// wrong" or "the container/pack size is misidentified". Any signed-in user
+// (including viewers) can file feedback; admins triage it. Workspace-wide:
+// admins see all feedback regardless of who submitted it. Product/price/item
+// ids and name snapshots are captured for context even if the underlying rows
+// later change or are re-imported.
+export const matchFeedback = pgTable('match_feedback', {
+  id: serial('id').primaryKey(),
+  // The user who submitted the feedback.
+  userId: text('userId').notNull(),
+  submitterName: text('submitterName'),
+  submitterEmail: text('submitterEmail'),
+  // The comparison group key this is about (e.g. 'c123' or 'p456'), plus a
+  // human-readable snapshot of the group's display name.
+  comparisonKey: text('comparisonKey'),
+  subject: text('subject'),
+  // Optional pointers to the specific offer/product/canonical item in question.
+  productId: integer('productId'),
+  priceId: integer('priceId'),
+  vendorName: text('vendorName'),
+  canonicalItemId: integer('canonicalItemId'),
+  // What kind of problem: 'incorrect_match' | 'incorrect_container' |
+  // 'wrong_price' | 'wrong_unit' | 'other'.
+  category: text('category').notNull(),
+  message: text('message').notNull(),
+  // Triage state: 'open' | 'reviewing' | 'resolved' | 'dismissed'.
+  status: text('status').notNull().default('open'),
+  // Admin's triage note + who/when it was resolved.
+  adminNote: text('adminNote'),
+  resolvedBy: text('resolvedBy'),
+  resolvedByName: text('resolvedByName'),
+  resolvedAt: timestamp('resolvedAt'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+  updatedAt: timestamp('updatedAt').notNull().defaultNow(),
+})
+
 // Per-vendor nomenclature dictionary. Each vendor accumulates its own
 // token->meaning mappings so the parser/extractor can intuit that vendor's
 // conventions instead of assuming all vendors are uniform. Seeded with common

@@ -29,7 +29,9 @@ import { packFamily, packInfo } from '@/lib/pack-size'
 import {
   ArrowDownNarrowWide,
   CalendarClock,
+  Check,
   ChevronDown,
+  Flag,
   GitCompareArrows,
   Layers,
   Lock,
@@ -39,6 +41,25 @@ import {
   TriangleAlert,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { submitFeedback } from '@/app/actions/feedback'
+import { FEEDBACK_CATEGORIES } from '@/lib/feedback-shared'
 
 export function CompareView({
   comparisons,
@@ -395,12 +416,15 @@ export function CompareView({
                   )}
                 </p>
               </div>
-              {c.potentialSavings > 0 && (
-                <div className="flex items-center gap-1.5 rounded-md bg-success/10 px-3 py-1.5 text-sm font-medium text-success">
-                  <TrendingDown className="size-4" />
-                  Save {formatCurrency(c.potentialSavings)} / {c.baseUnit ?? 'unit'}
-                </div>
-              )}
+              <div className="flex shrink-0 items-center gap-2">
+                {c.potentialSavings > 0 && (
+                  <div className="flex items-center gap-1.5 rounded-md bg-success/10 px-3 py-1.5 text-sm font-medium text-success">
+                    <TrendingDown className="size-4" />
+                    Save {formatCurrency(c.potentialSavings)} / {c.baseUnit ?? 'unit'}
+                  </div>
+                )}
+                <ReportIssueDialog comparison={c} />
+              </div>
             </div>
 
             <Table>
@@ -656,6 +680,187 @@ export function CompareView({
         </div>
       )}
     </div>
+  )
+}
+
+// Lets any signed-in user flag a problem with a comparison — a wrong match, a
+// misidentified container/pack size, a bad price, etc. The report is routed to
+// admins for triage. Available to all roles (including viewers).
+function ReportIssueDialog({ comparison }: { comparison: ProductComparison }) {
+  const [open, setOpen] = useState(false)
+  const [category, setCategory] = useState<string>(FEEDBACK_CATEGORIES[0].code)
+  // 'group' = about the whole comparison; otherwise a specific offer priceId.
+  const [offerKey, setOfferKey] = useState<string>('group')
+  const [message, setMessage] = useState('')
+  const [done, setDone] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [isPending, startTransition] = useTransition()
+
+  function reset() {
+    setCategory(FEEDBACK_CATEGORIES[0].code)
+    setOfferKey('group')
+    setMessage('')
+    setDone(false)
+    setError(null)
+  }
+
+  function handleOpenChange(next: boolean) {
+    setOpen(next)
+    if (!next) reset()
+  }
+
+  function submit() {
+    const trimmed = message.trim()
+    if (!trimmed) {
+      setError('Please describe the issue.')
+      return
+    }
+    setError(null)
+    const offer =
+      offerKey === 'group'
+        ? null
+        : comparison.offers.find((o) => String(o.priceId) === offerKey) ?? null
+    startTransition(async () => {
+      try {
+        await submitFeedback({
+          category,
+          message: trimmed,
+          comparisonKey: comparison.key,
+          subject: comparison.displayName,
+          productId: offer?.productId ?? comparison.productId,
+          priceId: offer?.priceId ?? null,
+          vendorName: offer?.vendorName ?? null,
+          canonicalItemId: comparison.isCanonical ? comparison.productId : null,
+        })
+        setDone(true)
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : 'Could not submit feedback.',
+        )
+      }
+    })
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-8 gap-1.5 text-muted-foreground hover:text-foreground"
+        onClick={() => setOpen(true)}
+      >
+        <Flag className="size-3.5" />
+        Report issue
+      </Button>
+      <DialogContent>
+        {done ? (
+          <>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Check className="size-5 text-success" />
+                Thanks for the report
+              </DialogTitle>
+              <DialogDescription>
+                Your feedback on{' '}
+                <span className="font-medium text-foreground">
+                  {comparison.displayName}
+                </span>{' '}
+                has been sent to the admins for review.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button onClick={() => handleOpenChange(false)}>Close</Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle>Report an issue</DialogTitle>
+              <DialogDescription>
+                Flag a problem with{' '}
+                <span className="font-medium text-foreground">
+                  {comparison.displayName}
+                </span>{' '}
+                — an incorrect match, a misidentified container, or anything
+                that looks off. Admins will review it.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-2">
+                <Label>What&apos;s wrong?</Label>
+                <div className="flex flex-wrap gap-2">
+                  {FEEDBACK_CATEGORIES.map((cat) => (
+                    <Button
+                      key={cat.code}
+                      type="button"
+                      size="sm"
+                      variant={category === cat.code ? 'default' : 'outline'}
+                      onClick={() => setCategory(cat.code)}
+                    >
+                      {cat.label}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              {comparison.offers.length > 0 && (
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="report-offer">Which offer?</Label>
+                  <Select
+                    value={offerKey}
+                    onValueChange={(v) => setOfferKey(v ?? 'group')}
+                  >
+                    <SelectTrigger id="report-offer">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="group">
+                        The whole comparison
+                      </SelectItem>
+                      {comparison.offers.map((o) => (
+                        <SelectItem key={o.priceId} value={String(o.priceId)}>
+                          {o.vendorName}
+                          {o.productName !== comparison.displayName
+                            ? ` — ${o.productName}`
+                            : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="report-message">Details</Label>
+                <Textarea
+                  id="report-message"
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  placeholder="Describe what looks incorrect and, if you know it, what it should be…"
+                  rows={4}
+                  maxLength={2000}
+                />
+              </div>
+
+              {error && <p className="text-sm text-destructive">{error}</p>}
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => handleOpenChange(false)}
+                disabled={isPending}
+              >
+                Cancel
+              </Button>
+              <Button onClick={submit} disabled={isPending || !message.trim()}>
+                <Flag className="size-4" />
+                {isPending ? 'Sending…' : 'Send report'}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 
