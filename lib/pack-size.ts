@@ -92,8 +92,9 @@ const LB_PER_KG = 2.2046226
 // all land in "Drum").
 const VOLUME_FAMILIES: { maxGal: number; key: string; label: string; sort: number }[] = [
   { maxGal: 0.9, key: 'vol-litre', label: 'Litre / quart', sort: 1 },
-  { maxGal: 1.4, key: 'vol-jug', label: 'Jug (~1 gal / 4 L)', sort: 2 },
-  { maxGal: 4.7, key: 'vol-case', label: 'Case (~3-4 gal)', sort: 3 },
+  // Jugs and small cases are treated as one "Cases" family — the distinction
+  // isn't meaningful for procurement comparison.
+  { maxGal: 4.7, key: 'vol-case', label: 'Cases (≤4 gal)', sort: 3 },
   { maxGal: 9, key: 'vol-pail', label: 'Pail (~5-6 gal / 20 L)', sort: 4 },
   { maxGal: 30, key: 'vol-keg', label: 'Keg (~16 gal / 60 L)', sort: 5 },
   { maxGal: 120, key: 'vol-drum', label: 'Drum (~55 gal / 205 L)', sort: 6 },
