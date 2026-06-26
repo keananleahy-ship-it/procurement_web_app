@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useMemo, useState, useTransition } from 'react'
 import { createPrice, deletePrice } from '@/app/actions/prices'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -29,8 +29,9 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { Plus, Trash2, Tags } from 'lucide-react'
+import { Plus, Trash2, Tags, Search } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { DataPagination } from '@/components/data-pagination'
 import { EmptyState } from '@/components/empty-state'
 import { formatCurrency, formatDate } from '@/lib/format'
 import { useCanEdit } from '@/components/role-provider'
@@ -74,6 +75,28 @@ export function PricesView({
   const [freightTerms, setFreightTerms] = useState('fob')
   const [isPending, startTransition] = useTransition()
   const canEdit = useCanEdit()
+
+  const [query, setQuery] = useState('')
+  const [page, setPage] = useState(1)
+  const PAGE_SIZE = 50
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return prices
+    return prices.filter(
+      (p) =>
+        p.productName.toLowerCase().includes(q) ||
+        p.vendorName.toLowerCase().includes(q) ||
+        (p.locationName ?? '').toLowerCase().includes(q),
+    )
+  }, [prices, query])
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const currentPage = Math.min(page, pageCount)
+  const paged = filtered.slice(
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE,
+  )
 
   const canAdd = canEdit && products.length > 0 && vendors.length > 0
   const showShipping = freightTerms === 'fob' || freightTerms === 'both'
@@ -278,6 +301,20 @@ export function PricesView({
         />
       ) : (
         <div className="rounded-lg border border-border bg-card">
+          <div className="border-b border-border p-3">
+            <div className="relative max-w-sm">
+              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value)
+                  setPage(1)
+                }}
+                placeholder="Search product, vendor, or location"
+                className="pl-9"
+              />
+            </div>
+          </div>
           <Table>
             <TableHeader>
               <TableRow>
@@ -293,7 +330,7 @@ export function PricesView({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {prices.map((p) => (
+              {paged.map((p) => (
                 <TableRow key={p.id}>
                   <TableCell className="font-medium text-foreground">
                     {p.productName}
@@ -350,6 +387,19 @@ export function PricesView({
               ))}
             </TableBody>
           </Table>
+          {filtered.length === 0 ? (
+            <p className="px-4 py-8 text-center text-sm text-muted-foreground">
+              No price entries match “{query}”.
+            </p>
+          ) : (
+            <DataPagination
+              page={currentPage}
+              pageSize={PAGE_SIZE}
+              total={filtered.length}
+              onPageChange={setPage}
+              label="price entries"
+            />
+          )}
         </div>
       )}
     </div>

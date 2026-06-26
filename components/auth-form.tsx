@@ -2,7 +2,6 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
 import { authClient } from '@/lib/auth-client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -10,7 +9,6 @@ import { Label } from '@/components/ui/label'
 import { Card } from '@/components/ui/card'
 
 export function AuthForm({ mode }: { mode: 'sign-in' | 'sign-up' }) {
-  const router = useRouter()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -28,15 +26,19 @@ export function AuthForm({ mode }: { mode: 'sign-in' | 'sign-up' }) {
       ? await authClient.signUp.email({ email, password, name })
       : await authClient.signIn.email({ email, password })
 
-    setLoading(false)
-
     if (error) {
+      setLoading(false)
       setError(error.message ?? 'Something went wrong')
       return
     }
 
-    router.push('/')
-    router.refresh()
+    // Use a full top-level navigation rather than router.push + router.refresh.
+    // In the v0 preview the session cookie is cross-site (SameSite=None); a
+    // client-side RSC navigation can fire before that cookie is committed,
+    // leaving the server without a session and bouncing the user back to the
+    // auth page (appears as "failing to load"). A hard navigation guarantees
+    // the new request carries the session cookie.
+    window.location.assign('/')
   }
 
   return (
