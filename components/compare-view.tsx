@@ -25,7 +25,7 @@ import {
 } from '@/components/ui/chart'
 import { Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis } from 'recharts'
 import { formatCurrency, formatDate } from '@/lib/format'
-import { packInfo } from '@/lib/pack-size'
+import { packFamily, packInfo } from '@/lib/pack-size'
 import {
   ArrowDownNarrowWide,
   CalendarClock,
@@ -48,6 +48,8 @@ export function CompareView({
   const [query, setQuery] = useState('')
   // Empty set = show all containers; otherwise only the selected container keys.
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
+  // When true, expand each family chip to reveal its individual size chips.
+  const [showSizes, setShowSizes] = useState(false)
   // How many comparison cards to render at once. Each card mounts a table and a
   // chart, so rendering thousands at once would freeze the browser — we page
   // through them instead and let the user load more on demand.
@@ -55,25 +57,73 @@ export function CompareView({
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
 
   // Distinct container buckets across all offers (e.g. "205 litre",
-  // "1 gal (bulk)", "Unspecified"), sorted by capacity for the filter control.
-  const packBuckets = useMemo(() => {
-    const m = new Map<string, { label: string; sort: number }>()
+  // "1 gal (bulk)", "Unspecified"), grouped into named families (Drum, Pail,
+  // Tote, …) so closely-related sizes can be selected together.
+  const { packBuckets, packFamilies } = useMemo(() => {
+    type Bucket = { key: string; label: string; sort: number; familyKey: string }
+    const buckets = new Map<string, Bucket>()
+    const families = new Map<
+      string,
+      { key: string; label: string; sort: number; memberKeys: string[] }
+    >()
     for (const c of comparisons) {
       for (const o of c.offers) {
         const info = packInfo(o.packSize, o.baseUnit, o.productName)
-        if (!m.has(info.key)) m.set(info.key, { label: info.label, sort: info.sort })
+        const fam = packFamily(o.packSize, o.baseUnit, o.productName)
+        if (!buckets.has(info.key)) {
+          buckets.set(info.key, {
+            key: info.key,
+            label: info.label,
+            sort: info.sort,
+            familyKey: fam.key,
+          })
+        }
+        if (!families.has(fam.key)) {
+          families.set(fam.key, {
+            key: fam.key,
+            label: fam.label,
+            sort: fam.sort,
+            memberKeys: [],
+          })
+        }
       }
     }
-    return [...m.entries()]
-      .map(([key, v]) => ({ key, ...v }))
+    const bucketList = [...buckets.values()].sort(
+      (a, b) => a.sort - b.sort || a.label.localeCompare(b.label),
+    )
+    // Attach sorted member buckets to each family.
+    for (const b of bucketList) {
+      families.get(b.familyKey)?.memberKeys.push(b.key)
+    }
+    const familyList = [...families.values()]
+      .filter((f) => f.memberKeys.length > 0)
       .sort((a, b) => a.sort - b.sort || a.label.localeCompare(b.label))
+    return { packBuckets: bucketList, packFamilies: familyList }
   }, [comparisons])
+
+  // Quick lookup from a bucket key to its display label (for member chips).
+  const bucketLabels = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const b of packBuckets) m.set(b.key, b.label)
+    return m
+  }, [packBuckets])
 
   function toggleKey(key: string) {
     setSelectedKeys((prev) => {
       const next = new Set(prev)
       if (next.has(key)) next.delete(key)
       else next.add(key)
+      return next
+    })
+  }
+
+  // Select or clear every size in a family at once. If all members are already
+  // selected, the click deselects them; otherwise it selects the whole family.
+  function toggleFamily(memberKeys: string[], allSelected: boolean) {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev)
+      if (allSelected) memberKeys.forEach((k) => next.delete(k))
+      else memberKeys.forEach((k) => next.add(k))
       return next
     })
   }
@@ -171,38 +221,102 @@ export function CompareView({
         </div>
 
         {packBuckets.length > 1 && (
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
-              <Package className="size-4" />
-              Pack size
-            </span>
-            <Button
-              size="sm"
-              variant={selectedKeys.size === 0 ? 'default' : 'outline'}
-              className="h-7 px-2.5 text-xs"
-              onClick={() => setSelectedKeys(new Set())}
-            >
-              All
-            </Button>
-            {packBuckets.map(({ key, label }) => {
-              const active = selectedKeys.has(key)
-              return (
-                <Button
-                  key={key}
-                  size="sm"
-                  variant={active ? 'default' : 'outline'}
-                  className="h-7 px-2.5 text-xs tabular-nums"
-                  aria-pressed={active}
-                  onClick={() => toggleKey(key)}
-                >
-                  {label}
-                </Button>
-              )
-            })}
-            {selectedKeys.size > 0 && (
-              <span className="text-xs text-muted-foreground">
-                {filtered.length} group{filtered.length === 1 ? '' : 's'} match
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+                <Package className="size-4" />
+                Pack size
               </span>
+              <Button
+                size="sm"
+                variant={selectedKeys.size === 0 ? 'default' : 'outline'}
+                className="h-7 px-2.5 text-xs"
+                onClick={() => setSelectedKeys(new Set())}
+              >
+                All
+              </Button>
+              {packFamilies.map((fam) => {
+                const selectedCount = fam.memberKeys.filter((k) =>
+                  selectedKeys.has(k),
+                ).length
+                const allSelected = selectedCount === fam.memberKeys.length
+                const someSelected = selectedCount > 0
+                const single = fam.memberKeys.length === 1
+                return (
+                  <Button
+                    key={fam.key}
+                    size="sm"
+                    variant={allSelected ? 'default' : someSelected ? 'secondary' : 'outline'}
+                    className="h-7 px-2.5 text-xs"
+                    aria-pressed={allSelected}
+                    onClick={() => toggleFamily(fam.memberKeys, allSelected)}
+                    title={
+                      single
+                        ? fam.label
+                        : `${fam.label} — ${fam.memberKeys.length} sizes`
+                    }
+                  >
+                    {fam.label}
+                    {!single && (
+                      <span className="ml-1 tabular-nums opacity-70">
+                        {someSelected
+                          ? `${selectedCount}/${fam.memberKeys.length}`
+                          : fam.memberKeys.length}
+                      </span>
+                    )}
+                  </Button>
+                )
+              })}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2 text-xs"
+                aria-expanded={showSizes}
+                onClick={() => setShowSizes((s) => !s)}
+              >
+                <ChevronDown
+                  className={cn(
+                    'size-3.5 transition-transform',
+                    showSizes && 'rotate-180',
+                  )}
+                />
+                {showSizes ? 'Hide sizes' : 'Show sizes'}
+              </Button>
+              {selectedKeys.size > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  {filtered.length} group{filtered.length === 1 ? '' : 's'} match
+                </span>
+              )}
+            </div>
+
+            {showSizes && (
+              <div className="flex flex-col gap-1.5 border-l-2 border-border pl-3">
+                {packFamilies.map((fam) => (
+                  <div
+                    key={fam.key}
+                    className="flex flex-wrap items-center gap-1.5"
+                  >
+                    <span className="w-44 shrink-0 text-xs text-muted-foreground">
+                      {fam.label}
+                    </span>
+                    {fam.memberKeys.map((key) => {
+                      const active = selectedKeys.has(key)
+                      return (
+                        <Button
+                          key={key}
+                          size="sm"
+                          variant={active ? 'default' : 'outline'}
+                          className="h-6 px-2 text-xs tabular-nums"
+                          aria-pressed={active}
+                          onClick={() => toggleKey(key)}
+                        >
+                          {bucketLabels.get(key) ?? key}
+                        </Button>
+                      )
+                    })}
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         )}
