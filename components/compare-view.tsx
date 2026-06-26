@@ -20,7 +20,13 @@ import { EmptyState } from '@/components/empty-state'
 import { useCanEdit } from '@/components/role-provider'
 import { formatCurrency, formatDate } from '@/lib/format'
 import {
+  packFamily,
+  PACK_FAMILIES,
+  type PackFamilyId,
+} from '@/lib/pack-family'
+import {
   ArrowDownNarrowWide,
+  Boxes,
   CalendarClock,
   GitCompareArrows,
   Layers,
@@ -36,19 +42,80 @@ export function CompareView({
   comparisons: ProductComparison[]
 }) {
   const [query, setQuery] = useState('')
+  const [families, setFamilies] = useState<Set<PackFamilyId>>(new Set())
   const [page, setPage] = useState(1)
   const PAGE_SIZE = 15
 
+  // Count offers per family across the whole catalog so we only show buttons
+  // for families that actually exist, and can label each with its offer count.
+  const familyCounts = useMemo(() => {
+    const counts = new Map<PackFamilyId, number>()
+    for (const c of comparisons) {
+      for (const o of c.offers) {
+        const f = packFamily(o.packSize, o.baseUnit)
+        counts.set(f, (counts.get(f) ?? 0) + 1)
+      }
+    }
+    return counts
+  }, [comparisons])
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return comparisons
-    return comparisons.filter(
-      (c) =>
-        c.displayName.toLowerCase().includes(q) ||
-        (c.category ?? '').toLowerCase().includes(q) ||
-        c.offers.some((o) => o.vendorName.toLowerCase().includes(q)),
-    )
-  }, [comparisons, query])
+    const result: ProductComparison[] = []
+    for (const c of comparisons) {
+      // Text filter first (matches product, category, or any vendor name).
+      if (
+        q &&
+        !(
+          c.displayName.toLowerCase().includes(q) ||
+          (c.category ?? '').toLowerCase().includes(q) ||
+          c.offers.some((o) => o.vendorName.toLowerCase().includes(q))
+        )
+      ) {
+        continue
+      }
+
+      // No family selected → show the group unchanged.
+      if (families.size === 0) {
+        result.push(c)
+        continue
+      }
+
+      // Hide offers outside the selected families, then re-rank best/worst
+      // within what remains so the badges and savings stay accurate.
+      const offers = c.offers.filter((o) =>
+        families.has(packFamily(o.packSize, o.baseUnit)),
+      )
+      if (offers.length === 0) continue
+
+      const comparable = offers
+        .filter((o) => o.comparable)
+        .sort((a, b) => a.pricePerBaseUnit - b.pricePerBaseUnit)
+      const best = comparable[0] ?? null
+      const worst = comparable[comparable.length - 1] ?? null
+      result.push({
+        ...c,
+        offers,
+        best,
+        worst,
+        vendorCount: new Set(offers.map((o) => o.vendorId)).size,
+        mixedPackSizes: new Set(comparable.map((o) => o.packSize)).size > 1,
+        potentialSavings:
+          best && worst ? worst.pricePerBaseUnit - best.pricePerBaseUnit : 0,
+      })
+    }
+    return result
+  }, [comparisons, query, families])
+
+  function toggleFamily(id: PackFamilyId) {
+    setPage(1)
+    setFamilies((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const currentPage = Math.min(page, pageCount)
@@ -84,9 +151,63 @@ export function CompareView({
         />
       </div>
 
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+          <Boxes className="size-4" />
+          Pack family
+        </span>
+        {PACK_FAMILIES.filter((f) => familyCounts.has(f.id)).map((f) => {
+          const active = families.has(f.id)
+          return (
+            <Button
+              key={f.id}
+              type="button"
+              size="sm"
+              variant={active ? 'default' : 'outline'}
+              onClick={() => toggleFamily(f.id)}
+              title={f.description}
+              aria-pressed={active}
+              className="h-8 gap-1.5"
+            >
+              {f.label}
+              <span
+                className={cn(
+                  'rounded-full px-1.5 text-xs tabular-nums',
+                  active
+                    ? 'bg-primary-foreground/20 text-primary-foreground'
+                    : 'bg-muted text-muted-foreground',
+                )}
+              >
+                {familyCounts.get(f.id)}
+              </span>
+            </Button>
+          )
+        })}
+        {families.size > 0 && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setFamilies(new Set())
+              setPage(1)
+            }}
+            className="h-8 text-muted-foreground"
+          >
+            Clear
+          </Button>
+        )}
+      </div>
+
       {filtered.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">
-          No products match “{query}”.
+          {query && families.size > 0
+            ? `No products match “${query}” in the selected pack ${
+                families.size === 1 ? 'family' : 'families'
+              }.`
+            : families.size > 0
+              ? 'No products have offers in the selected pack families.'
+              : `No products match “${query}”.`}
         </p>
       ) : (
       <div className="flex flex-col gap-6">
