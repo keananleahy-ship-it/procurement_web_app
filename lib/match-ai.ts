@@ -36,7 +36,7 @@ const matchSchema = z.object({
 
 export type AiMatch = z.infer<typeof matchSchema>['matches'][number]
 
-type ProductInput = {
+export type ProductInput = {
   id: number
   name: string
   category: string | null
@@ -44,7 +44,7 @@ type ProductInput = {
   baseUnit: string | null
 }
 
-type CanonicalInput = {
+export type CanonicalInput = {
   id: number
   name: string
   category: string | null
@@ -53,7 +53,7 @@ type CanonicalInput = {
 
 // A past human rejection: the product, the canonical item that was wrongly
 // suggested for it, and the reviewer's note explaining why it was wrong.
-type RejectionFeedback = {
+export type RejectionFeedback = {
   productName: string
   rejectedCanonicalName: string | null
   note: string
@@ -75,9 +75,21 @@ Rules:
 // overflows the model's output-token budget, the JSON gets truncated, and the
 // structured output fails to parse (AI_NoOutputGeneratedError). Process the
 // products in bounded batches so every call stays comfortably within limits.
-const BATCH_SIZE = 20
+export const MATCH_BATCH_SIZE = 20
 
-async function matchBatch(
+// Split products into the batches the AI pass processes one at a time. Exposed
+// so callers that want to report per-batch progress can size the work upfront.
+export function buildMatchBatches(
+  productsToMatch: ProductInput[],
+): ProductInput[][] {
+  const batches: ProductInput[][] = []
+  for (let i = 0; i < productsToMatch.length; i += MATCH_BATCH_SIZE) {
+    batches.push(productsToMatch.slice(i, i + MATCH_BATCH_SIZE))
+  }
+  return batches
+}
+
+export async function matchProductBatch(
   batch: ProductInput[],
   canonicalOptions: CanonicalInput[],
   feedback: RejectionFeedback[],
@@ -128,21 +140,14 @@ export async function aiMatchProducts(
     return []
   }
 
-  // Split into batches and run them with limited concurrency. A failed batch is
-  // isolated so it can't abort the whole run — its products simply go unmatched
-  // and can be retried later.
-  const batches: ProductInput[][] = []
-  for (let i = 0; i < productsToMatch.length; i += BATCH_SIZE) {
-    batches.push(productsToMatch.slice(i, i + BATCH_SIZE))
-  }
-
   // Run batches sequentially. Concurrent calls burst into provider rate limits
   // (especially on the free AI tier); going one at a time lets the SDK's
   // built-in exponential backoff absorb transient limits between batches.
+  const batches = buildMatchBatches(productsToMatch)
   const results: AiMatch[] = []
   for (const batch of batches) {
     try {
-      const matches = await matchBatch(batch, canonicalOptions, feedback)
+      const matches = await matchProductBatch(batch, canonicalOptions, feedback)
       results.push(...matches)
     } catch (err) {
       // Isolate failures: a single bad batch shouldn't abort the whole run.

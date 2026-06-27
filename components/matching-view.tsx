@@ -1,11 +1,11 @@
 'use client'
 
 import { useEffect, useMemo, useState, useTransition } from 'react'
+import { useRouter } from 'next/navigation'
 import type { MatchRow } from '@/app/actions/canonical'
 import {
   assignMatch,
   confirmMatch,
-  generateAiSuggestions,
   generateSuggestions,
   rejectMatch,
   rematchRejected,
@@ -205,6 +205,85 @@ function RejectDialog({
   )
 }
 
+type AiProgress = {
+  batchesDone: number
+  totalBatches: number
+  productsDone: number
+  totalProducts: number
+  suggested: number
+  cleared: number
+  skipped: number
+  phase: 'running' | 'done' | 'error'
+}
+
+// Determinate progress bar for the streaming AI match pass. Driven entirely by
+// the per-batch events streamed from /api/matching/ai-pass.
+function AiPassProgress({ progress }: { progress: AiProgress }) {
+  const { phase, totalProducts, productsDone, suggested, cleared, skipped } =
+    progress
+  const pct =
+    phase === 'done'
+      ? 100
+      : totalProducts > 0
+        ? Math.round((productsDone / totalProducts) * 100)
+        : 5
+
+  const heading =
+    phase === 'done'
+      ? 'AI match pass complete'
+      : phase === 'error'
+        ? 'AI match pass failed'
+        : 'Running AI match pass…'
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex flex-col gap-2 rounded-lg border border-border bg-card px-5 py-4"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+          <Sparkles
+            className={cn(
+              'size-4 text-accent-foreground',
+              phase === 'running' && 'animate-pulse',
+            )}
+          />
+          {heading}
+        </div>
+        <span className="text-sm tabular-nums text-muted-foreground">
+          {phase === 'running' && totalProducts > 0
+            ? `${productsDone} / ${totalProducts} products`
+            : `${pct}%`}
+        </span>
+      </div>
+
+      <div
+        className="h-2 w-full overflow-hidden rounded-full bg-muted"
+        role="progressbar"
+        aria-valuenow={pct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      >
+        <div
+          className={cn(
+            'h-full rounded-full transition-all duration-500 ease-out',
+            phase === 'error' ? 'bg-destructive' : 'bg-primary',
+          )}
+          style={{ width: `${Math.max(pct, 2)}%` }}
+        />
+      </div>
+
+      <p className="text-xs text-muted-foreground">
+        {suggested} matched
+        {cleared > 0 ? ` · ${cleared} unmatched` : ''}
+        {skipped > 0 ? ` · ${skipped} skipped` : ''}
+        {phase === 'done' ? ' — review them under “Needs review”.' : ''}
+      </p>
+    </div>
+  )
+}
+
 export function MatchingView({
   rows,
   canonicalItems,
@@ -214,8 +293,122 @@ export function MatchingView({
 }) {
   const [isPending, startTransition] = useTransition()
   const [genPending, startGen] = useTransition()
-  const [aiPending, startAi] = useTransition()
   const canEdit = useCanEdit()
+  const router = useRouter()
+
+  // Live progress for the streaming AI match pass. While running, `aiProgress`
+  // holds batch/product counts streamed from the server so we can show a real
+  // determinate progress bar instead of an indeterminate spinner.
+  const [aiProgress, setAiProgress] = useState<AiProgress | null>(null)
+  const aiPending = aiProgress?.phase === 'running'
+
+  async function runAiPass() {
+    if (aiPending) return
+    setCascadeMsg(null)
+    setAiProgress({
+      batchesDone: 0,
+      totalBatches: 0,
+      productsDone: 0,
+      totalProducts: 0,
+      suggested: 0,
+      cleared: 0,
+      skipped: 0,
+      phase: 'running',
+    })
+    try {
+      const res = await fetch('/api/matching/ai-pass', { method: 'POST' })
+      if (!res.ok || !res.body) {
+        throw new Error(`Request failed (${res.status})`)
+      }
+
+      // Parse the newline-delimited JSON progress stream.
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let last: Partial<AiProgress> = {}
+
+      const handle = (evt: Record<string, unknown>) => {
+        if (evt.type === 'start') {
+          last = {
+            batchesDone: 0,
+            totalBatches: Number(evt.totalBatches) || 0,
+            productsDone: 0,
+            totalProducts: Number(evt.totalProducts) || 0,
+            suggested: 0,
+            cleared: 0,
+            skipped: 0,
+          }
+          setAiProgress({ ...(last as AiProgress), phase: 'running' })
+        } else if (evt.type === 'progress') {
+          last = {
+            batchesDone: Number(evt.batchesDone) || 0,
+            totalBatches: Number(evt.totalBatches) || 0,
+            productsDone: Number(evt.productsDone) || 0,
+            totalProducts: Number(evt.totalProducts) || 0,
+            suggested: Number(evt.suggested) || 0,
+            cleared: Number(evt.cleared) || 0,
+            skipped: Number(evt.skipped) || 0,
+          }
+          setAiProgress({ ...(last as AiProgress), phase: 'running' })
+        } else if (evt.type === 'done') {
+          const suggested = Number(evt.suggested) || 0
+          const skipped = Number(evt.skipped) || 0
+          setAiProgress({
+            ...(last as AiProgress),
+            suggested,
+            cleared: Number(evt.cleared) || (last.cleared ?? 0),
+            skipped,
+            phase: 'done',
+          })
+          if (skipped > 0) {
+            setCascadeMsg(
+              `Suggested ${suggested}, but ${skipped} products couldn't be processed (likely an AI rate limit). Existing matches were left untouched — run the AI pass again to finish them.`,
+            )
+          }
+        }
+      }
+
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed) continue
+          try {
+            handle(JSON.parse(trimmed))
+          } catch {
+            /* ignore partial/non-JSON lines */
+          }
+        }
+      }
+
+      // Pull in the new suggestions, then clear the bar shortly after.
+      router.refresh()
+      setTimeout(() => setAiProgress(null), 2500)
+    } catch (err) {
+      console.log('[v0] AI pass failed:', err)
+      setAiProgress((prev) =>
+        prev
+          ? { ...prev, phase: 'error' }
+          : {
+              batchesDone: 0,
+              totalBatches: 0,
+              productsDone: 0,
+              totalProducts: 0,
+              suggested: 0,
+              cleared: 0,
+              skipped: 0,
+              phase: 'error',
+            },
+      )
+      setCascadeMsg(
+        'The AI match pass failed to run. Please try again in a moment.',
+      )
+    }
+  }
 
   // Reject-feedback dialog state. The note itself is owned by RejectDialog so
   // typing doesn't re-render this component's large tables; we only track which
@@ -343,24 +536,18 @@ export function MatchingView({
             </Button>
             <Button
               disabled={aiPending || genPending || noCanonical}
-              onClick={() =>
-                startAi(async () => {
-                  setCascadeMsg(null)
-                  const res = await generateAiSuggestions()
-                  if (res.skipped > 0) {
-                    setCascadeMsg(
-                      `Suggested ${res.suggested}, but ${res.skipped} products couldn't be processed (likely an AI rate limit). Existing matches were left untouched — run the AI pass again to finish them.`,
-                    )
-                  }
-                })
-              }
+              onClick={runAiPass}
             >
-              <Sparkles className="size-4" />
-              {aiPending ? 'Thinking…' : 'AI match pass'}
+              <Sparkles className={cn('size-4', aiPending && 'animate-pulse')} />
+              {aiPending ? 'Matching…' : 'AI match pass'}
             </Button>
           </div>
         )}
       </div>
+
+      {aiProgress && (
+        <AiPassProgress progress={aiProgress} />
+      )}
 
       {noCanonical && (
         <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
