@@ -78,6 +78,7 @@ const SYSTEM_PROMPT = `You are a procurement catalog reconciliation assistant. Y
 
 Rules:
 - Only choose a canonicalItemId from the provided list. If no canonical item is a credible match, return canonicalItemId null with a low confidence and explain why.
+- GRADE NUMBERS MUST MATCH EXACTLY. A numeric grade/viscosity designation is part of the item's identity, not a cosmetic variant. Two products are NOT the same canonical item unless their grade numbers are identical. This includes: ISO viscosity grade (ISO VG 22 ≠ 32 ≠ 46 ≠ 68 ≠ 100), SAE oil grades (SAE 30 ≠ 40; 15W-40 ≠ 10W-30; 80W-90 ≠ 85W-140), NLGI grease grades (NLGI 1 ≠ 2), AGMA grades, and any other numeric spec (bolt M8 ≠ M10, viscosity 320 ≠ 460). When the base product line matches but the grade number differs, return canonicalItemId null (or a different same-grade canonical), NOT the wrong-grade item. E.g. "P66 MEGAFLOW AW HYDRAULIC OIL 22" must NOT match a canonical "AW Hydraulic Oil ISO 46". Brand/series words being similar never outweigh a grade-number difference.
 - confidence reflects how sure you are it is the same item: 0.9+ near-certain, 0.7-0.9 likely, 0.5-0.7 plausible, <0.5 doubtful.
 - Return exactly one entry per product id provided. Keep each reason concise.
 - Set exclude=false by default. Only set exclude=true when a reviewer rule (below) indicates the product is irrelevant and should be removed from comparison.
