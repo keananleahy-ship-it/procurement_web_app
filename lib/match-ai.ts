@@ -70,17 +70,22 @@ Rules:
 - Return exactly one entry per product id provided. Keep each reason concise.
 - You may be given REVIEWER FEEDBACK: pairings a human already rejected, each with a note explaining why it was wrong. Treat this feedback as authoritative. Do NOT re-propose a product→canonical pairing the reviewer rejected. Generalize from the notes (e.g. if a reviewer said two grades or pack types are different, apply that distinction to similar products) to avoid repeating the same class of mistake.`
 
-export async function aiMatchProducts(
-  productsToMatch: ProductInput[],
-  canonicalOptions: CanonicalInput[],
-  feedback: RejectionFeedback[] = [],
-): Promise<AiMatch[]> {
-  if (productsToMatch.length === 0 || canonicalOptions.length === 0) {
-    return []
-  }
+// The model must return one entry per product, so the response grows with the
+// number of products in a single call. Sending the entire catalog at once
+// overflows the model's output-token budget, the JSON gets truncated, and the
+// structured output fails to parse (AI_NoOutputGeneratedError). Process the
+// products in bounded batches so every call stays comfortably within limits.
+// gemini-2.5-flash is a "thinking" model whose reasoning tokens also count
+// against maxOutputTokens, so we keep batches small AND give a high ceiling.
+const BATCH_SIZE = 20
 
+async function matchBatch(
+  batch: ProductInput[],
+  canonicalOptions: CanonicalInput[],
+  feedback: RejectionFeedback[],
+): Promise<AiMatch[]> {
   const payload = {
-    products: productsToMatch,
+    products: batch,
     canonicalItems: canonicalOptions,
     // Past human rejections the model must respect and learn from.
     reviewerFeedback: feedback.map((f) => ({
@@ -94,6 +99,9 @@ export async function aiMatchProducts(
     model: 'google/gemini-2.5-flash',
     system: SYSTEM_PROMPT,
     output: Output.object({ schema: matchSchema }),
+    // High ceiling: must cover the model's internal "thinking" tokens AND the
+    // structured output for every product in the batch.
+    maxOutputTokens: 24000,
     messages: [
       {
         role: 'user',
@@ -106,5 +114,40 @@ export async function aiMatchProducts(
     ],
   })
 
-  return output.matches
+  return output?.matches ?? []
+}
+
+export async function aiMatchProducts(
+  productsToMatch: ProductInput[],
+  canonicalOptions: CanonicalInput[],
+  feedback: RejectionFeedback[] = [],
+): Promise<AiMatch[]> {
+  if (productsToMatch.length === 0 || canonicalOptions.length === 0) {
+    return []
+  }
+
+  // Split into batches and run them with limited concurrency. A failed batch is
+  // isolated so it can't abort the whole run — its products simply go unmatched
+  // and can be retried later.
+  const batches: ProductInput[][] = []
+  for (let i = 0; i < productsToMatch.length; i += BATCH_SIZE) {
+    batches.push(productsToMatch.slice(i, i + BATCH_SIZE))
+  }
+
+  // Run batches sequentially. Concurrent calls burst into provider rate limits
+  // (especially on the free AI tier); going one at a time lets the SDK's
+  // built-in exponential backoff absorb transient limits between batches.
+  const results: AiMatch[] = []
+  for (const batch of batches) {
+    try {
+      const matches = await matchBatch(batch, canonicalOptions, feedback)
+      results.push(...matches)
+    } catch (err) {
+      // Isolate failures: a single bad batch shouldn't abort the whole run.
+      // Its products simply stay unmatched and can be retried later.
+      console.log('[v0] aiMatchProducts batch failed:', err)
+    }
+  }
+
+  return results
 }

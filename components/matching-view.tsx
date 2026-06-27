@@ -344,8 +344,14 @@ export function MatchingView({
             <Button
               disabled={aiPending || genPending || noCanonical}
               onClick={() =>
-                startAi(() => {
-                  void generateAiSuggestions()
+                startAi(async () => {
+                  setCascadeMsg(null)
+                  const res = await generateAiSuggestions()
+                  if (res.skipped > 0) {
+                    setCascadeMsg(
+                      `Suggested ${res.suggested}, but ${res.skipped} products couldn't be processed (likely an AI rate limit). Existing matches were left untouched — run the AI pass again to finish them.`,
+                    )
+                  }
                 })
               }
             >

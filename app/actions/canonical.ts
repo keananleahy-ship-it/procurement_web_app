@@ -158,10 +158,20 @@ export async function generateAiSuggestions() {
 
   let suggested = 0
   let cleared = 0
+  let skipped = 0
   for (const p of pending) {
     const m = byId.get(p.id)
+
+    // If the AI returned no entry for this product, its batch failed (e.g. a
+    // provider rate limit). Leave the product as-is rather than wrongly marking
+    // it unmatched, so a partial run never wipes existing matches. It will be
+    // reconsidered on the next run.
+    if (!m) {
+      skipped++
+      continue
+    }
+
     const hasMatch =
-      m &&
       m.canonicalItemId !== null &&
       validCanonicalIds.has(m.canonicalItemId) &&
       m.confidence >= 0.5
@@ -186,7 +196,7 @@ export async function generateAiSuggestions() {
           matchStatus: 'unmatched',
           matchScore: null,
           matchMethod: 'ai',
-          matchReason: m?.reason?.slice(0, 280) ?? null,
+          matchReason: m.reason?.slice(0, 280) ?? null,
         })
         .where(eq(products.id, p.id))
       cleared++
@@ -196,7 +206,7 @@ export async function generateAiSuggestions() {
   revalidatePath('/matching')
   revalidatePath('/compare')
   revalidatePath('/')
-  return { suggested, cleared }
+  return { suggested, cleared, skipped }
 }
 
 /**
