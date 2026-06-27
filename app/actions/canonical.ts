@@ -201,6 +201,16 @@ export async function generateAiSuggestions() {
 
 export async function confirmMatch(productId: number) {
   await requireEditor()
+
+  // Look up which canonical item this product is matched to. A canonical item
+  // represents a single product that vendors sell in many pack sizes, and each
+  // pack size is a separate product row pointing at the same canonical item.
+  const [target] = await db
+    .select({ canonicalItemId: products.canonicalItemId })
+    .from(products)
+    .where(eq(products.id, productId))
+    .limit(1)
+
   await db
     .update(products)
     .set({ matchStatus: 'confirmed' })
@@ -211,9 +221,32 @@ export async function confirmMatch(productId: number) {
         inArray(products.matchStatus, ['suggested', 'rejected']),
       ),
     )
+
+  // Confirming one pack size confirms them all: every other product mapped to
+  // the same canonical item that is still awaiting review is auto-confirmed.
+  // Rejected products (canonicalItemId is cleared on reject) and already
+  // confirmed ones are left untouched, so prior decisions are preserved.
+  let cascaded = 0
+  if (target?.canonicalItemId != null) {
+    const siblings = await db
+      .update(products)
+      .set({ matchStatus: 'confirmed' })
+      .where(
+        and(
+          eq(products.canonicalItemId, target.canonicalItemId),
+          eq(products.matchStatus, 'suggested'),
+        ),
+      )
+      .returning({ id: products.id })
+    cascaded = siblings.length
+  }
+
   revalidatePath('/matching')
   revalidatePath('/compare')
   revalidatePath('/')
+  // `confirmed` counts every product moved to confirmed: the target plus any
+  // other pack sizes of the same item that were still pending.
+  return { confirmed: 1 + cascaded }
 }
 
 export async function rejectMatch(productId: number, note?: string) {
@@ -277,9 +310,24 @@ export async function assignMatch(productId: number, canonicalItemId: number) {
       matchReason: null,
     })
     .where(eq(products.id, productId))
+
+  // Manual confirmation cascades just like confirmMatch: other pack sizes of
+  // the assigned canonical item that are still pending review get confirmed too.
+  const siblings = await db
+    .update(products)
+    .set({ matchStatus: 'confirmed' })
+    .where(
+      and(
+        eq(products.canonicalItemId, canonicalItemId),
+        eq(products.matchStatus, 'suggested'),
+      ),
+    )
+    .returning({ id: products.id })
+
   revalidatePath('/matching')
   revalidatePath('/compare')
   revalidatePath('/')
+  return { confirmed: 1 + siblings.length }
 }
 
 /** Clear a match entirely, returning the product to the unmatched pool. */

@@ -154,9 +154,36 @@ export function MatchingView({
 
   const noCanonical = canonicalItems.length === 0
 
+  // Transient banner announcing how many pack sizes a single confirm/assign
+  // cascaded to, since confirming one product confirms every pack size of the
+  // same canonical item.
+  const [cascadeMsg, setCascadeMsg] = useState<string | null>(null)
+
   function run(fn: () => Promise<unknown>) {
     startTransition(() => {
       void fn()
+    })
+  }
+
+  function confirm(productId: number) {
+    startTransition(async () => {
+      const res = await confirmMatch(productId)
+      setCascadeMsg(
+        res.confirmed > 1
+          ? `Confirmed all ${res.confirmed} pack sizes of this item.`
+          : null,
+      )
+    })
+  }
+
+  function assign(productId: number, canonicalItemId: number) {
+    startTransition(async () => {
+      const res = await assignMatch(productId, canonicalItemId)
+      setCascadeMsg(
+        res.confirmed > 1
+          ? `Assigned and confirmed all ${res.confirmed} pack sizes of this item.`
+          : null,
+      )
     })
   }
 
@@ -174,7 +201,8 @@ export function MatchingView({
             <p className="text-sm text-muted-foreground">
               Run a fast name-similarity pass, then an AI pass that catches
               synonyms and pack-size variants. You confirm or reject each one —
-              nothing is grouped until you approve it.
+              nothing is grouped until you approve it. Confirming a match
+              applies to every pack size of that item.
             </p>
           </div>
         </div>
@@ -215,7 +243,17 @@ export function MatchingView({
         </div>
       )}
 
-      <Tabs defaultValue="suggested">
+      {cascadeMsg && (
+        <div
+          role="status"
+          className="flex items-center gap-2 rounded-md border border-success/30 bg-success/10 px-4 py-3 text-sm text-success"
+        >
+          <Check className="size-4 shrink-0" />
+          {cascadeMsg}
+        </div>
+      )}
+
+      <Tabs defaultValue="suggested" onValueChange={() => setCascadeMsg(null)>
         <TabsList>
           <TabsTrigger value="suggested">
             Needs review
@@ -305,7 +343,7 @@ export function MatchingView({
                               canonicalItems={canonicalItems}
                               placeholder="Reassign…"
                               disabled={isPending}
-                              onAssign={(id, cid) => run(() => assignMatch(id, cid))}
+                              onAssign={(id, cid) => assign(id, cid)}
                             />
                             <Button
                               size="sm"
@@ -325,7 +363,8 @@ export function MatchingView({
                             <Button
                               size="sm"
                               disabled={isPending}
-                              onClick={() => run(() => confirmMatch(r.productId))}
+                              title="Confirms this and every other pack size of the same item"
+                              onClick={() => confirm(r.productId)}
                             >
                               <Check className="size-4" />
                               Confirm
