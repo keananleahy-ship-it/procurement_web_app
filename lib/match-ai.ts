@@ -75,8 +75,6 @@ Rules:
 // overflows the model's output-token budget, the JSON gets truncated, and the
 // structured output fails to parse (AI_NoOutputGeneratedError). Process the
 // products in bounded batches so every call stays comfortably within limits.
-// gemini-2.5-flash is a "thinking" model whose reasoning tokens also count
-// against maxOutputTokens, so we keep batches small AND give a high ceiling.
 const BATCH_SIZE = 20
 
 async function matchBatch(
@@ -96,12 +94,16 @@ async function matchBatch(
   }
 
   const { output } = await generateText({
-    model: 'google/gemini-2.5-flash',
+    // Anthropic models authenticate against the account's paid AI Gateway
+    // credits. The Google/OpenAI models route through the gateway's free
+    // zero-config tier, which is aggressively rate-limited (429s) regardless of
+    // available credits — that was causing the AI pass to fail entirely.
+    model: 'anthropic/claude-haiku-4.5',
     system: SYSTEM_PROMPT,
     output: Output.object({ schema: matchSchema }),
-    // High ceiling: must cover the model's internal "thinking" tokens AND the
-    // structured output for every product in the batch.
-    maxOutputTokens: 24000,
+    // High ceiling so the structured output for every product in the batch
+    // fits without truncation.
+    maxOutputTokens: 16000,
     messages: [
       {
         role: 'user',
