@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, useTransition } from 'react'
+import { useEffect, useMemo, useState, useTransition } from 'react'
 import type { MatchRow } from '@/app/actions/canonical'
 import {
   assignMatch,
@@ -111,6 +111,100 @@ function AssignSelect({
   )
 }
 
+type RejectTarget = {
+  productId: number
+  productName: string
+  canonicalItemName: string | null
+}
+
+// Isolated in its own component so its note state lives here, not in
+// MatchingView. Typing in the textarea re-renders only this dialog instead of
+// the parent's large product tables (which previously caused per-keystroke lag).
+function RejectDialog({
+  target,
+  pending,
+  onCancel,
+  onSubmit,
+}: {
+  target: RejectTarget | null
+  pending: boolean
+  onCancel: () => void
+  onSubmit: (note: string) => void
+}) {
+  const [note, setNote] = useState('')
+
+  // Reset the note whenever a new target is opened.
+  useEffect(() => {
+    if (target) setNote('')
+  }, [target])
+
+  return (
+    <Dialog
+      open={target !== null}
+      onOpenChange={(open) => {
+        if (!open && !pending) onCancel()
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Reject this match</DialogTitle>
+          <DialogDescription>
+            {target?.canonicalItemName ? (
+              <>
+                Tell us why{' '}
+                <span className="font-medium text-foreground">
+                  {target.productName}
+                </span>{' '}
+                is not{' '}
+                <span className="font-medium text-foreground">
+                  {target.canonicalItemName}
+                </span>
+                . This rejects every pack size of the item, and your note trains
+                future suggestions.
+              </>
+            ) : (
+              <>
+                Tell us why this suggestion for{' '}
+                <span className="font-medium text-foreground">
+                  {target?.productName}
+                </span>{' '}
+                is wrong. This rejects every pack size of the item, and your note
+                trains future suggestions.
+              </>
+            )}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="reject-note">
+            Why is this match wrong?{' '}
+            <span className="text-muted-foreground">(optional)</span>
+          </Label>
+          <Textarea
+            id="reject-note"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="e.g. Different grade — this is food-grade, the canonical item is industrial."
+            autoFocus
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" disabled={pending} onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            disabled={pending}
+            onClick={() => onSubmit(note)}
+          >
+            <X className="size-4" />
+            Reject match
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export function MatchingView({
   rows,
   canonicalItems,
@@ -123,24 +217,18 @@ export function MatchingView({
   const [aiPending, startAi] = useTransition()
   const canEdit = useCanEdit()
 
-  // Reject-feedback dialog state. We capture a free-text note explaining why a
-  // suggestion is wrong; that note is stored and fed back into the AI pass.
-  const [rejectTarget, setRejectTarget] = useState<{
-    productId: number
-    productName: string
-    canonicalItemName: string | null
-  } | null>(null)
-  const [rejectNote, setRejectNote] = useState('')
+  // Reject-feedback dialog state. The note itself is owned by RejectDialog so
+  // typing doesn't re-render this component's large tables; we only track which
+  // product is being rejected.
+  const [rejectTarget, setRejectTarget] = useState<RejectTarget | null>(null)
   const [rejectPending, startReject] = useTransition()
 
-  function submitReject() {
+  function submitReject(note: string) {
     if (!rejectTarget) return
     const { productId } = rejectTarget
-    const note = rejectNote
     startReject(async () => {
       const res = await rejectMatch(productId, note)
       setRejectTarget(null)
-      setRejectNote('')
       setCascadeMsg(
         res.rejected > 1
           ? `Rejected all ${res.rejected} pack sizes of this item.`
@@ -565,79 +653,12 @@ export function MatchingView({
         </TabsContent>
       </Tabs>
 
-      <Dialog
-        open={rejectTarget !== null}
-        onOpenChange={(open) => {
-          if (!open && !rejectPending) {
-            setRejectTarget(null)
-            setRejectNote('')
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Reject this match</DialogTitle>
-            <DialogDescription>
-              {rejectTarget?.canonicalItemName ? (
-                <>
-                  Tell us why{' '}
-                  <span className="font-medium text-foreground">
-                    {rejectTarget.productName}
-                  </span>{' '}
-                  is not{' '}
-                  <span className="font-medium text-foreground">
-                    {rejectTarget.canonicalItemName}
-                  </span>
-                  . This rejects every pack size of the item, and your note
-                  trains future suggestions.
-                </>
-              ) : (
-                <>
-                  Tell us why this suggestion for{' '}
-                  <span className="font-medium text-foreground">
-                    {rejectTarget?.productName}
-                  </span>{' '}
-                  is wrong. This rejects every pack size of the item, and your
-                  note trains future suggestions.
-                </>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="reject-note">
-              Why is this match wrong?{' '}
-              <span className="text-muted-foreground">(optional)</span>
-            </Label>
-            <Textarea
-              id="reject-note"
-              value={rejectNote}
-              onChange={(e) => setRejectNote(e.target.value)}
-              placeholder="e.g. Different grade — this is food-grade, the canonical item is industrial."
-              autoFocus
-            />
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              disabled={rejectPending}
-              onClick={() => {
-                setRejectTarget(null)
-                setRejectNote('')
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={rejectPending}
-              onClick={submitReject}
-            >
-              <X className="size-4" />
-              Reject match
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <RejectDialog
+        target={rejectTarget}
+        pending={rejectPending}
+        onCancel={() => setRejectTarget(null)}
+        onSubmit={submitReject}
+      />
     </div>
   )
 }
