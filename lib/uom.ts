@@ -128,3 +128,22 @@ export function isPerBaseUnitPrice(args: {
   if (b === '' || !isMeasureUom(args.baseUnit)) return true
   return u === b
 }
+
+// Whether a row's price basis is genuinely ambiguous and worth a human's
+// confirmation at import time. It is ambiguous only when ALL hold:
+//   - the row packs more than one base unit per selling unit (so dividing vs
+//     not dividing actually changes the per-base price), and
+//   - the pricing unit does NOT itself settle the question — i.e. it's a
+//     container/count word ("drum", "case", "each") or blank, not a real
+//     measure like "gal". When the pricing unit is a measure we already know
+//     it's per base unit, and when packSize is 1 the division is a no-op.
+// A reviewer's explicit choice (storedBasis 'base') is treated as resolved.
+export function isBasisAmbiguous(args: {
+  unit: string | null | undefined
+  packSize: number
+  storedBasis?: string | null | undefined
+}): boolean {
+  if (!Number.isFinite(args.packSize) || args.packSize <= 1) return false
+  if (args.storedBasis === 'base') return false
+  return !isMeasureUom(args.unit)
+}

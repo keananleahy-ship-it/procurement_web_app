@@ -9,7 +9,7 @@ import {
   vendorPrices,
 } from '@/lib/db/schema'
 import { requireUser, requireEditor } from '@/lib/roles'
-import { desc, eq } from 'drizzle-orm'
+import { desc, eq, inArray } from 'drizzle-orm'
 import { del } from '@vercel/blob'
 import { revalidatePath } from 'next/cache'
 
@@ -54,6 +54,22 @@ type RowPatch = {
 export async function updateImportRow(rowId: number, patch: RowPatch) {
   await requireEditor()
   await db.update(importRows).set(patch).where(eq(importRows.id, rowId))
+  revalidatePath('/imports')
+}
+
+// Apply one price-basis answer to many staged rows at once. Used by the
+// sheet-level "priced per" prompt during import review, where a single
+// consistent answer covers every ambiguous row on the sheet.
+export async function setImportRowsBasis(
+  rowIds: number[],
+  basis: 'base' | 'pack',
+) {
+  await requireEditor()
+  if (rowIds.length === 0) return
+  await db
+    .update(importRows)
+    .set({ priceBasis: basis })
+    .where(inArray(importRows.id, rowIds))
   revalidatePath('/imports')
 }
 
