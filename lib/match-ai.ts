@@ -1,5 +1,12 @@
 import { generateText, Output } from 'ai'
+import { createOpenAI } from '@ai-sdk/openai'
 import * as z from 'zod'
+
+// Use the account's own OpenAI key directly rather than the AI Gateway. The
+// gateway's zero-config tier is aggressively rate-limited (429s) regardless of
+// available credits, which previously caused the whole AI match pass to fail
+// with 0 suggestions. The direct provider uses paid OpenAI quota.
+const openai = createOpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
 // AI-assisted second-pass matching. The fuzzy first pass keys off name
 // similarity only, which misses semantic synonyms ("Protective" vs "Safety"
@@ -117,13 +124,15 @@ export async function matchProductBatch(
   }
 
   const { output } = await generateText({
-    // Anthropic models authenticate against the account's paid AI Gateway
-    // credits. The Google/OpenAI models route through the gateway's free
-    // zero-config tier, which is aggressively rate-limited (429s) regardless of
-    // available credits — that was causing the AI pass to fail entirely.
-    model: 'anthropic/claude-haiku-4.5',
+    // Direct OpenAI provider (paid key) — see note at top of file.
+    model: openai('gpt-5-mini'),
     system: SYSTEM_PROMPT,
     output: Output.object({ schema: matchSchema }),
+    // 'low' reasoning keeps this catalog-classification task fast (high
+    // reasoning roughly tripled per-batch latency, risking the route's time
+    // limit on large catalogs) while still resolving synonyms and pack-size
+    // variants well.
+    providerOptions: { openai: { reasoningEffort: 'low' } },
     // High ceiling so the structured output for every product in the batch
     // fits without truncation.
     maxOutputTokens: 16000,

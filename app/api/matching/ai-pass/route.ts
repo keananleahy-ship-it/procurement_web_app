@@ -92,22 +92,12 @@ export async function POST(req: Request) {
         return
       }
 
-      for (let i = 0; i < batches.length; i++) {
-        // Stop spending credits if the client navigated away / aborted the
-        // request. Any products already updated keep their new status.
-        if (req.signal.aborted) {
-          revalidatePath('/matching')
-          revalidatePath('/compare')
-          revalidatePath('/')
-          try {
-            controller.close()
-          } catch {
-            /* already closed */
-          }
-          return
-        }
-
-        const batch = batches[i]
+      // Process one batch: run the AI call and apply per-product DB updates,
+      // mutating the shared counters. Isolated so a single batch failure (e.g.
+      // a transient rate limit) leaves its products untouched and never aborts
+      // the run. Counter mutations are safe under concurrency because JS runs
+      // them synchronously between awaits on a single thread.
+      const processBatch = async (batch: typeof batches[number]) => {
         try {
           const matches = await matchProductBatch(
             batch,
@@ -180,19 +170,54 @@ export async function POST(req: Request) {
           console.log('[v0] ai-pass batch failed:', err)
           skipped += batch.length
         }
+      }
 
-        productsDone += batch.length
-        send({
-          type: 'progress',
-          batchesDone: i + 1,
-          totalBatches: batches.length,
-          productsDone,
-          totalProducts: pending.length,
-          suggested,
-          cleared,
-          skipped,
-          excluded,
-        })
+      // Run batches through a small worker pool. The direct OpenAI provider
+      // tolerates modest concurrency, so this keeps a large catalog (~80
+      // batches) comfortably inside maxDuration instead of timing out at the
+      // tail. Each completed batch streams a progress event; the abort signal
+      // is checked before claiming each new batch so navigating away stops
+      // further spend while preserving everything already written.
+      const CONCURRENCY = 8
+      let cursor = 0
+      let batchesDone = 0
+
+      const worker = async () => {
+        for (;;) {
+          if (req.signal.aborted) return
+          const i = cursor++
+          if (i >= batches.length) return
+          await processBatch(batches[i])
+          batchesDone++
+          productsDone += batches[i].length
+          send({
+            type: 'progress',
+            batchesDone,
+            totalBatches: batches.length,
+            productsDone,
+            totalProducts: pending.length,
+            suggested,
+            cleared,
+            skipped,
+            excluded,
+          })
+        }
+      }
+
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENCY, batches.length) }, worker),
+      )
+
+      if (req.signal.aborted) {
+        revalidatePath('/matching')
+        revalidatePath('/compare')
+        revalidatePath('/')
+        try {
+          controller.close()
+        } catch {
+          /* already closed */
+        }
+        return
       }
 
       revalidatePath('/matching')
