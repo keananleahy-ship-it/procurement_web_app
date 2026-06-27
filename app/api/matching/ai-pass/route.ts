@@ -16,7 +16,7 @@ export const maxDuration = 300
 // Streaming AI match pass. Mirrors the generateAiSuggestions server action but
 // emits newline-delimited JSON progress events per batch so the client can show
 // a real, determinate progress bar instead of an indeterminate spinner.
-export async function POST() {
+export async function POST(req: Request) {
   const current = await getCurrentUser()
   if (!current) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -88,6 +88,20 @@ export async function POST() {
       }
 
       for (let i = 0; i < batches.length; i++) {
+        // Stop spending credits if the client navigated away / aborted the
+        // request. Any products already updated keep their new status.
+        if (req.signal.aborted) {
+          revalidatePath('/matching')
+          revalidatePath('/compare')
+          revalidatePath('/')
+          try {
+            controller.close()
+          } catch {
+            /* already closed */
+          }
+          return
+        }
+
         const batch = batches[i]
         try {
           const matches = await matchProductBatch(
