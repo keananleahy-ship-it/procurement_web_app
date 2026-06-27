@@ -100,7 +100,9 @@ export const canonicalItems = pgTable('canonical_items', {
 // Captures why a user rejected a suggested match. Persisted independently of
 // the product row so the feedback survives re-matching, and so the AI pass can
 // learn from past rejections instead of re-proposing the same wrong pairings.
-export const matchFeedback = pgTable('match_feedback', {
+// NOTE: uses its own table (not `match_feedback`, which is a separate, broader
+// feedback/support system) to avoid a schema collision on the shared database.
+export const matchRejectionFeedback = pgTable('match_rejection_feedback', {
   id: serial('id').primaryKey(),
   userId: text('userId').notNull(),
   productId: integer('productId').notNull(),

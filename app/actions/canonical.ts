@@ -1,7 +1,11 @@
 'use server'
 
 import { db } from '@/lib/db'
-import { canonicalItems, matchFeedback, products } from '@/lib/db/schema'
+import {
+  canonicalItems,
+  matchRejectionFeedback,
+  products,
+} from '@/lib/db/schema'
 import { bestMatch } from '@/lib/match'
 import { aiMatchProducts } from '@/lib/match-ai'
 import { requireUser, requireEditor } from '@/lib/roles'
@@ -113,8 +117,8 @@ export async function generateAiSuggestions() {
     db.select().from(products),
     db
       .select()
-      .from(matchFeedback)
-      .orderBy(desc(matchFeedback.createdAt))
+      .from(matchRejectionFeedback)
+      .orderBy(desc(matchRejectionFeedback.createdAt))
       .limit(200),
   ])
 
@@ -235,7 +239,7 @@ export async function rejectMatch(productId: number, note?: string) {
           .limit(1)
         canonicalItemName = ci?.name ?? null
       }
-      await db.insert(matchFeedback).values({
+      await db.insert(matchRejectionFeedback).values({
         userId,
         productId,
         productName: product.name,
