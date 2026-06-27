@@ -28,6 +28,7 @@ import {
   ArrowDownNarrowWide,
   Boxes,
   CalendarClock,
+  ChevronDown,
   GitCompareArrows,
   Layers,
   Search,
@@ -44,7 +45,19 @@ export function CompareView({
   const [query, setQuery] = useState('')
   const [families, setFamilies] = useState<Set<PackFamilyId>>(new Set())
   const [page, setPage] = useState(1)
+  // Cards are collapsed by default — only the selected ones reveal their price
+  // table, keeping the list scannable when there are many products.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const PAGE_SIZE = 15
+
+  function toggleExpanded(key: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
 
   // Count offers per family across the whole catalog so we only show buttons
   // for families that actually exist, and can label each with its offer count.
@@ -213,7 +226,15 @@ export function CompareView({
       <div className="flex flex-col gap-6">
         {paged.map((c) => (
           <Card key={c.key} className="overflow-hidden p-0">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
+            <button
+              type="button"
+              onClick={() => toggleExpanded(c.key)}
+              aria-expanded={expanded.has(c.key)}
+              className={cn(
+                'flex w-full flex-wrap items-center justify-between gap-3 px-5 py-4 text-left transition-colors hover:bg-muted/40',
+                expanded.has(c.key) && 'border-b border-border',
+              )}
+            >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <h3 className="text-base font-semibold text-foreground">
@@ -264,14 +285,24 @@ export function CompareView({
                   )}
                 </p>
               </div>
-              {c.potentialSavings > 0 && (
-                <div className="flex items-center gap-1.5 rounded-md bg-success/10 px-3 py-1.5 text-sm font-medium text-success">
-                  <TrendingDown className="size-4" />
-                  Save {formatCurrency(c.potentialSavings)} / {c.baseUnit ?? 'unit'}
-                </div>
-              )}
-            </div>
+              <div className="flex items-center gap-3">
+                {c.potentialSavings > 0 && (
+                  <div className="flex items-center gap-1.5 rounded-md bg-success/10 px-3 py-1.5 text-sm font-medium text-success">
+                    <TrendingDown className="size-4" />
+                    Save {formatCurrency(c.potentialSavings)} /{' '}
+                    {c.baseUnit ?? 'unit'}
+                  </div>
+                )}
+                <ChevronDown
+                  className={cn(
+                    'size-5 shrink-0 text-muted-foreground transition-transform',
+                    expanded.has(c.key) && 'rotate-180',
+                  )}
+                />
+              </div>
+            </button>
 
+            {expanded.has(c.key) && (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -465,6 +496,7 @@ export function CompareView({
                 })}
               </TableBody>
             </Table>
+            )}
           </Card>
         ))}
         <div className="rounded-lg border border-border bg-card">
