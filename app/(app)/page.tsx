@@ -1,17 +1,21 @@
 import { PageHeader } from '@/components/page-header'
 import { OverviewView } from '@/components/overview-view'
+import { RemovalRequestsAlert } from '@/components/removal-requests-alert'
 import {
   getDashboardStats,
   getLocationComparisons,
   getProductComparisons,
 } from '@/app/actions/comparisons'
+import { getPendingRemovalRequests } from '@/app/actions/removal-requests'
 
 export default async function OverviewPage() {
-  const [stats, comparisons, locationComparisons] = await Promise.all([
-    getDashboardStats(),
-    getProductComparisons(),
-    getLocationComparisons(),
-  ])
+  const [stats, comparisons, locationComparisons, removalRequests] =
+    await Promise.all([
+      getDashboardStats(),
+      getProductComparisons(),
+      getLocationComparisons(),
+      getPendingRemovalRequests(),
+    ])
 
   return (
     <>
@@ -19,6 +23,9 @@ export default async function OverviewPage() {
         title="Overview"
         description="Your sourcing snapshot — savings opportunities and cost by location."
       />
+      <div className="flex flex-col gap-6 p-6 pb-0">
+        <RemovalRequestsAlert requests={removalRequests} />
+      </div>
       <OverviewView
         stats={stats}
         topComparisons={comparisons.slice(0, 6)}

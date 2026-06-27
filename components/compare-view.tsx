@@ -3,9 +3,20 @@
 import { useMemo, useState, useTransition } from 'react'
 import type { ProductComparison, PriceRow } from '@/app/actions/comparisons'
 import { setFreightEstimate } from '@/app/actions/prices'
+import { submitRemovalRequest } from '@/app/actions/removal-requests'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import {
   Table,
   TableBody,
@@ -31,6 +42,7 @@ import {
   ChevronDown,
   GitCompareArrows,
   Layers,
+  MinusCircle,
   Search,
   TrendingDown,
   TriangleAlert,
@@ -58,6 +70,10 @@ export function CompareView({
       return next
     })
   }
+
+  // The offer the user is requesting to remove from its match, if any. Opening
+  // the dialog stashes the target product so the reason prompt can submit it.
+  const [removalTarget, setRemovalTarget] = useState<PriceRow | null>(null)
 
   // Count offers per family across the whole catalog so we only show buttons
   // for families that actually exist, and can label each with its offer count.
@@ -321,6 +337,9 @@ export function CompareView({
                   </TableHead>
                   <TableHead>Effective</TableHead>
                   <TableHead className="text-right">Status</TableHead>
+                  <TableHead className="text-right">
+                    <span className="sr-only">Actions</span>
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -491,6 +510,20 @@ export function CompareView({
                           <span className="text-muted-foreground">—</span>
                         )}
                       </TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-muted-foreground hover:text-destructive"
+                          onClick={() => setRemovalTarget(o)}
+                          title="Request that this item be removed from its match"
+                        >
+                          <MinusCircle className="size-4" />
+                          <span className="sr-only">
+                            Request removal of {o.productName}
+                          </span>
+                        </Button>
+                      </TableCell>
                     </TableRow>
                   )
                 })}
@@ -510,7 +543,119 @@ export function CompareView({
         </div>
       </div>
       )}
+
+      <RemovalRequestDialog
+        offer={removalTarget}
+        onClose={() => setRemovalTarget(null)}
+      />
     </div>
+  )
+}
+
+// Dialog that collects a reason and submits a request to remove a product from
+// its match. Any signed-in user can submit; an admin approves it later.
+function RemovalRequestDialog({
+  offer,
+  onClose,
+}: {
+  offer: PriceRow | null
+  onClose: () => void
+}) {
+  const [reason, setReason] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [done, setDone] = useState(false)
+  const [isPending, startTransition] = useTransition()
+
+  // Reset transient state whenever a new target opens the dialog.
+  const open = offer !== null
+  function handleOpenChange(next: boolean) {
+    if (!next) {
+      onClose()
+      setReason('')
+      setError(null)
+      setDone(false)
+    }
+  }
+
+  function submit() {
+    if (!offer) return
+    const trimmed = reason.trim()
+    if (!trimmed) {
+      setError('Please enter a reason for the removal request.')
+      return
+    }
+    setError(null)
+    startTransition(async () => {
+      try {
+        await submitRemovalRequest(offer.productId, trimmed)
+        setDone(true)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not submit request.')
+      }
+    })
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Request match removal</DialogTitle>
+          <DialogDescription>
+            {done
+              ? 'Your request has been submitted for admin review.'
+              : 'Ask an admin to remove this item from its match. Tell them why — this also helps train future matching.'}
+          </DialogDescription>
+        </DialogHeader>
+
+        {!done && offer && (
+          <div className="flex flex-col gap-3">
+            <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+              <span className="font-medium text-foreground">
+                {offer.productName}
+              </span>
+              <span className="block text-muted-foreground">
+                {offer.vendorName}
+              </span>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="removal-reason">Reason</Label>
+              <Textarea
+                id="removal-reason"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="e.g. This is a different product than the others in this group."
+                rows={3}
+                autoFocus
+              />
+            </div>
+            {error && (
+              <p className="text-sm text-destructive" role="alert">
+                {error}
+              </p>
+            )}
+          </div>
+        )}
+
+        <DialogFooter>
+          {done ? (
+            <Button onClick={() => handleOpenChange(false)}>Close</Button>
+          ) : (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => handleOpenChange(false)}
+                disabled={isPending}
+              >
+                Cancel
+              </Button>
+              <Button onClick={submit} disabled={isPending}>
+                {isPending ? 'Submitting…' : 'Submit request'}
+              </Button>
+            </>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
