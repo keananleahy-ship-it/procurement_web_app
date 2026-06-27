@@ -114,6 +114,30 @@ export const matchRejectionFeedback = pgTable('match_rejection_feedback', {
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 
+// A request, raised by any signed-in user from the compare page, to remove a
+// product from its confirmed match. It is queued for an admin to approve (which
+// unlinks the product and all its pack sizes from the canonical item, exactly
+// like a Match Verification reject) or deny. The reason is captured up front so
+// admins have context and so approval can feed it into the rejection feedback.
+export const matchRemovalRequests = pgTable('match_removal_requests', {
+  id: serial('id').primaryKey(),
+  // who asked for the removal (snapshot of name for display stability)
+  requestedByUserId: text('requestedByUserId').notNull(),
+  requestedByName: text('requestedByName'),
+  productId: integer('productId').notNull(),
+  productName: text('productName').notNull(),
+  // the canonical item the product is currently matched to, if any
+  canonicalItemId: integer('canonicalItemId'),
+  canonicalItemName: text('canonicalItemName'),
+  reason: text('reason').notNull(),
+  // 'pending' | 'approved' | 'denied'
+  status: text('status').notNull().default('pending'),
+  resolvedByUserId: text('resolvedByUserId'),
+  resolvedByName: text('resolvedByName'),
+  resolvedAt: timestamp('resolvedAt'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
 export const products = pgTable('products', {
   id: serial('id').primaryKey(),
   userId: text('userId').notNull(),
