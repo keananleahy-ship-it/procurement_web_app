@@ -481,6 +481,18 @@ export function CompareView({
                               ex-freight
                             </span>
                           </span>
+                        ) : o.unitConverted ? (
+                          <span
+                            title={`Quoted ${formatCurrency(o.pricePerBaseUnit, o.currency)}/${o.baseUnit ?? 'unit'}; normalized to per ${c.baseUnit ?? 'base unit'} using gear-oil density`}
+                          >
+                            {formatCurrency(
+                              o.comparablePricePerBaseUnit,
+                              o.currency,
+                            )}
+                            <span className="ml-1 text-[11px] font-normal text-muted-foreground/70">
+                              ≈ from /{o.baseUnit ?? 'unit'}
+                            </span>
+                          </span>
                         ) : (
                           formatCurrency(o.pricePerBaseUnit, o.currency)
                         )}
@@ -514,6 +526,15 @@ export function CompareView({
                         ) : isWorst ? (
                           <Badge variant="outline" className="text-destructive">
                             Highest
+                          </Badge>
+                        ) : o.unitConverted ? (
+                          <Badge
+                            variant="outline"
+                            className="gap-1 text-muted-foreground"
+                            title={`Normalized from per ${o.baseUnit ?? 'unit'} to per ${c.baseUnit ?? 'base unit'} (gear-oil density) so it can be compared`}
+                          >
+                            <GitCompareArrows className="size-3" />
+                            Converted
                           </Badge>
                         ) : (
                           <span className="text-muted-foreground">—</span>

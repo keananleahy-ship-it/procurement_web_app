@@ -129,6 +129,92 @@ export function isPerBaseUnitPrice(args: {
   return u === b
 }
 
+// Approximate density of petroleum gear oil, expressed as pounds per US gallon
+// (gear oils run ~0.90 specific gravity, i.e. ~7.5 lb/gal). This is the bridge
+// used to compare a gear oil quoted per pound against one quoted per gallon. It
+// is an industry approximation and is applied ONLY to gear oils (see
+// isGearOilName) so grease and every other item are never silently converted.
+export const GEAR_OIL_LB_PER_GAL = 7.5
+
+// Physical size of each measure in its dimension's reference unit:
+// volume in litres, weight in kilograms. Used to derive conversion factors.
+const VOLUME_IN_LITRES: Record<string, number> = {
+  gallon: 3.785411784,
+  quart: 0.946352946,
+  litre: 1,
+  millilitre: 0.001,
+}
+const WEIGHT_IN_KG: Record<string, number> = {
+  pound: 0.45359237,
+  kilogram: 1,
+  gram: 0.001,
+  ounce: 0.028349523125,
+}
+
+type MeasureDimension = 'volume' | 'weight'
+function measureDimension(canonical: string): MeasureDimension | null {
+  if (canonical in VOLUME_IN_LITRES) return 'volume'
+  if (canonical in WEIGHT_IN_KG) return 'weight'
+  return null
+}
+
+// Factor to multiply a price quoted PER `fromUnit` by so it is expressed PER
+// `toUnit`. Equivalently, "how many `fromUnit` fit in one `toUnit`" — a larger
+// target unit costs proportionally more (e.g. $/lb -> $/gal multiplies by the
+// pounds in a gallon). Returns null when conversion isn't possible:
+//   - either side is empty, a count, or a container word, or
+//   - a weight<->volume crossing without a density (lbPerGal) supplied.
+// Same-unit returns 1; same-dimension uses the physical size ratio; crossing
+// weight and volume uses the supplied density.
+export function pricePerUnitFactor(
+  fromUnit: string | null | undefined,
+  toUnit: string | null | undefined,
+  opts?: { lbPerGal?: number },
+): number | null {
+  const from = normalizeUom(fromUnit)
+  const to = normalizeUom(toUnit)
+  if (from === '' || to === '') return null
+  if (from === to) return 1
+  if (!isMeasureUom(fromUnit) || !isMeasureUom(toUnit)) return null
+
+  const fromDim = measureDimension(from)
+  const toDim = measureDimension(to)
+  if (!fromDim || !toDim) return null
+
+  if (fromDim === toDim) {
+    const table = fromDim === 'volume' ? VOLUME_IN_LITRES : WEIGHT_IN_KG
+    return table[to] / table[from]
+  }
+
+  // Cross-dimension (weight <-> volume) needs a density.
+  const lbPerGal = opts?.lbPerGal
+  if (!lbPerGal || lbPerGal <= 0) return null
+  const kgPerLitre =
+    (lbPerGal * WEIGHT_IN_KG.pound) / VOLUME_IN_LITRES.gallon
+  if (fromDim === 'weight' && toDim === 'volume') {
+    // weight units per volume unit = (volume size in L * density) / weight size in kg
+    return (VOLUME_IN_LITRES[to] * kgPerLitre) / WEIGHT_IN_KG[from]
+  }
+  // volume units per weight unit (the reciprocal arrangement)
+  return WEIGHT_IN_KG[to] / (VOLUME_IN_LITRES[from] * kgPerLitre)
+}
+
+// Whether a product/canonical name denotes a GEAR OIL, which vendors quote in a
+// mix of per-pound and per-gallon and therefore must be normalized to a single
+// unit. Grease is deliberately excluded: it is consistently priced per pound
+// across vendors and must stay that way, so any name mentioning "grease" is
+// never treated as a gear oil even if it also says "gear".
+export function isGearOilName(
+  ...names: (string | null | undefined)[]
+): boolean {
+  const text = names
+    .filter((n): n is string => !!n)
+    .join(' ')
+    .toLowerCase()
+  if (text.includes('grease')) return false
+  return text.includes('gear')
+}
+
 // Whether a row's price basis is genuinely ambiguous and worth a human's
 // confirmation at import time. It is ambiguous only when ALL hold:
 //   - the row packs more than one base unit per selling unit (so dividing vs

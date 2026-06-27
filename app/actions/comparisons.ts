@@ -10,7 +10,12 @@ import {
   vendors,
 } from '@/lib/db/schema'
 import { requireUser } from '@/lib/roles'
-import { isPerBaseUnitPrice } from '@/lib/uom'
+import {
+  GEAR_OIL_LB_PER_GAL,
+  isGearOilName,
+  isPerBaseUnitPrice,
+  pricePerUnitFactor,
+} from '@/lib/uom'
 import { eq } from 'drizzle-orm'
 
 export type PriceRow = {
@@ -60,9 +65,16 @@ export type PriceRow = {
   // false when this offer is excluded from ranking (unit mismatch or missing
   // freight); set during grouping. Defaults true on a standalone row.
   comparable: boolean
-  // landed cost per BASE unit = landedUnitCost / packSize. This is the
-  // apples-to-apples figure used to rank offers across pack sizes.
+  // landed cost per BASE unit = landedUnitCost / packSize, in THIS offer's own
+  // base unit. Shown as the vendor's native figure.
   pricePerBaseUnit: number
+  // pricePerBaseUnit expressed in the GROUP's base unit — identical to
+  // pricePerBaseUnit unless a unit conversion was applied (gear oils only).
+  // This is the value used to rank offers and compute savings.
+  comparablePricePerBaseUnit: number
+  // true when pricePerBaseUnit was converted into the group's base unit (e.g. a
+  // gear oil quoted per pound normalized to per gallon). Set during grouping.
+  unitConverted: boolean
   // total acquisition cost to fulfill the minimum order
   acquisitionCost: number
   // the date this pricing took effect (from its import, else entry date)
@@ -281,6 +293,10 @@ async function getAllRows(): Promise<PriceRow[]> {
       unitMismatch: false,
       comparable: true,
       pricePerBaseUnit,
+      // default: comparable figure equals the native one; grouping overrides
+      // this for gear oils that need cross-unit normalization.
+      comparablePricePerBaseUnit: pricePerBaseUnit,
+      unitConverted: false,
       acquisitionCost,
       effectiveDate:
         r.effectiveDate ??
@@ -392,28 +408,59 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
     // can't be compared apples-to-apples (e.g. priced per 'each' vs per 'pair').
     const groupUnit = norm(baseUnit)
 
+    // Gear oils are quoted per pound by some vendors and per gallon by others,
+    // so for these groups we normalize differing units into the group's base
+    // unit (using gear-oil density to bridge weight<->volume) rather than
+    // excluding them. Grease and everything else are untouched: grease is
+    // consistently per pound, and isGearOilName explicitly excludes it.
+    const isGearOil = isGearOilName(
+      displayName,
+      ...offers.map((o) => o.productName),
+    )
+
     // Only treat missing freight as disqualifying when the group also has at
     // least one freight-complete offer (delivered, or FOB with freight) to
     // compare against. A group of all-FOB-no-freight still ranks among itself.
     const hasFreightComplete = offers.some((o) => !o.freightIncomplete)
 
     const flagged = offers.map((o) => {
-      const unitMismatch =
+      let unitMismatch =
         !!groupUnit && !!norm(o.baseUnit) && norm(o.baseUnit) !== groupUnit
+      let comparablePricePerBaseUnit = o.pricePerBaseUnit
+      let unitConverted = false
+
+      // For gear oils, try to convert a differing unit into the group's base
+      // unit so it ranks alongside the rest instead of being excluded.
+      if (unitMismatch && isGearOil) {
+        const factor = pricePerUnitFactor(o.baseUnit, baseUnit, {
+          lbPerGal: GEAR_OIL_LB_PER_GAL,
+        })
+        if (factor !== null) {
+          comparablePricePerBaseUnit = o.pricePerBaseUnit * factor
+          unitConverted = true
+          unitMismatch = false
+        }
+      }
+
       const freightExcluded = o.freightIncomplete && hasFreightComplete
       return {
         ...o,
         unitMismatch,
+        unitConverted,
+        comparablePricePerBaseUnit,
         // not directly comparable for ranking: wrong unit, or understated cost
         comparable: !unitMismatch && !freightExcluded,
       }
     })
 
-    // Rank only comparable offers by normalized per-base-unit cost. Excluded
-    // offers still display, but sort after and never win best/worst.
+    // Rank only comparable offers by normalized per-base-unit cost (which for
+    // gear oils may be a converted figure). Excluded offers still display, but
+    // sort after and never win best/worst.
     const comparable = flagged
       .filter((o) => o.comparable)
-      .sort((a, b) => a.pricePerBaseUnit - b.pricePerBaseUnit)
+      .sort(
+        (a, b) => a.comparablePricePerBaseUnit - b.comparablePricePerBaseUnit,
+      )
     const excluded = flagged.filter((o) => !o.comparable)
     const offersSorted = [...comparable, ...excluded]
     const best = comparable[0] ?? null
@@ -426,7 +473,9 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
     )
 
     const potentialSavings =
-      best && worst ? worst.pricePerBaseUnit - best.pricePerBaseUnit : 0
+      best && worst
+        ? worst.comparablePricePerBaseUnit - best.comparablePricePerBaseUnit
+        : 0
 
     // Look up this group's volume: canonical groups (key 'c…') by canonical id,
     // standalone products (key 'p…') by product id.
