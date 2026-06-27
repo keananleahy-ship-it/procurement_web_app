@@ -343,7 +343,13 @@ export function CompareView({
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">
                         {o.packSize === 1 ? (
-                          <span className="text-muted-foreground/60">—</span>
+                          o.priceBasis === 'base' ? (
+                            <span title={`Priced in bulk per ${o.baseUnit ?? 'unit'}`}>
+                              Bulk
+                            </span>
+                          ) : (
+                            <span title={`Single ${o.unit ?? 'unit'}`}>×1</span>
+                          )
                         ) : (
                           <span title={`${o.packSize} ${o.baseUnit ?? 'units'} per ${o.unit ?? 'unit'}`}>
                             ×{o.packSize}
