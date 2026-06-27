@@ -191,17 +191,27 @@ export async function POST(req: NextRequest) {
 
   if (rows.length > 0) {
     await db.insert(importRows).values(
-      rows.map((r) => ({
+      rows.map((r) => {
+        const unit = r.unit?.trim() || null
+        const baseUnit = r.baseUnit?.trim() || r.unit?.trim() || null
+        // If the price is quoted in the same unit of measure as the base unit
+        // (e.g. priced in GAL with a GAL base unit), it is inherently per base
+        // unit — record it as 'base' so it is never divided by pack size.
+        const uomMatchesBase =
+          !!unit && !!baseUnit && unit.toLowerCase() === baseUnit.toLowerCase()
+        const priceBasis =
+          r.priceBasis === 'base' || uomMatchesBase ? 'base' : 'pack'
+        return {
         userId,
         importId,
         productName: r.productName.trim(),
         vendorName: r.vendorName?.trim() || extraction.defaultVendorName || null,
         sku: r.sku?.trim() || null,
-        unit: r.unit?.trim() || null,
+        unit,
         packSize:
           r.packSize && r.packSize > 0 ? String(r.packSize) : '1',
-        baseUnit: r.baseUnit?.trim() || r.unit?.trim() || null,
-        priceBasis: r.priceBasis === 'base' ? 'base' : 'pack',
+        baseUnit,
+        priceBasis,
         category: r.category?.trim() || null,
         unitPrice: toNumericString(r.unitPrice),
         shippingCost: toNumericString(r.shippingCost) ?? '0',
@@ -210,7 +220,8 @@ export async function POST(req: NextRequest) {
         minOrderQty: r.minOrderQty && r.minOrderQty > 0 ? Math.round(r.minOrderQty) : 1,
         currency: (r.currency?.trim() || 'USD').toUpperCase(),
         include: true,
-      })),
+        }
+      }),
     )
   }
 

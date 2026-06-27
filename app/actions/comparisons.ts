@@ -151,17 +151,33 @@ async function getAllRows(): Promise<PriceRow[]> {
     .map((r) => {
     const rawPackSize = Number(r.packSize ?? 1)
     const packSize = rawPackSize > 0 ? rawPackSize : 1
-    const priceBasis = r.priceBasis === 'base' ? 'base' : 'pack'
 
-    // A 'base' quote is already per base unit (e.g. $/gallon). Scale it UP to a
-    // per-SELLING-UNIT price so the freight / min-order / landed-cost math below
-    // (all per selling unit) stays correct; dividing by packSize afterwards then
-    // recovers the original per-base-unit figure WITHOUT dividing it a 2nd time.
-    // A 'pack' quote is already per selling unit, so it is used as-is.
-    const priceScale = priceBasis === 'base' ? packSize : 1
+    // Decide whether the quoted price is already per BASE UNIT (e.g. $/gallon).
+    // Two signals, either of which means "do not divide by pack size again":
+    //  1. an explicit priceBasis === 'base' (set at import / manual entry), or
+    //  2. the pricing unit of measure equals the base unit of measure — when a
+    //     price is quoted in GAL and the base unit is also GAL, the figure is
+    //     inherently per gallon and packSize only describes the container size.
+    // This UOM check is the authoritative guard: it corrects legacy rows that
+    // were stored as 'pack' but are really per-gallon (e.g. a 5-gal pail at
+    // $18.28/gal that must stay $18.28/gal, not be divided to $3.66/gal).
+    const unitUom = (r.unit ?? '').trim().toLowerCase()
+    const baseUom = (r.baseUnit ?? '').trim().toLowerCase()
+    const uomMatchesBase = unitUom !== '' && unitUom === baseUom
+    const isPerBaseUnit = r.priceBasis === 'base' || uomMatchesBase
+    const priceBasis = isPerBaseUnit ? 'base' : 'pack'
+
+    // A per-base quote is scaled UP to a per-SELLING-UNIT price so the freight /
+    // min-order / landed-cost math below (all per selling unit) stays correct;
+    // dividing by packSize afterwards then recovers the original per-base-unit
+    // figure WITHOUT dividing it a second time. A 'pack' quote is already per
+    // selling unit, so it is used as-is.
+    const priceScale = isPerBaseUnit ? packSize : 1
 
     const unitPrice = Number(r.unitPrice ?? 0) * priceScale
-    const shippingCost = Number(r.shippingCost ?? 0)
+    // Freight shares the price's basis: a per-base ($/gal) quote carries per-base
+    // freight, so scale it up too and it divides back cleanly per base unit.
+    const shippingCost = Number(r.shippingCost ?? 0) * priceScale
     const minOrderQty = Number(r.minOrderQty ?? 1) || 1
     const freightTerms = r.freightTerms ?? 'fob'
     const freightEstimated = Boolean(r.freightEstimated)
