@@ -136,9 +136,14 @@ export function MatchingView({
     const { productId } = rejectTarget
     const note = rejectNote
     startReject(async () => {
-      await rejectMatch(productId, note)
+      const res = await rejectMatch(productId, note)
       setRejectTarget(null)
       setRejectNote('')
+      setCascadeMsg(
+        res.rejected > 1
+          ? `Rejected all ${res.rejected} pack sizes of this item.`
+          : null,
+      )
     })
   }
 
@@ -487,7 +492,7 @@ export function MatchingView({
                               productId={r.productId}
                               canonicalItems={canonicalItems}
                               disabled={isPending || noCanonical}
-                              onAssign={(id, cid) => run(() => assignMatch(id, cid))}
+                              onAssign={(id, cid) => assign(id, cid)}
                             />
                           </div>
                         </TableCell>
@@ -524,7 +529,8 @@ export function MatchingView({
                   <span className="font-medium text-foreground">
                     {rejectTarget.canonicalItemName}
                   </span>
-                  . Your note trains future suggestions.
+                  . This rejects every pack size of the item, and your note
+                  trains future suggestions.
                 </>
               ) : (
                 <>
@@ -532,7 +538,8 @@ export function MatchingView({
                   <span className="font-medium text-foreground">
                     {rejectTarget?.productName}
                   </span>{' '}
-                  is wrong. Your note trains future suggestions.
+                  is wrong. This rejects every pack size of the item, and your
+                  note trains future suggestions.
                 </>
               )}
             </DialogDescription>

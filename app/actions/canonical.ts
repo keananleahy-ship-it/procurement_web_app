@@ -252,35 +252,39 @@ export async function confirmMatch(productId: number) {
 export async function rejectMatch(productId: number, note?: string) {
   const { id: userId } = await requireEditor()
 
-  // Capture feedback BEFORE clearing the suggestion, so we record which
-  // canonical item the user said was wrong (and why). This row persists even
-  // if the product is later re-matched, and feeds the AI pass.
-  const trimmedNote = (note ?? '').trim()
-  if (trimmedNote) {
-    const [product] = await db
-      .select()
-      .from(products)
-      .where(eq(products.id, productId))
+  // Read the product (and its current canonical item) BEFORE clearing the
+  // suggestion. We need the canonical id both to record feedback and to cascade
+  // the rejection to the item's other pack sizes.
+  const [product] = await db
+    .select()
+    .from(products)
+    .where(eq(products.id, productId))
+    .limit(1)
+
+  const canonicalItemId = product?.canonicalItemId ?? null
+  let canonicalItemName: string | null = null
+  if (canonicalItemId !== null) {
+    const [ci] = await db
+      .select({ name: canonicalItems.name })
+      .from(canonicalItems)
+      .where(eq(canonicalItems.id, canonicalItemId))
       .limit(1)
-    if (product) {
-      let canonicalItemName: string | null = null
-      if (product.canonicalItemId !== null) {
-        const [ci] = await db
-          .select({ name: canonicalItems.name })
-          .from(canonicalItems)
-          .where(eq(canonicalItems.id, product.canonicalItemId))
-          .limit(1)
-        canonicalItemName = ci?.name ?? null
-      }
-      await db.insert(matchRejectionFeedback).values({
-        userId,
-        productId,
-        productName: product.name,
-        canonicalItemId: product.canonicalItemId,
-        canonicalItemName,
-        note: trimmedNote.slice(0, 1000),
-      })
-    }
+    canonicalItemName = ci?.name ?? null
+  }
+
+  // Capture feedback (if a note was given) recording which canonical item the
+  // user said was wrong and why. This row persists even if the product is later
+  // re-matched, and feeds the AI pass.
+  const trimmedNote = (note ?? '').trim()
+  if (trimmedNote && product) {
+    await db.insert(matchRejectionFeedback).values({
+      userId,
+      productId,
+      productName: product.name,
+      canonicalItemId,
+      canonicalItemName,
+      note: trimmedNote.slice(0, 1000),
+    })
   }
 
   await db
@@ -292,9 +296,37 @@ export async function rejectMatch(productId: number, note?: string) {
       matchReason: null,
     })
     .where(eq(products.id, productId))
+
+  // Rejecting one pack size rejects them all: every other product still awaiting
+  // review that was matched to the same canonical item is also rejected and
+  // unlinked. Already-confirmed products are left untouched, so a deliberate
+  // confirmation on another pack size is never overturned by a rejection.
+  let cascaded = 0
+  if (canonicalItemId !== null) {
+    const siblings = await db
+      .update(products)
+      .set({
+        matchStatus: 'rejected',
+        canonicalItemId: null,
+        matchScore: null,
+        matchReason: null,
+      })
+      .where(
+        and(
+          eq(products.canonicalItemId, canonicalItemId),
+          eq(products.matchStatus, 'suggested'),
+        ),
+      )
+      .returning({ id: products.id })
+    cascaded = siblings.length
+  }
+
   revalidatePath('/matching')
   revalidatePath('/compare')
   revalidatePath('/')
+  // `rejected` counts every product moved to rejected: the target plus any other
+  // pending pack sizes of the same item.
+  return { rejected: 1 + cascaded }
 }
 
 /** Manually assign (or reassign) a product to a canonical item and confirm it. */
