@@ -199,6 +199,99 @@ export async function generateAiSuggestions() {
   return { suggested, cleared }
 }
 
+/**
+ * Reconsider rejected products through the AI pass, using the rejection notes
+ * the user left. A product is re-surfaced to the review list ('suggested') only
+ * when the AI finds a confident match to a DIFFERENT canonical item — never one
+ * the product was already rejected from. Products without a better match stay
+ * rejected. This is how user feedback on a rejection updates the recommendation.
+ */
+export async function rematchRejected() {
+  await requireEditor()
+  const [items, prods, feedback] = await Promise.all([
+    db.select().from(canonicalItems),
+    db.select().from(products),
+    db
+      .select()
+      .from(matchRejectionFeedback)
+      .orderBy(desc(matchRejectionFeedback.createdAt))
+      .limit(500),
+  ])
+
+  const rejected = prods.filter((p) => p.matchStatus === 'rejected')
+  const canonicalOptions = items.map((i) => ({
+    id: i.id,
+    name: i.name,
+    category: i.category,
+    baseUnit: i.baseUnit,
+  }))
+  if (rejected.length === 0 || canonicalOptions.length === 0) {
+    return { resuggested: 0 }
+  }
+
+  // For each product, the set of canonical items it was previously rejected
+  // from. The new suggestion must avoid these so we never re-propose a pairing
+  // the user already turned down.
+  const rejectedByProduct = new Map<number, Set<number>>()
+  for (const f of feedback) {
+    if (f.canonicalItemId === null) continue
+    if (!rejectedByProduct.has(f.productId)) {
+      rejectedByProduct.set(f.productId, new Set())
+    }
+    rejectedByProduct.get(f.productId)!.add(f.canonicalItemId)
+  }
+
+  const matches = await aiMatchProducts(
+    rejected.map((p) => ({
+      id: p.id,
+      name: p.name,
+      category: p.category,
+      unit: p.unit,
+      baseUnit: p.baseUnit,
+    })),
+    canonicalOptions,
+    feedback.map((f) => ({
+      productName: f.productName,
+      rejectedCanonicalName: f.canonicalItemName,
+      note: f.note,
+    })),
+  )
+
+  const validCanonicalIds = new Set(canonicalOptions.map((c) => c.id))
+  const byId = new Map(matches.map((m) => [m.productId, m]))
+
+  let resuggested = 0
+  for (const p of rejected) {
+    const m = byId.get(p.id)
+    const previouslyRejected = rejectedByProduct.get(p.id) ?? new Set<number>()
+    const isNewConfidentMatch =
+      m &&
+      m.canonicalItemId !== null &&
+      validCanonicalIds.has(m.canonicalItemId) &&
+      !previouslyRejected.has(m.canonicalItemId) &&
+      m.confidence >= 0.5
+
+    if (!isNewConfidentMatch) continue
+
+    await db
+      .update(products)
+      .set({
+        canonicalItemId: m!.canonicalItemId,
+        matchStatus: 'suggested',
+        matchScore: Math.max(0, Math.min(1, m!.confidence)).toFixed(4),
+        matchMethod: 'ai',
+        matchReason: m!.reason?.slice(0, 280) ?? null,
+      })
+      .where(eq(products.id, p.id))
+    resuggested++
+  }
+
+  revalidatePath('/matching')
+  revalidatePath('/compare')
+  revalidatePath('/')
+  return { resuggested }
+}
+
 export async function confirmMatch(productId: number) {
   await requireEditor()
 

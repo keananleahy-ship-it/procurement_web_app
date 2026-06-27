@@ -8,6 +8,7 @@ import {
   generateAiSuggestions,
   generateSuggestions,
   rejectMatch,
+  rematchRejected,
   resetMatch,
 } from '@/app/actions/canonical'
 import { Button } from '@/components/ui/button'
@@ -45,6 +46,7 @@ import {
   Check,
   X,
   RotateCcw,
+  RefreshCw,
   Sparkles,
   ListChecks,
   AlertCircle,
@@ -188,6 +190,32 @@ export function MatchingView({
         res.confirmed > 1
           ? `Assigned and confirmed all ${res.confirmed} pack sizes of this item.`
           : null,
+      )
+    })
+  }
+
+  // Re-match rejected products using the notes left at rejection time. Any that
+  // get a new, confident suggestion move back into "Needs review".
+  const [rematchPending, startRematch] = useTransition()
+  const [rematchMsg, setRematchMsg] = useState<string | null>(null)
+
+  const rejectedCount = useMemo(
+    () => groups.other.filter((r) => r.matchStatus === 'rejected').length,
+    [groups.other],
+  )
+
+  function runRematch() {
+    setRematchMsg(null)
+    startRematch(async () => {
+      const res = await rematchRejected()
+      setRematchMsg(
+        res.resuggested > 0
+          ? `Re-matched ${res.resuggested} rejected ${
+              res.resuggested === 1 ? 'item' : 'items'
+            } — review ${
+              res.resuggested === 1 ? 'it' : 'them'
+            } under “Needs review”.`
+          : 'No better matches found for the rejected items yet.',
       )
     })
   }
@@ -436,7 +464,38 @@ export function MatchingView({
         </TabsContent>
 
         {/* Unmatched / rejected */}
-        <TabsContent value="other" className="mt-4">
+        <TabsContent value="other" className="mt-4 flex flex-col gap-3">
+          {canEdit && rejectedCount > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 px-4 py-3">
+              <p className="text-sm text-muted-foreground">
+                {rejectedCount} rejected{' '}
+                {rejectedCount === 1 ? 'item' : 'items'}. Re-match uses the notes
+                you left to suggest a different canonical item.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={rematchPending}
+                onClick={runRematch}
+              >
+                <RefreshCw
+                  className={cn('size-4', rematchPending && 'animate-spin')}
+                />
+                {rematchPending ? 'Re-matching…' : 'Re-match with feedback'}
+              </Button>
+            </div>
+          )}
+
+          {rematchMsg && (
+            <div
+              role="status"
+              className="flex items-center gap-2 rounded-md border border-border bg-card px-4 py-3 text-sm text-foreground"
+            >
+              <Sparkles className="size-4 shrink-0 text-accent-foreground" />
+              {rematchMsg}
+            </div>
+          )}
+
           {groups.other.length === 0 ? (
             <EmptyState
               icon={ListChecks}
