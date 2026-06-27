@@ -34,12 +34,14 @@ export type StagingRow = {
   productName: string
   vendorName: string | null
   unitPrice: string | null
+  priceBasis: string
   shippingCost: string
   freightEstimated: boolean
   freightTerms: string
   deliveredPrice: string | null
   minOrderQty: number
   currency: string
+  unit: string | null
   packSize: string
   baseUnit: string | null
   include: boolean
@@ -163,6 +165,7 @@ export function ImportReview({
               <TableHead className="min-w-40">Vendor</TableHead>
               <TableHead className="min-w-36">Freight</TableHead>
               <TableHead className="text-right">Unit price</TableHead>
+              <TableHead className="min-w-28">Priced per</TableHead>
               <TableHead className="text-right">Freight / unit</TableHead>
               <TableHead className="text-right">Delivered</TableHead>
               <TableHead className="text-right">Min qty</TableHead>
@@ -247,6 +250,34 @@ export function ImportReview({
                         persist(r.id, { unitPrice: e.target.value === '' ? null : e.target.value })
                       }
                     />
+                  </TableCell>
+                  <TableCell>
+                    <Select
+                      value={r.priceBasis === 'base' ? 'base' : 'pack'}
+                      onValueChange={(v) => {
+                        const basis = v === 'base' ? 'base' : 'pack'
+                        patchRow(r.id, { priceBasis: basis })
+                        persist(r.id, { priceBasis: basis })
+                      }}
+                    >
+                      <SelectTrigger className="h-8">
+                        <SelectValue>
+                          {(value: string) =>
+                            value === 'base'
+                              ? `per ${r.baseUnit?.trim() || 'base unit'}`
+                              : `per ${r.unit?.trim() || 'pack'}`
+                          }
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="pack">
+                          Per selling unit ({r.unit?.trim() || 'pack'})
+                        </SelectItem>
+                        <SelectItem value="base">
+                          Per base unit ({r.baseUnit?.trim() || 'e.g. gallon'})
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-col items-end gap-1">

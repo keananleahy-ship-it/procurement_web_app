@@ -149,8 +149,14 @@ export const vendorPrices = pgTable('vendor_prices', {
   vendorId: integer('vendorId').notNull(),
   locationId: integer('locationId'),
   unitPrice: numeric('unitPrice', { precision: 12, scale: 2 }).notNull(),
-  // Inbound freight expressed PER SELLING UNIT (same basis as unitPrice). Per-
-  // order/per-shipment freight is converted to per-unit at import or entry.
+  // What unitPrice is quoted per:
+  //  'pack' -> price is per SELLING UNIT (a drum/case/jug); normalize to a
+  //            per-base-unit cost by dividing by packSize.
+  //  'base' -> price is ALREADY per BASE UNIT (e.g. $/gallon); it must NOT be
+  //            divided by packSize again.
+  priceBasis: text('priceBasis').notNull().default('pack'),
+  // Inbound freight expressed PER SELLING UNIT (same basis as a 'pack' price).
+  // Per-order/per-shipment freight is converted to per-unit at import or entry.
   shippingCost: numeric('shippingCost', { precision: 12, scale: 2 })
     .notNull()
     .default('0'),
@@ -207,6 +213,9 @@ export const importRows = pgTable('import_rows', {
   unit: text('unit'),
   category: text('category'),
   unitPrice: numeric('unitPrice', { precision: 12, scale: 2 }),
+  // What unitPrice is quoted per: 'pack' (per selling unit, divide by packSize)
+  // or 'base' (already per base unit, e.g. $/gallon — do not divide again).
+  priceBasis: text('priceBasis').notNull().default('pack'),
   // Inbound freight per selling unit (converted from per-order at extraction).
   shippingCost: numeric('shippingCost', { precision: 12, scale: 2 })
     .notNull()

@@ -41,7 +41,13 @@ const extractedRowSchema = z.object({
     .number()
     .nullable()
     .describe(
-      'The per-unit price. For delivered terms this is the all-in price; for FOB this is the origin price.',
+      'The price exactly as quoted. For delivered terms this is the all-in price; for FOB this is the origin price. Do NOT convert it — record it as printed and use priceBasis to say what it is per.',
+    ),
+  priceBasis: z
+    .enum(['pack', 'base'])
+    .nullable()
+    .describe(
+      'What unitPrice is quoted PER. Use "base" when the price is per base unit of measure (e.g. "$3.80/gal", "per litre", "per kg", "$/lb", "each"). Use "pack" when the price is for the whole selling unit/container (e.g. "$209 per 55 gal drum", "$48 / case", "per pail", "per box"). If a price column header names a unit of measure (gal, L, kg, lb) it is "base"; if it is for a package/container it is "pack". Default "pack" when unsure.',
     ),
   shippingCost: z
     .number()
@@ -98,6 +104,11 @@ Rules:
   - If freight is already stated per unit, use it as-is.
   - If a price is delivered/landed, freight is already included — set shippingCost to 0.
 - Numbers must be plain numbers without currency symbols or thousands separators.
+- Price basis (priceBasis) — this is critical for correct price normalization:
+  - Set priceBasis to "base" when the quoted price is PER BASE UNIT OF MEASURE: e.g. "$3.80/gal", "$3.80 per gallon", "per litre", "per kg", "$/lb", or a price column whose header is a unit of measure (Gal, L, kg, lb). In this case do NOT multiply or divide the number — record the per-unit figure as-is.
+  - Set priceBasis to "pack" when the quoted price is for the WHOLE selling unit / container: e.g. "$209 per 55-gal drum", "$48/case", "per pail", "per box of 100". The price covers the entire package.
+  - A per-gallon price must NEVER also be treated as a per-drum price. If the document says "55 gal drum — $3.80/gal", set unitPrice 3.80, priceBasis "base", packSize 55, baseUnit "gallon" (the app multiplies as needed).
+  - When unsure, default to "pack".
 - Pack size: infer how many base units are inside one selling unit so prices can be normalized.
   - "box/100", "box of 100", "pack of 50" => packSize is that count, baseUnit "each".
   - "5 L jug", "5L", "5 litre container" => packSize 5, baseUnit "litre".

@@ -28,6 +28,11 @@ export async function createPrice(formData: FormData) {
   const minOrderQty = Number(formData.get('minOrderQty') ?? 1) || 1
   const currency = String(formData.get('currency') ?? 'USD').trim() || 'USD'
 
+  // Whether unitPrice is per selling unit ('pack') or already per base unit
+  // such as $/gallon ('base'). 'base' prices are not divided by pack size.
+  const priceBasis =
+    String(formData.get('priceBasis') ?? 'pack') === 'base' ? 'base' : 'pack'
+
   const freightRaw = String(formData.get('freightTerms') ?? 'fob')
   const freightTerms = ['fob', 'delivered', 'both'].includes(freightRaw)
     ? freightRaw
@@ -53,6 +58,7 @@ export async function createPrice(formData: FormData) {
     vendorId,
     locationId,
     unitPrice,
+    priceBasis,
     shippingCost,
     freightTerms,
     deliveredPrice,

@@ -201,6 +201,7 @@ export async function POST(req: NextRequest) {
         packSize:
           r.packSize && r.packSize > 0 ? String(r.packSize) : '1',
         baseUnit: r.baseUnit?.trim() || r.unit?.trim() || null,
+        priceBasis: r.priceBasis === 'base' ? 'base' : 'pack',
         category: r.category?.trim() || null,
         unitPrice: toNumericString(r.unitPrice),
         shippingCost: toNumericString(r.shippingCost) ?? '0',

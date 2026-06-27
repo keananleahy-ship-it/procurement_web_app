@@ -37,6 +37,7 @@ type RowPatch = {
   productName?: string
   vendorName?: string | null
   unitPrice?: string | null
+  priceBasis?: string
   shippingCost?: string
   freightEstimated?: boolean
   freightTerms?: string
@@ -191,6 +192,7 @@ export async function commitImport(importId: number): Promise<CommitResult> {
       vendorId,
       locationId: imp.locationId,
       unitPrice: r.unitPrice,
+      priceBasis: r.priceBasis === 'base' ? 'base' : 'pack',
       shippingCost: r.shippingCost,
       freightEstimated: r.freightEstimated,
       freightTerms: r.freightTerms,

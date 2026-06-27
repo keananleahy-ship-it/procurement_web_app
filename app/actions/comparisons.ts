@@ -21,7 +21,12 @@ export type PriceRow = {
   vendorName: string
   locationId: number | null
   locationName: string | null
+  // unit price expressed PER SELLING UNIT. For 'base'-basis quotes (e.g.
+  // $/gallon) the stored per-base figure is scaled up by packSize so all the
+  // per-selling-unit math below stays consistent.
   unitPrice: number
+  // 'pack' = quoted per selling unit; 'base' = quoted per base unit ($/gal)
+  priceBasis: string
   // inbound freight per selling unit applied to the landed cost below
   shippingCost: number
   // freight per base unit (shippingCost / packSize), for the freight column
@@ -113,6 +118,7 @@ async function getAllRows(): Promise<PriceRow[]> {
       vendorId: vendorPrices.vendorId,
       locationId: vendorPrices.locationId,
       unitPrice: vendorPrices.unitPrice,
+      priceBasis: vendorPrices.priceBasis,
       shippingCost: vendorPrices.shippingCost,
       freightEstimated: vendorPrices.freightEstimated,
       freightTerms: vendorPrices.freightTerms,
@@ -143,14 +149,25 @@ async function getAllRows(): Promise<PriceRow[]> {
     // Products a reviewer rule marked irrelevant are dropped from comparison.
     .filter((r) => r.matchStatus !== 'excluded')
     .map((r) => {
-    const unitPrice = Number(r.unitPrice ?? 0)
+    const rawPackSize = Number(r.packSize ?? 1)
+    const packSize = rawPackSize > 0 ? rawPackSize : 1
+    const priceBasis = r.priceBasis === 'base' ? 'base' : 'pack'
+
+    // A 'base' quote is already per base unit (e.g. $/gallon). Scale it UP to a
+    // per-SELLING-UNIT price so the freight / min-order / landed-cost math below
+    // (all per selling unit) stays correct; dividing by packSize afterwards then
+    // recovers the original per-base-unit figure WITHOUT dividing it a 2nd time.
+    // A 'pack' quote is already per selling unit, so it is used as-is.
+    const priceScale = priceBasis === 'base' ? packSize : 1
+
+    const unitPrice = Number(r.unitPrice ?? 0) * priceScale
     const shippingCost = Number(r.shippingCost ?? 0)
     const minOrderQty = Number(r.minOrderQty ?? 1) || 1
     const freightTerms = r.freightTerms ?? 'fob'
     const freightEstimated = Boolean(r.freightEstimated)
     const deliveredPrice =
       r.deliveredPrice !== null && r.deliveredPrice !== undefined
-        ? Number(r.deliveredPrice)
+        ? Number(r.deliveredPrice) * priceScale
         : null
 
     // Freight is stored per selling unit, so FOB landed cost simply adds it to
@@ -188,9 +205,9 @@ async function getAllRows(): Promise<PriceRow[]> {
     const acquisitionCost = landedUnitCost * minOrderQty
 
     // Normalize to a per-base-unit cost so different pack sizes (e.g. a box of
-    // 100 vs a single each) compare fairly. packSize defaults to 1.
-    const rawPackSize = Number(r.packSize ?? 1)
-    const packSize = rawPackSize > 0 ? rawPackSize : 1
+    // 100 vs a single each) compare fairly. For 'base' quotes the price was
+    // scaled up by packSize above, so this division returns the original
+    // per-base-unit price rather than dividing it twice.
     const pricePerBaseUnit = landedUnitCost / packSize
     const freightPerBaseUnit =
       effectiveBasis === 'fob' ? shippingCost / packSize : 0
@@ -206,6 +223,7 @@ async function getAllRows(): Promise<PriceRow[]> {
       locationId: r.locationId,
       locationName: r.locationName,
       unitPrice,
+      priceBasis,
       shippingCost,
       freightPerBaseUnit,
       freightEstimated,

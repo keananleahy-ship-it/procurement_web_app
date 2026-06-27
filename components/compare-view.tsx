@@ -351,13 +351,26 @@ export function CompareView({
                         )}
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">
-                        {formatCurrency(
-                          o.effectiveBasis === 'delivered' &&
-                            o.deliveredPrice !== null
-                            ? o.deliveredPrice
-                            : o.unitPrice,
-                          o.currency,
-                        )}
+                        <span
+                          title={
+                            o.priceBasis === 'base'
+                              ? `Quoted per ${o.baseUnit ?? 'base unit'}; shown per ${o.unit ?? 'selling unit'} (×${o.packSize})`
+                              : undefined
+                          }
+                        >
+                          {formatCurrency(
+                            o.effectiveBasis === 'delivered' &&
+                              o.deliveredPrice !== null
+                              ? o.deliveredPrice
+                              : o.unitPrice,
+                            o.currency,
+                          )}
+                          {o.priceBasis === 'base' && (
+                            <span className="ml-1 text-[11px] font-normal text-muted-foreground/70">
+                              /{o.baseUnit ?? 'unit'}→pack
+                            </span>
+                          )}
+                        </span>
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">
                         {o.effectiveBasis === 'delivered' ? (
