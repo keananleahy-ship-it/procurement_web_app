@@ -5,6 +5,7 @@ import { getCurrentUser, canEdit } from '@/lib/roles'
 import { db } from '@/lib/db'
 import { imports, importRows } from '@/lib/db/schema'
 import { extractPriceRows, type ExtractedRow } from '@/lib/extract'
+import { isPerBaseUnitPrice } from '@/lib/uom'
 
 export const maxDuration = 120
 
@@ -194,13 +195,18 @@ export async function POST(req: NextRequest) {
       rows.map((r) => {
         const unit = r.unit?.trim() || null
         const baseUnit = r.baseUnit?.trim() || r.unit?.trim() || null
-        // If the price is quoted in the same unit of measure as the base unit
-        // (e.g. priced in GAL with a GAL base unit), it is inherently per base
-        // unit — record it as 'base' so it is never divided by pack size.
-        const uomMatchesBase =
-          !!unit && !!baseUnit && unit.toLowerCase() === baseUnit.toLowerCase()
-        const priceBasis =
-          r.priceBasis === 'base' || uomMatchesBase ? 'base' : 'pack'
+        // Record whether the price is already per base unit. The shared helper
+        // normalizes UOM synonyms (gal/USG) and excludes count units like
+        // "each", so a per-gallon quote is stored 'base' while a 12-pack priced
+        // "each" stays 'pack' (a case price to be divided). An explicit 'base'
+        // from extraction always wins.
+        const priceBasis = isPerBaseUnitPrice({
+          unit,
+          baseUnit,
+          storedBasis: r.priceBasis,
+        })
+          ? 'base'
+          : 'pack'
         return {
         userId,
         importId,

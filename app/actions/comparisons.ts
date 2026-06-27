@@ -9,6 +9,7 @@ import {
   vendors,
 } from '@/lib/db/schema'
 import { requireUser } from '@/lib/roles'
+import { isPerBaseUnitPrice } from '@/lib/uom'
 import { eq } from 'drizzle-orm'
 
 export type PriceRow = {
@@ -152,19 +153,22 @@ async function getAllRows(): Promise<PriceRow[]> {
     const rawPackSize = Number(r.packSize ?? 1)
     const packSize = rawPackSize > 0 ? rawPackSize : 1
 
-    // Decide whether the quoted price is already per BASE UNIT (e.g. $/gallon).
-    // Two signals, either of which means "do not divide by pack size again":
-    //  1. an explicit priceBasis === 'base' (set at import / manual entry), or
-    //  2. the pricing unit of measure equals the base unit of measure — when a
-    //     price is quoted in GAL and the base unit is also GAL, the figure is
-    //     inherently per gallon and packSize only describes the container size.
-    // This UOM check is the authoritative guard: it corrects legacy rows that
-    // were stored as 'pack' but are really per-gallon (e.g. a 5-gal pail at
-    // $18.28/gal that must stay $18.28/gal, not be divided to $3.66/gal).
-    const unitUom = (r.unit ?? '').trim().toLowerCase()
-    const baseUom = (r.baseUnit ?? '').trim().toLowerCase()
-    const uomMatchesBase = unitUom !== '' && unitUom === baseUom
-    const isPerBaseUnit = r.priceBasis === 'base' || uomMatchesBase
+    // Decide whether the quoted price is already per BASE UNIT (e.g. $/gallon)
+    // and so must NOT be divided by pack size. The shared helper handles the
+    // two cases that matter across vendors:
+    //   - "gal" vs "USG" spelling differences both normalize to gallon, so a
+    //     per-gallon quote stays per-gallon (fixes ALS-style rows divided by
+    //     ~275), and
+    //   - a count unit like "each" is NOT a measure, so a 12-pack of filters
+    //     priced "each" is treated as a per-case price and IS divided (fixes
+    //     Shell-style rows that were wrongly shown per-case).
+    // An explicit priceBasis === 'base' (AI extraction or reviewer override)
+    // always wins.
+    const isPerBaseUnit = isPerBaseUnitPrice({
+      unit: r.unit,
+      baseUnit: r.baseUnit,
+      storedBasis: r.priceBasis,
+    })
     const priceBasis = isPerBaseUnit ? 'base' : 'pack'
 
     // A per-base quote is scaled UP to a per-SELLING-UNIT price so the freight /
