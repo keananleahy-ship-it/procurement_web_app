@@ -213,14 +213,22 @@ type AiProgress = {
   suggested: number
   cleared: number
   skipped: number
+  excluded: number
   phase: 'running' | 'done' | 'error'
 }
 
 // Determinate progress bar for the streaming AI match pass. Driven entirely by
 // the per-batch events streamed from /api/matching/ai-pass.
 function AiPassProgress({ progress }: { progress: AiProgress }) {
-  const { phase, totalProducts, productsDone, suggested, cleared, skipped } =
-    progress
+  const {
+    phase,
+    totalProducts,
+    productsDone,
+    suggested,
+    cleared,
+    skipped,
+    excluded,
+  } = progress
   const pct =
     phase === 'done'
       ? 100
@@ -277,6 +285,7 @@ function AiPassProgress({ progress }: { progress: AiProgress }) {
       <p className="text-xs text-muted-foreground">
         {suggested} matched
         {cleared > 0 ? ` · ${cleared} unmatched` : ''}
+        {excluded > 0 ? ` · ${excluded} excluded by rule` : ''}
         {skipped > 0 ? ` · ${skipped} skipped` : ''}
         {phase === 'done' ? ' — review them under “Needs review”.' : ''}
       </p>
@@ -313,6 +322,7 @@ export function MatchingView({
       suggested: 0,
       cleared: 0,
       skipped: 0,
+      excluded: 0,
       phase: 'running',
     })
     try {
@@ -337,6 +347,7 @@ export function MatchingView({
             suggested: 0,
             cleared: 0,
             skipped: 0,
+            excluded: 0,
           }
           setAiProgress({ ...(last as AiProgress), phase: 'running' })
         } else if (evt.type === 'progress') {
@@ -348,22 +359,34 @@ export function MatchingView({
             suggested: Number(evt.suggested) || 0,
             cleared: Number(evt.cleared) || 0,
             skipped: Number(evt.skipped) || 0,
+            excluded: Number(evt.excluded) || 0,
           }
           setAiProgress({ ...(last as AiProgress), phase: 'running' })
         } else if (evt.type === 'done') {
           const suggested = Number(evt.suggested) || 0
           const skipped = Number(evt.skipped) || 0
+          const excluded = Number(evt.excluded) || 0
           setAiProgress({
             ...(last as AiProgress),
             suggested,
             cleared: Number(evt.cleared) || (last.cleared ?? 0),
             skipped,
+            excluded,
             phase: 'done',
           })
-          if (skipped > 0) {
-            setCascadeMsg(
-              `Suggested ${suggested}, but ${skipped} products couldn't be processed (likely an AI rate limit). Existing matches were left untouched — run the AI pass again to finish them.`,
+          const notes: string[] = []
+          if (excluded > 0) {
+            notes.push(
+              `${excluded} ${excluded === 1 ? 'product' : 'products'} excluded by a reviewer rule`,
             )
+          }
+          if (skipped > 0) {
+            notes.push(
+              `${skipped} couldn't be processed (likely an AI rate limit) — run the pass again to finish them`,
+            )
+          }
+          if (notes.length > 0) {
+            setCascadeMsg(`Suggested ${suggested}. ${notes.join('. ')}.`)
           }
         }
       }
@@ -401,6 +424,7 @@ export function MatchingView({
               suggested: 0,
               cleared: 0,
               skipped: 0,
+              excluded: 0,
               phase: 'error',
             },
       )
@@ -435,7 +459,10 @@ export function MatchingView({
       suggested: rows.filter((r) => r.matchStatus === 'suggested'),
       confirmed: rows.filter((r) => r.matchStatus === 'confirmed'),
       other: rows.filter(
-        (r) => r.matchStatus === 'unmatched' || r.matchStatus === 'rejected',
+        (r) =>
+          r.matchStatus === 'unmatched' ||
+          r.matchStatus === 'rejected' ||
+          r.matchStatus === 'excluded',
       ),
     }
   }, [rows])
@@ -489,13 +516,26 @@ export function MatchingView({
     setRematchMsg(null)
     startRematch(async () => {
       const res = await rematchRejected()
+      const parts: string[] = []
+      if (res.resuggested > 0) {
+        parts.push(
+          `Re-matched ${res.resuggested} rejected ${
+            res.resuggested === 1 ? 'item' : 'items'
+          } — review ${
+            res.resuggested === 1 ? 'it' : 'them'
+          } under “Needs review”.`,
+        )
+      }
+      if (res.excluded > 0) {
+        parts.push(
+          `${res.excluded} ${
+            res.excluded === 1 ? 'item was' : 'items were'
+          } excluded by a reviewer rule and removed from comparison.`,
+        )
+      }
       setRematchMsg(
-        res.resuggested > 0
-          ? `Re-matched ${res.resuggested} rejected ${
-              res.resuggested === 1 ? 'item' : 'items'
-            } — review ${
-              res.resuggested === 1 ? 'it' : 'them'
-            } under “Needs review”.`
+        parts.length > 0
+          ? parts.join(' ')
           : 'No better matches found for the rejected items yet.',
       )
     })
@@ -812,6 +852,13 @@ export function MatchingView({
                               className="w-fit text-destructive"
                             >
                               Rejected
+                            </Badge>
+                          ) : r.matchStatus === 'excluded' ? (
+                            <Badge
+                              variant="outline"
+                              className="w-fit text-muted-foreground"
+                            >
+                              Excluded
                             </Badge>
                           ) : (
                             <Badge variant="secondary" className="w-fit">

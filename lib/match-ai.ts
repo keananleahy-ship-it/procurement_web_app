@@ -25,10 +25,15 @@ const matchSchema = z.object({
         .describe(
           'Confidence from 0 to 1 that this product is the SAME underlying item as the chosen canonical item.',
         ),
+      exclude: z
+        .boolean()
+        .describe(
+          'True ONLY when a reviewer EXCLUSION RULE says this product is irrelevant and should be removed from price comparison entirely (e.g. an OEM-specific part). When true, canonicalItemId must be null.',
+        ),
       reason: z
         .string()
         .describe(
-          'A short (max ~120 char) human-readable justification for the match or non-match.',
+          'A short (max ~120 char) human-readable justification for the match, non-match, or exclusion.',
         ),
     }),
   ),
@@ -68,7 +73,13 @@ Rules:
 - Only choose a canonicalItemId from the provided list. If no canonical item is a credible match, return canonicalItemId null with a low confidence and explain why.
 - confidence reflects how sure you are it is the same item: 0.9+ near-certain, 0.7-0.9 likely, 0.5-0.7 plausible, <0.5 doubtful.
 - Return exactly one entry per product id provided. Keep each reason concise.
-- You may be given REVIEWER FEEDBACK: pairings a human already rejected, each with a note explaining why it was wrong. Treat this feedback as authoritative. Do NOT re-propose a product→canonical pairing the reviewer rejected. Generalize from the notes (e.g. if a reviewer said two grades or pack types are different, apply that distinction to similar products) to avoid repeating the same class of mistake.`
+- Set exclude=false by default. Only set exclude=true when a reviewer rule (below) indicates the product is irrelevant and should be removed from comparison.
+
+REVIEWER GUIDANCE (authoritative — overrides your own judgement):
+You may be given REVIEWER FEEDBACK entries, each a product a human reviewed with a note explaining their decision. Treat every note as an authoritative rule and apply it broadly, not just to the one product it was attached to:
+1. EXCLUSION RULES. If a note says a product (or a CLASS of products identified by a name fragment, brand, model, or OEM designation) is irrelevant, not for comparison, OEM-specific, or should be removed/ignored, then for EVERY product whose name matches that description — including products that were never individually reviewed — set exclude=true, canonicalItemId=null, and a reason citing the rule (e.g. "Excluded: reviewer rule — HRC Formula R is OEM-specific"). Apply this generally: e.g. a note "reject anything containing 'HRC Formula R' — OEM-specific" must exclude all such products.
+2. PAIRING CORRECTIONS. Do NOT re-propose a product→canonical pairing a reviewer rejected. Generalize the distinction (e.g. if two grades or pack types were called different, keep similar products separate too).
+When a product is covered by an exclusion rule, the exclusion takes precedence over any match you might otherwise propose.`
 
 // The model must return one entry per product, so the response grows with the
 // number of products in a single call. Sending the entire catalog at once
@@ -119,7 +130,7 @@ export async function matchProductBatch(
     messages: [
       {
         role: 'user',
-        content: `Match these products to canonical items. Respond with one entry per product. The reviewerFeedback array lists pairings a human already rejected and why — do not repeat them.\n\n${JSON.stringify(
+        content: `Match these products to canonical items. Respond with one entry per product. The reviewerFeedback array holds authoritative reviewer notes: apply EXCLUSION rules (set exclude=true for every product matching the description) and never re-propose a rejected pairing.\n\n${JSON.stringify(
           payload,
           null,
           2,

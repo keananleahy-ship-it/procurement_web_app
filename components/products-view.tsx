@@ -189,6 +189,8 @@ export function ProductsView({ products }: { products: Product[] }) {
                       </Badge>
                     ) : p.matchStatus === 'rejected' ? (
                       <span className="text-muted-foreground">Rejected</span>
+                    ) : p.matchStatus === 'excluded' ? (
+                      <span className="text-muted-foreground">Excluded</span>
                     ) : (
                       <span className="text-muted-foreground">—</span>
                     )}

@@ -139,7 +139,10 @@ async function getAllRows(): Promise<PriceRow[]> {
     .leftJoin(vendors, eq(vendors.id, vendorPrices.vendorId))
     .leftJoin(locations, eq(locations.id, vendorPrices.locationId))
 
-  return rows.map((r) => {
+  return rows
+    // Products a reviewer rule marked irrelevant are dropped from comparison.
+    .filter((r) => r.matchStatus !== 'excluded')
+    .map((r) => {
     const unitPrice = Number(r.unitPrice ?? 0)
     const shippingCost = Number(r.shippingCost ?? 0)
     const minOrderQty = Number(r.minOrderQty ?? 1) || 1

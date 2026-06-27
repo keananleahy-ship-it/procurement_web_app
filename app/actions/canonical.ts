@@ -129,12 +129,16 @@ export async function generateAiSuggestions() {
     baseUnit: i.baseUnit,
   }))
 
-  // Only reconsider products the user has not already decided on.
+  // Only reconsider products the user has not already decided on. Confirmed,
+  // rejected, and excluded products are settled decisions and left untouched.
   const pending = prods.filter(
-    (p) => p.matchStatus !== 'confirmed' && p.matchStatus !== 'rejected',
+    (p) =>
+      p.matchStatus !== 'confirmed' &&
+      p.matchStatus !== 'rejected' &&
+      p.matchStatus !== 'excluded',
   )
   if (pending.length === 0 || canonicalOptions.length === 0) {
-    return { suggested: 0, cleared: 0 }
+    return { suggested: 0, cleared: 0, skipped: 0, excluded: 0 }
   }
 
   const matches = await aiMatchProducts(
@@ -159,6 +163,7 @@ export async function generateAiSuggestions() {
   let suggested = 0
   let cleared = 0
   let skipped = 0
+  let excluded = 0
   for (const p of pending) {
     const m = byId.get(p.id)
 
@@ -168,6 +173,22 @@ export async function generateAiSuggestions() {
     // reconsidered on the next run.
     if (!m) {
       skipped++
+      continue
+    }
+
+    // A reviewer exclusion rule applies: remove this product from comparison.
+    if (m.exclude) {
+      await db
+        .update(products)
+        .set({
+          canonicalItemId: null,
+          matchStatus: 'excluded',
+          matchScore: null,
+          matchMethod: 'ai',
+          matchReason: m.reason?.slice(0, 280) ?? 'Excluded by reviewer rule',
+        })
+        .where(eq(products.id, p.id))
+      excluded++
       continue
     }
 
@@ -206,7 +227,7 @@ export async function generateAiSuggestions() {
   revalidatePath('/matching')
   revalidatePath('/compare')
   revalidatePath('/')
-  return { suggested, cleared, skipped }
+  return { suggested, cleared, skipped, excluded }
 }
 
 /**
@@ -236,7 +257,7 @@ export async function rematchRejected() {
     baseUnit: i.baseUnit,
   }))
   if (rejected.length === 0 || canonicalOptions.length === 0) {
-    return { resuggested: 0 }
+    return { resuggested: 0, excluded: 0 }
   }
 
   // For each product, the set of canonical items it was previously rejected
@@ -271,11 +292,30 @@ export async function rematchRejected() {
   const byId = new Map(matches.map((m) => [m.productId, m]))
 
   let resuggested = 0
+  let excluded = 0
   for (const p of rejected) {
     const m = byId.get(p.id)
+    if (!m) continue
+
+    // A reviewer exclusion rule covers this product: move it out of the
+    // rejected list and out of comparison entirely.
+    if (m.exclude) {
+      await db
+        .update(products)
+        .set({
+          canonicalItemId: null,
+          matchStatus: 'excluded',
+          matchScore: null,
+          matchMethod: 'ai',
+          matchReason: m.reason?.slice(0, 280) ?? 'Excluded by reviewer rule',
+        })
+        .where(eq(products.id, p.id))
+      excluded++
+      continue
+    }
+
     const previouslyRejected = rejectedByProduct.get(p.id) ?? new Set<number>()
     const isNewConfidentMatch =
-      m &&
       m.canonicalItemId !== null &&
       validCanonicalIds.has(m.canonicalItemId) &&
       !previouslyRejected.has(m.canonicalItemId) &&
@@ -286,11 +326,11 @@ export async function rematchRejected() {
     await db
       .update(products)
       .set({
-        canonicalItemId: m!.canonicalItemId,
+        canonicalItemId: m.canonicalItemId,
         matchStatus: 'suggested',
-        matchScore: Math.max(0, Math.min(1, m!.confidence)).toFixed(4),
+        matchScore: Math.max(0, Math.min(1, m.confidence)).toFixed(4),
         matchMethod: 'ai',
-        matchReason: m!.reason?.slice(0, 280) ?? null,
+        matchReason: m.reason?.slice(0, 280) ?? null,
       })
       .where(eq(products.id, p.id))
     resuggested++
@@ -299,7 +339,7 @@ export async function rematchRejected() {
   revalidatePath('/matching')
   revalidatePath('/compare')
   revalidatePath('/')
-  return { resuggested }
+  return { resuggested, excluded }
 }
 
 export async function confirmMatch(productId: number) {

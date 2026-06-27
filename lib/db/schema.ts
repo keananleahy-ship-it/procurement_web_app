@@ -122,7 +122,9 @@ export const products = pgTable('products', {
   sku: text('sku'),
   unit: text('unit'),
   // Fuzzy-matching to a canonical item. matchStatus is one of:
-  // 'unmatched' | 'suggested' | 'confirmed' | 'rejected'.
+  // 'unmatched' | 'suggested' | 'confirmed' | 'rejected' | 'excluded'.
+  // 'excluded' = a reviewer rule marked the product irrelevant (e.g. OEM-
+  // specific); it is removed from price comparison and skipped by match passes.
   canonicalItemId: integer('canonicalItemId'),
   matchStatus: text('matchStatus').notNull().default('unmatched'),
   matchScore: numeric('matchScore', { precision: 5, scale: 4 }),

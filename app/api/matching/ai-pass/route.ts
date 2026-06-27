@@ -48,9 +48,13 @@ export async function POST(req: Request) {
     note: f.note,
   }))
 
-  // Only reconsider products the user has not already decided on.
+  // Only reconsider products the user has not already decided on. Confirmed,
+  // rejected, and excluded products are settled decisions and left untouched.
   const pending = prods.filter(
-    (p) => p.matchStatus !== 'confirmed' && p.matchStatus !== 'rejected',
+    (p) =>
+      p.matchStatus !== 'confirmed' &&
+      p.matchStatus !== 'rejected' &&
+      p.matchStatus !== 'excluded',
   )
 
   const batches = buildMatchBatches(
@@ -73,6 +77,7 @@ export async function POST(req: Request) {
       let suggested = 0
       let cleared = 0
       let skipped = 0
+      let excluded = 0
       let productsDone = 0
 
       send({
@@ -82,7 +87,7 @@ export async function POST(req: Request) {
       })
 
       if (batches.length === 0 || canonicalOptions.length === 0) {
-        send({ type: 'done', suggested, cleared, skipped })
+        send({ type: 'done', suggested, cleared, skipped, excluded })
         controller.close()
         return
       }
@@ -120,6 +125,24 @@ export async function POST(req: Request) {
               skipped++
               continue
             }
+
+            // A reviewer exclusion rule applies: drop from comparison entirely.
+            if (m.exclude) {
+              await db
+                .update(products)
+                .set({
+                  canonicalItemId: null,
+                  matchStatus: 'excluded',
+                  matchScore: null,
+                  matchMethod: 'ai',
+                  matchReason:
+                    m.reason?.slice(0, 280) ?? 'Excluded by reviewer rule',
+                })
+                .where(eq(products.id, p.id))
+              excluded++
+              continue
+            }
+
             const hasMatch =
               m.canonicalItemId !== null &&
               validCanonicalIds.has(m.canonicalItemId) &&
@@ -168,6 +191,7 @@ export async function POST(req: Request) {
           suggested,
           cleared,
           skipped,
+          excluded,
         })
       }
 
@@ -175,7 +199,7 @@ export async function POST(req: Request) {
       revalidatePath('/compare')
       revalidatePath('/')
 
-      send({ type: 'done', suggested, cleared, skipped })
+      send({ type: 'done', suggested, cleared, skipped, excluded })
       controller.close()
     },
   })
