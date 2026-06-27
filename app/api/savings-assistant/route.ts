@@ -1,6 +1,11 @@
 import { streamText, convertToModelMessages, tool, stepCountIs } from 'ai'
 import type { UIMessage } from 'ai'
+import { createOpenAI } from '@ai-sdk/openai'
 import { z } from 'zod'
+
+// Use the user's own OpenAI key directly (not the AI Gateway), so premium
+// models like gpt-5 are available regardless of the gateway tier.
+const openai = createOpenAI({ apiKey: process.env.OPENAI_API_KEY })
 import {
   getProductComparisons,
   getLocationComparisons,
@@ -100,7 +105,7 @@ export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json()
 
   const result = streamText({
-    model: 'anthropic/claude-haiku-4.5',
+    model: openai('gpt-5'),
     system: SYSTEM,
     messages: await convertToModelMessages(messages),
     stopWhen: stepCountIs(6),
