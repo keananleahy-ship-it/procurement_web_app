@@ -13,7 +13,9 @@ import { requireUser } from '@/lib/roles'
 import {
   GEAR_OIL_LB_PER_GAL,
   isGearOilName,
+  isMeasureUom,
   isPerBaseUnitPrice,
+  normalizeUom,
   pricePerUnitFactor,
 } from '@/lib/uom'
 import { eq } from 'drizzle-orm'
@@ -376,9 +378,6 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
     byKey.set(key, list)
   }
 
-  const norm = (u: string | null | undefined) =>
-    u?.trim().toLowerCase() || null
-
   const comparisons: ProductComparison[] = []
   for (const [key, offers] of byKey) {
     const vendorIds = new Set(offers.map((o) => o.vendorId))
@@ -406,7 +405,21 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
 
     // Flag offers whose own base unit differs from the group's base unit; these
     // can't be compared apples-to-apples (e.g. priced per 'each' vs per 'pair').
-    const groupUnit = norm(baseUnit)
+    // Use the canonical UOM normalizer (not a bare lowercase) so spelling
+    // variants of the same measure agree — e.g. a group quoted in "USG" and an
+    // offer in "gal" are both "gallon" and must NOT be treated as a mismatch.
+    const groupUnit = normalizeUom(baseUnit)
+
+    // An offer's effective comparison unit. When its stored base unit is a
+    // count/container word (e.g. "each") but the price is quoted per a real
+    // measure (e.g. "gal"), pricePerBaseUnit is already expressed in that
+    // measure (see isPerBaseUnitPrice), so we compare on the pricing unit
+    // rather than the placeholder base unit. This is what was wrongly flagging
+    // bulk oils stored as "each" but actually priced per gallon.
+    const effectiveOfferUnit = (o: (typeof offers)[number]) =>
+      !isMeasureUom(o.baseUnit) && isMeasureUom(o.unit)
+        ? normalizeUom(o.unit)
+        : normalizeUom(o.baseUnit)
 
     // Gear oils are quoted per pound by some vendors and per gallon by others,
     // so for these groups we normalize differing units into the group's base
@@ -424,8 +437,9 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
     const hasFreightComplete = offers.some((o) => !o.freightIncomplete)
 
     const flagged = offers.map((o) => {
+      const offerUnit = effectiveOfferUnit(o)
       let unitMismatch =
-        !!groupUnit && !!norm(o.baseUnit) && norm(o.baseUnit) !== groupUnit
+        !!groupUnit && !!offerUnit && offerUnit !== groupUnit
       let comparablePricePerBaseUnit = o.pricePerBaseUnit
       let unitConverted = false
 
