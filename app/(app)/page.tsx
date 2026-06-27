@@ -1,6 +1,7 @@
 import { PageHeader } from '@/components/page-header'
 import { OverviewView } from '@/components/overview-view'
 import { RemovalRequestsAlert } from '@/components/removal-requests-alert'
+import { SavingsAssistant } from '@/components/savings-assistant'
 import {
   getDashboardStats,
   getLocationComparisons,
@@ -25,6 +26,7 @@ export default async function OverviewPage() {
       />
       <div className="flex flex-col gap-6 p-6 pb-0">
         <RemovalRequestsAlert requests={removalRequests} />
+        <SavingsAssistant />
       </div>
       <OverviewView
         stats={stats}
