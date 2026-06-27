@@ -253,7 +253,7 @@ export function MatchingView({
         </div>
       )}
 
-      <Tabs defaultValue="suggested" onValueChange={() => setCascadeMsg(null)>
+      <Tabs defaultValue="suggested" onValueChange={() => setCascadeMsg(null)}>
         <TabsList>
           <TabsTrigger value="suggested">
             Needs review
