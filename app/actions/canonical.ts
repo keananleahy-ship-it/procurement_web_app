@@ -1,11 +1,11 @@
 'use server'
 
 import { db } from '@/lib/db'
-import { canonicalItems, products } from '@/lib/db/schema'
+import { canonicalItems, matchFeedback, products } from '@/lib/db/schema'
 import { bestMatch } from '@/lib/match'
 import { aiMatchProducts } from '@/lib/match-ai'
 import { requireUser, requireEditor } from '@/lib/roles'
-import { and, asc, eq, inArray } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 
 export async function getCanonicalItems() {
@@ -108,9 +108,14 @@ export async function generateSuggestions() {
  */
 export async function generateAiSuggestions() {
   await requireEditor()
-  const [items, prods] = await Promise.all([
+  const [items, prods, feedback] = await Promise.all([
     db.select().from(canonicalItems),
     db.select().from(products),
+    db
+      .select()
+      .from(matchFeedback)
+      .orderBy(desc(matchFeedback.createdAt))
+      .limit(200),
   ])
 
   const canonicalOptions = items.map((i) => ({
@@ -137,6 +142,11 @@ export async function generateAiSuggestions() {
       baseUnit: p.baseUnit,
     })),
     canonicalOptions,
+    feedback.map((f) => ({
+      productName: f.productName,
+      rejectedCanonicalName: f.canonicalItemName,
+      note: f.note,
+    })),
   )
 
   const validCanonicalIds = new Set(canonicalOptions.map((c) => c.id))
@@ -202,8 +212,40 @@ export async function confirmMatch(productId: number) {
   revalidatePath('/')
 }
 
-export async function rejectMatch(productId: number) {
-  await requireEditor()
+export async function rejectMatch(productId: number, note?: string) {
+  const { id: userId } = await requireEditor()
+
+  // Capture feedback BEFORE clearing the suggestion, so we record which
+  // canonical item the user said was wrong (and why). This row persists even
+  // if the product is later re-matched, and feeds the AI pass.
+  const trimmedNote = (note ?? '').trim()
+  if (trimmedNote) {
+    const [product] = await db
+      .select()
+      .from(products)
+      .where(eq(products.id, productId))
+      .limit(1)
+    if (product) {
+      let canonicalItemName: string | null = null
+      if (product.canonicalItemId !== null) {
+        const [ci] = await db
+          .select({ name: canonicalItems.name })
+          .from(canonicalItems)
+          .where(eq(canonicalItems.id, product.canonicalItemId))
+          .limit(1)
+        canonicalItemName = ci?.name ?? null
+      }
+      await db.insert(matchFeedback).values({
+        userId,
+        productId,
+        productName: product.name,
+        canonicalItemId: product.canonicalItemId,
+        canonicalItemName,
+        note: trimmedNote.slice(0, 1000),
+      })
+    }
+  }
+
   await db
     .update(products)
     .set({

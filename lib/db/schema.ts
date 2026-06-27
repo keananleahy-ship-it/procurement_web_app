@@ -97,6 +97,21 @@ export const canonicalItems = pgTable('canonical_items', {
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 
+// Captures why a user rejected a suggested match. Persisted independently of
+// the product row so the feedback survives re-matching, and so the AI pass can
+// learn from past rejections instead of re-proposing the same wrong pairings.
+export const matchFeedback = pgTable('match_feedback', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  productId: integer('productId').notNull(),
+  productName: text('productName').notNull(),
+  // The canonical item that was wrongly suggested (null if it was unmatched).
+  canonicalItemId: integer('canonicalItemId'),
+  canonicalItemName: text('canonicalItemName'),
+  note: text('note').notNull(),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
 export const products = pgTable('products', {
   id: serial('id').primaryKey(),
   userId: text('userId').notNull(),

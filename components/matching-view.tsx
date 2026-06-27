@@ -28,6 +28,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Textarea } from '@/components/ui/textarea'
+import { Label } from '@/components/ui/label'
 import { EmptyState } from '@/components/empty-state'
 import { useCanEdit } from '@/components/role-provider'
 import { cn } from '@/lib/utils'
@@ -110,6 +120,27 @@ export function MatchingView({
   const [genPending, startGen] = useTransition()
   const [aiPending, startAi] = useTransition()
   const canEdit = useCanEdit()
+
+  // Reject-feedback dialog state. We capture a free-text note explaining why a
+  // suggestion is wrong; that note is stored and fed back into the AI pass.
+  const [rejectTarget, setRejectTarget] = useState<{
+    productId: number
+    productName: string
+    canonicalItemName: string | null
+  } | null>(null)
+  const [rejectNote, setRejectNote] = useState('')
+  const [rejectPending, startReject] = useTransition()
+
+  function submitReject() {
+    if (!rejectTarget) return
+    const { productId } = rejectTarget
+    const note = rejectNote
+    startReject(async () => {
+      await rejectMatch(productId, note)
+      setRejectTarget(null)
+      setRejectNote('')
+    })
+  }
 
   const groups = useMemo(() => {
     return {
@@ -280,7 +311,13 @@ export function MatchingView({
                               size="sm"
                               variant="outline"
                               disabled={isPending}
-                              onClick={() => run(() => rejectMatch(r.productId))}
+                              onClick={() =>
+                                setRejectTarget({
+                                  productId: r.productId,
+                                  productName: r.productName,
+                                  canonicalItemName: r.canonicalItemName ?? null,
+                                })
+                              }
                             >
                               <X className="size-4" />
                               Reject
@@ -424,6 +461,78 @@ export function MatchingView({
           )}
         </TabsContent>
       </Tabs>
+
+      <Dialog
+        open={rejectTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !rejectPending) {
+            setRejectTarget(null)
+            setRejectNote('')
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reject this match</DialogTitle>
+            <DialogDescription>
+              {rejectTarget?.canonicalItemName ? (
+                <>
+                  Tell us why{' '}
+                  <span className="font-medium text-foreground">
+                    {rejectTarget.productName}
+                  </span>{' '}
+                  is not{' '}
+                  <span className="font-medium text-foreground">
+                    {rejectTarget.canonicalItemName}
+                  </span>
+                  . Your note trains future suggestions.
+                </>
+              ) : (
+                <>
+                  Tell us why this suggestion for{' '}
+                  <span className="font-medium text-foreground">
+                    {rejectTarget?.productName}
+                  </span>{' '}
+                  is wrong. Your note trains future suggestions.
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="reject-note">
+              Why is this match wrong?{' '}
+              <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <Textarea
+              id="reject-note"
+              value={rejectNote}
+              onChange={(e) => setRejectNote(e.target.value)}
+              placeholder="e.g. Different grade — this is food-grade, the canonical item is industrial."
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={rejectPending}
+              onClick={() => {
+                setRejectTarget(null)
+                setRejectNote('')
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={rejectPending}
+              onClick={submitReject}
+            >
+              <X className="size-4" />
+              Reject match
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
