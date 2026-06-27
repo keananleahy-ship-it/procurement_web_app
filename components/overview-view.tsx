@@ -30,6 +30,8 @@ type Stats = {
   offerCount: number
   comparableProducts: number
   totalPotentialSavings: number
+  savingsAreVolumeWeighted: boolean
+  totalAnnualVolume: number
 }
 
 const statCards = [
@@ -71,7 +73,9 @@ export function OverviewView({
         <Card className="border-success/30 bg-success/5 p-5">
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium text-success">
-              Potential savings
+              {stats.savingsAreVolumeWeighted
+                ? 'Annualized savings'
+                : 'Potential savings'}
             </span>
             <PiggyBank className="size-4 text-success" />
           </div>
@@ -79,8 +83,19 @@ export function OverviewView({
             {formatCurrency(stats.totalPotentialSavings)}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Across {stats.comparableProducts} comparable product
-            {stats.comparableProducts === 1 ? '' : 's'}
+            {stats.savingsAreVolumeWeighted ? (
+              <>
+                Volume-weighted across {stats.comparableProducts} comparable
+                product
+                {stats.comparableProducts === 1 ? '' : 's'} (
+                {formatNumber(Math.round(stats.totalAnnualVolume))} units/yr)
+              </>
+            ) : (
+              <>
+                Across {stats.comparableProducts} comparable product
+                {stats.comparableProducts === 1 ? '' : 's'}
+              </>
+            )}
           </p>
         </Card>
       </div>
@@ -113,8 +128,9 @@ export function OverviewView({
                 <TableRow>
                   <TableHead>Product</TableHead>
                   <TableHead>Best vendor</TableHead>
-                  <TableHead className="text-right">Best / unit</TableHead>
                   <TableHead className="text-right">Save / unit</TableHead>
+                  <TableHead className="text-right">Volume / yr</TableHead>
+                  <TableHead className="text-right">Annualized</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -127,14 +143,23 @@ export function OverviewView({
                       {c.best?.vendorName ?? '—'}
                     </TableCell>
                     <TableCell className="text-right tabular-nums text-foreground">
-                      {c.best
-                        ? formatCurrency(c.best.landedUnitCost, c.best.currency)
+                      {c.potentialSavings > 0
+                        ? formatCurrency(c.potentialSavings)
+                        : '—'}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums text-muted-foreground">
+                      {c.annualVolume > 0
+                        ? `${formatNumber(Math.round(c.annualVolume))} ${c.baseUnit ?? ''}`.trim()
                         : '—'}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {c.potentialSavings > 0 ? (
+                      {c.realizableSavings > 0 ? (
                         <span className="font-semibold text-success">
-                          {formatCurrency(c.potentialSavings)}
+                          {formatCurrency(c.realizableSavings)}
+                        </span>
+                      ) : c.potentialSavings > 0 ? (
+                        <span className="text-muted-foreground">
+                          Add volume
                         </span>
                       ) : (
                         <span className="text-muted-foreground">—</span>
@@ -163,7 +188,8 @@ export function OverviewView({
                   <TableRow>
                     <TableHead>Location</TableHead>
                     <TableHead className="text-right">Avg / unit</TableHead>
-                    <TableHead className="text-right">Total</TableHead>
+                    <TableHead className="text-right">Volume / yr</TableHead>
+                    <TableHead className="text-right">Annualized</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -183,7 +209,18 @@ export function OverviewView({
                         {formatCurrency(l.avgLandedUnitCost)}
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">
-                        {formatCurrency(l.totalAcquisitionCost)}
+                        {l.annualVolume > 0
+                          ? formatNumber(Math.round(l.annualVolume))
+                          : '—'}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {l.realizableSavings > 0 ? (
+                          <span className="font-semibold text-success">
+                            {formatCurrency(l.realizableSavings)}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
                       </TableCell>
                     </TableRow>
                   ))}

@@ -29,7 +29,7 @@ import { Card } from '@/components/ui/card'
 import { DataPagination } from '@/components/data-pagination'
 import { EmptyState } from '@/components/empty-state'
 import { useCanEdit } from '@/components/role-provider'
-import { formatCurrency, formatDate } from '@/lib/format'
+import { formatCurrency, formatDate, formatNumber } from '@/lib/format'
 import {
   packFamily,
   PACK_FAMILIES,
@@ -303,10 +303,19 @@ export function CompareView({
               </div>
               <div className="flex items-center gap-3">
                 {c.potentialSavings > 0 && (
-                  <div className="flex items-center gap-1.5 rounded-md bg-success/10 px-3 py-1.5 text-sm font-medium text-success">
-                    <TrendingDown className="size-4" />
-                    Save {formatCurrency(c.potentialSavings)} /{' '}
-                    {c.baseUnit ?? 'unit'}
+                  <div className="flex flex-col items-end gap-0.5 rounded-md bg-success/10 px-3 py-1.5 text-sm font-medium text-success">
+                    <span className="flex items-center gap-1.5">
+                      <TrendingDown className="size-4" />
+                      Save {formatCurrency(c.potentialSavings)} /{' '}
+                      {c.baseUnit ?? 'unit'}
+                    </span>
+                    {c.realizableSavings > 0 && (
+                      <span className="text-xs font-normal text-success/80">
+                        {formatCurrency(c.realizableSavings)}/yr ·{' '}
+                        {formatNumber(Math.round(c.annualVolume))}{' '}
+                        {c.baseUnit ?? 'units'}/yr
+                      </span>
+                    )}
                   </div>
                 )}
                 <ChevronDown

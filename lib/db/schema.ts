@@ -97,6 +97,30 @@ export const canonicalItems = pgTable('canonical_items', {
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 
+// Annualized purchase volume for an item at a location, expressed in the item's
+// BASE UNIT (e.g. gallons/year). This is what turns a per-unit price advantage
+// into a real, rankable dollar opportunity: savings/unit * annualVolume.
+// Volume is keyed to a canonical item when the item is matched (so it follows
+// the product across vendors) or to a standalone product otherwise. `source`
+// records provenance ('manual' demo/seed entry today; 'snowflake' once a
+// purchasing-system sync is wired up) so imported volumes can be refreshed
+// without clobbering hand-entered ones.
+export const purchaseVolumes = pgTable('purchase_volumes', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  canonicalItemId: integer('canonicalItemId'),
+  productId: integer('productId'),
+  locationId: integer('locationId'),
+  // annual volume in base units (e.g. USG/year)
+  annualVolume: numeric('annualVolume', { precision: 14, scale: 2 }).notNull(),
+  baseUnit: text('baseUnit'),
+  // human label for the period the volume covers, e.g. 'TTM' or '2025'
+  period: text('period'),
+  // 'manual' | 'snowflake'
+  source: text('source').notNull().default('manual'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
 // Captures why a user rejected a suggested match. Persisted independently of
 // the product row so the feedback survives re-matching, and so the AI pass can
 // learn from past rejections instead of re-proposing the same wrong pairings.

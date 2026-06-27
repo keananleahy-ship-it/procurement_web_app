@@ -5,6 +5,7 @@ import {
   canonicalItems,
   locations,
   products,
+  purchaseVolumes,
   vendorPrices,
   vendors,
 } from '@/lib/db/schema'
@@ -99,8 +100,24 @@ export type ProductComparison = {
   vendorCount: number
   // savings per base unit: worst pricePerBaseUnit - best pricePerBaseUnit
   potentialSavings: number
+  // total annual purchase volume for this group across locations, in base
+  // units (0 when no volume data is on file). This is the multiplier that
+  // turns a per-unit price gap into a real dollar opportunity.
+  annualVolume: number
+  // annualized dollar opportunity = potentialSavings * annualVolume
+  realizableSavings: number
+  // per-location volume + annualized savings, so opportunities can be read by
+  // site (empty when no volume data exists for this group)
+  volumeByLocation: VolumeByLocation[]
   // most recent effective date across the group's offers
   latestEffectiveDate: string | null
+}
+
+export type VolumeByLocation = {
+  locationId: number | null
+  locationName: string
+  annualVolume: number
+  realizableSavings: number
 }
 
 export type LocationComparison = {
@@ -109,6 +126,10 @@ export type LocationComparison = {
   offerCount: number
   avgLandedUnitCost: number
   totalAcquisitionCost: number
+  // total annual purchase volume bought at this location (base units/year)
+  annualVolume: number
+  // annualized savings attributable to this location's volume
+  realizableSavings: number
 }
 
 async function getAllRows(): Promise<PriceRow[]> {
@@ -275,9 +296,55 @@ async function getAllRows(): Promise<PriceRow[]> {
   })
 }
 
+// Loads annual purchase volume keyed both by canonical item and by product,
+// each broken down per location. Comparison groups look these up to weight
+// their per-unit savings into real annualized dollars.
+type VolumeMaps = {
+  byCanonical: Map<number, Map<number | null, number>>
+  byProduct: Map<number, Map<number | null, number>>
+  locationNames: Map<number | null, string>
+  total: number
+}
+
+// Note: like getAllRows, this is a shared workspace and is NOT filtered by
+// userId — every signed-in user sees the same comparison and volume data.
+async function loadVolumeMaps(): Promise<VolumeMaps> {
+  const rows = await db
+    .select({
+      canonicalItemId: purchaseVolumes.canonicalItemId,
+      productId: purchaseVolumes.productId,
+      locationId: purchaseVolumes.locationId,
+      annualVolume: purchaseVolumes.annualVolume,
+      locationName: locations.name,
+    })
+    .from(purchaseVolumes)
+    .leftJoin(locations, eq(locations.id, purchaseVolumes.locationId))
+
+  const byCanonical = new Map<number, Map<number | null, number>>()
+  const byProduct = new Map<number, Map<number | null, number>>()
+  const locationNames = new Map<number | null, string>()
+  let total = 0
+
+  for (const r of rows) {
+    const vol = Number(r.annualVolume ?? 0)
+    if (!Number.isFinite(vol) || vol <= 0) continue
+    total += vol
+    locationNames.set(r.locationId, r.locationName ?? 'Unassigned')
+    const target = r.canonicalItemId !== null ? byCanonical : byProduct
+    const id = r.canonicalItemId ?? r.productId
+    if (id === null) continue
+    const perLoc = target.get(id) ?? new Map<number | null, number>()
+    perLoc.set(r.locationId, (perLoc.get(r.locationId) ?? 0) + vol)
+    target.set(id, perLoc)
+  }
+
+  return { byCanonical, byProduct, locationNames, total }
+}
+
 export async function getProductComparisons(): Promise<ProductComparison[]> {
   await requireUser()
   const rows = await getAllRows()
+  const volumes = await loadVolumeMaps()
 
   // Group offers by their comparison key: products with a confirmed canonical
   // match collapse under that canonical item (so differently-named vendor
@@ -358,6 +425,28 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
       (o) => o.freightIncomplete && hasFreightComplete,
     )
 
+    const potentialSavings =
+      best && worst ? worst.pricePerBaseUnit - best.pricePerBaseUnit : 0
+
+    // Look up this group's volume: canonical groups (key 'c…') by canonical id,
+    // standalone products (key 'p…') by product id.
+    const perLoc = isCanonical
+      ? volumes.byCanonical.get(Number(key.slice(1)))
+      : volumes.byProduct.get(offers[0].productId)
+    const volumeByLocation: VolumeByLocation[] = perLoc
+      ? [...perLoc.entries()].map(([locationId, annualVolume]) => ({
+          locationId,
+          locationName: volumes.locationNames.get(locationId) ?? 'Unassigned',
+          annualVolume,
+          realizableSavings: potentialSavings * annualVolume,
+        }))
+      : []
+    const annualVolume = volumeByLocation.reduce(
+      (sum, v) => sum + v.annualVolume,
+      0,
+    )
+    const realizableSavings = potentialSavings * annualVolume
+
     comparisons.push({
       key,
       displayName,
@@ -374,15 +463,23 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
       best,
       worst,
       vendorCount: vendorIds.size,
-      potentialSavings:
-        best && worst
-          ? worst.pricePerBaseUnit - best.pricePerBaseUnit
-          : 0,
+      potentialSavings,
+      annualVolume,
+      realizableSavings,
+      volumeByLocation,
       latestEffectiveDate,
     })
   }
 
-  return comparisons.sort((a, b) => b.potentialSavings - a.potentialSavings)
+  // Rank by the real annualized dollar opportunity when any volume is known,
+  // otherwise fall back to the per-unit gap so installs without volume data
+  // still see a sensible ordering.
+  const hasAnyVolume = comparisons.some((c) => c.annualVolume > 0)
+  return comparisons.sort((a, b) =>
+    hasAnyVolume
+      ? b.realizableSavings - a.realizableSavings
+      : b.potentialSavings - a.potentialSavings,
+  )
 }
 
 export async function getLocationComparisons(): Promise<LocationComparison[]> {
@@ -397,20 +494,46 @@ export async function getLocationComparisons(): Promise<LocationComparison[]> {
     byLocation.set(key, list)
   }
 
+  // Roll up annual volume and annualized savings per location from the
+  // comparison groups, so each site shows the dollars its volume unlocks.
+  const comparisons = await getProductComparisons()
+  const volumeByLoc = new Map<
+    string,
+    { annualVolume: number; realizableSavings: number }
+  >()
+  for (const c of comparisons) {
+    for (const v of c.volumeByLocation) {
+      const key = v.locationId === null ? 'none' : String(v.locationId)
+      const acc = volumeByLoc.get(key) ?? {
+        annualVolume: 0,
+        realizableSavings: 0,
+      }
+      acc.annualVolume += v.annualVolume
+      acc.realizableSavings += v.realizableSavings
+      volumeByLoc.set(key, acc)
+    }
+  }
+
   const result: LocationComparison[] = []
-  for (const [, offers] of byLocation) {
+  for (const [locKey, offers] of byLocation) {
     const totalAcquisitionCost = offers.reduce(
       (sum, o) => sum + o.acquisitionCost,
       0,
     )
     const avgLandedUnitCost =
       offers.reduce((sum, o) => sum + o.landedUnitCost, 0) / offers.length
+    const vol = volumeByLoc.get(locKey) ?? {
+      annualVolume: 0,
+      realizableSavings: 0,
+    }
     result.push({
       locationId: offers[0].locationId,
       locationName: offers[0].locationName ?? 'Unassigned',
       offerCount: offers.length,
       avgLandedUnitCost,
       totalAcquisitionCost,
+      annualVolume: vol.annualVolume,
+      realizableSavings: vol.realizableSavings,
     })
   }
 
@@ -424,13 +547,26 @@ export async function getDashboardStats() {
   const vendorIds = new Set(rows.map((r) => r.vendorId))
 
   const comparisons = await getProductComparisons()
-  // potentialSavings is per base unit; scale by the base units in a minimum
-  // order (packSize * minOrderQty) of the cheapest offer.
-  const totalPotentialSavings = comparisons.reduce(
+
+  // When purchase volumes are on file, the headline is the real annualized
+  // opportunity: per-unit savings * annual volume, summed across groups.
+  const hasVolume = comparisons.some((c) => c.annualVolume > 0)
+  const totalRealizableSavings = comparisons.reduce(
+    (sum, c) => sum + c.realizableSavings,
+    0,
+  )
+  // Fallback for installs with no volume data: scale the per-unit gap by the
+  // base units in one minimum order (packSize * minOrderQty) of the best offer.
+  const totalMinOrderSavings = comparisons.reduce(
     (sum, c) =>
       sum +
       c.potentialSavings *
         ((c.best?.packSize ?? 1) * (c.best?.minOrderQty ?? 1)),
+    0,
+  )
+
+  const totalAnnualVolume = comparisons.reduce(
+    (sum, c) => sum + c.annualVolume,
     0,
   )
 
@@ -439,6 +575,12 @@ export async function getDashboardStats() {
     vendorCount: vendorIds.size,
     offerCount: rows.length,
     comparableProducts: comparisons.filter((c) => c.vendorCount > 1).length,
-    totalPotentialSavings,
+    totalPotentialSavings: hasVolume
+      ? totalRealizableSavings
+      : totalMinOrderSavings,
+    // true when the savings figure is volume-weighted (vs the min-order proxy)
+    savingsAreVolumeWeighted: hasVolume,
+    // total annual purchase volume across all groups (base units/year)
+    totalAnnualVolume,
   }
 }
