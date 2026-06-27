@@ -293,6 +293,30 @@ function AiPassProgress({ progress }: { progress: AiProgress }) {
   )
 }
 
+// Footer shown under a paginated table: how many rows are visible and a button
+// to reveal the next page. Renders nothing once every row is shown.
+function ShowMoreBar({
+  shown,
+  total,
+  onMore,
+}: {
+  shown: number
+  total: number
+  onMore: () => void
+}) {
+  if (shown >= total) return null
+  return (
+    <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-3">
+      <span className="text-sm text-muted-foreground">
+        Showing {shown} of {total}
+      </span>
+      <Button variant="outline" size="sm" onClick={onMore}>
+        Show more
+      </Button>
+    </div>
+  )
+}
+
 export function MatchingView({
   rows,
   canonicalItems,
@@ -466,6 +490,18 @@ export function MatchingView({
       ),
     }
   }, [rows])
+
+  // Render rows in pages so we never mount thousands of <tr> at once — with
+  // ~2k products a single tab could otherwise produce a >512 kB document that
+  // stalls initial paint. Each tab tracks how many of its rows are visible.
+  const PAGE_SIZE = 50
+  const [visible, setVisible] = useState({
+    suggested: PAGE_SIZE,
+    confirmed: PAGE_SIZE,
+    other: PAGE_SIZE,
+  })
+  const showMore = (tab: keyof typeof visible) =>
+    setVisible((v) => ({ ...v, [tab]: v[tab] + PAGE_SIZE }))
 
   const noCanonical = canonicalItems.length === 0
 
@@ -655,7 +691,7 @@ export function MatchingView({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {groups.suggested.map((r) => (
+                  {groups.suggested.slice(0, visible.suggested).map((r) => (
                     <TableRow key={r.productId}>
                       <TableCell className="font-medium text-foreground">
                         {r.productName}
@@ -730,6 +766,11 @@ export function MatchingView({
                   ))}
                 </TableBody>
               </Table>
+              <ShowMoreBar
+                shown={Math.min(visible.suggested, groups.suggested.length)}
+                total={groups.suggested.length}
+                onMore={() => showMore('suggested')}
+              />
             </div>
           )}
         </TabsContent>
@@ -753,7 +794,7 @@ export function MatchingView({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {groups.confirmed.map((r) => (
+                  {groups.confirmed.slice(0, visible.confirmed).map((r) => (
                     <TableRow key={r.productId}>
                       <TableCell className="font-medium text-foreground">
                         {r.productName}
@@ -780,6 +821,11 @@ export function MatchingView({
                   ))}
                 </TableBody>
               </Table>
+              <ShowMoreBar
+                shown={Math.min(visible.confirmed, groups.confirmed.length)}
+                total={groups.confirmed.length}
+                onMore={() => showMore('confirmed')}
+              />
             </div>
           )}
         </TabsContent>
@@ -834,7 +880,7 @@ export function MatchingView({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {groups.other.map((r) => (
+                  {groups.other.slice(0, visible.other).map((r) => (
                     <TableRow key={r.productId}>
                       <TableCell className="font-medium text-foreground">
                         {r.productName}
@@ -888,6 +934,11 @@ export function MatchingView({
                   ))}
                 </TableBody>
               </Table>
+              <ShowMoreBar
+                shown={Math.min(visible.other, groups.other.length)}
+                total={groups.other.length}
+                onMore={() => showMore('other')}
+              />
             </div>
           )}
         </TabsContent>
