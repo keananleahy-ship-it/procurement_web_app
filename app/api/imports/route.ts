@@ -91,6 +91,9 @@ export async function POST(req: NextRequest) {
   const locationRaw = formData.get('locationId')
   const locationId =
     locationRaw && String(locationRaw) !== '' ? Number(locationRaw) : null
+  // User-supplied vendor for the whole price list. Used as the default for any
+  // row the AI couldn't attribute to a vendor on its own.
+  const userVendorName = String(formData.get('vendorName') ?? '').trim() || null
 
   if (!(file instanceof File)) {
     return NextResponse.json({ error: 'No file provided' }, { status: 400 })
@@ -170,6 +173,11 @@ export async function POST(req: NextRequest) {
   const rows = (extraction.rows ?? []).filter((r) => r.productName?.trim())
   const fileType = isPdf ? 'pdf' : 'xls'
 
+  // The vendor to fall back to for rows without their own detected vendor. An
+  // explicit vendor the user typed on the upload form wins over the AI's
+  // document-level guess.
+  const defaultVendorName = userVendorName || extraction.defaultVendorName || null
+
   // Create the import record, then its staging rows.
   const [created] = await db
     .insert(imports)
@@ -182,9 +190,7 @@ export async function POST(req: NextRequest) {
       effectiveDate,
       status: 'pending',
       rowCount: rows.length,
-      note: extraction.defaultVendorName
-        ? `Document vendor: ${extraction.defaultVendorName}`
-        : null,
+      note: defaultVendorName ? `Document vendor: ${defaultVendorName}` : null,
     })
     .returning({ id: imports.id })
 
@@ -211,7 +217,7 @@ export async function POST(req: NextRequest) {
         userId,
         importId,
         productName: r.productName.trim(),
-        vendorName: r.vendorName?.trim() || extraction.defaultVendorName || null,
+        vendorName: r.vendorName?.trim() || defaultVendorName,
         sku: r.sku?.trim() || null,
         unit,
         packSize:
