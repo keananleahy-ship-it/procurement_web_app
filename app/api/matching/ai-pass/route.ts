@@ -190,7 +190,11 @@ export async function POST(req: Request) {
       // tail. Each completed batch streams a progress event; the abort signal
       // is checked before claiming each new batch so navigating away stops
       // further spend while preserving everything already written.
-      const CONCURRENCY = 8
+      // 12-wide pool keeps a full ~80-batch catalog around ~3 min — a safe
+      // margin under maxDuration (300s) — while staying within the OpenAI
+      // per-minute token budget. Was 8, which let large runs creep toward the
+      // 5-minute limit and risk being killed mid-stream.
+      const CONCURRENCY = 12
       let cursor = 0
       let batchesDone = 0
 
@@ -245,6 +249,11 @@ export async function POST(req: Request) {
     headers: {
       'Content-Type': 'application/x-ndjson; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
+      // Disable proxy/CDN buffering (nginx, the v0 preview proxy, etc.).
+      // Without this the per-batch progress events get held back and delivered
+      // in one burst at the end, so the bar appears frozen at ~5% for minutes
+      // even though the pass is actively running.
+      'X-Accel-Buffering': 'no',
     },
   })
 }

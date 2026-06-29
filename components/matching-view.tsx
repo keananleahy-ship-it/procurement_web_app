@@ -349,8 +349,14 @@ export function MatchingView({
       excluded: 0,
       phase: 'running',
     })
+    // Lets us cancel the request if the stream goes silent (e.g. the server
+    // function was killed at its time limit) instead of waiting forever.
+    const controller = new AbortController()
     try {
-      const res = await fetch('/api/matching/ai-pass', { method: 'POST' })
+      const res = await fetch('/api/matching/ai-pass', {
+        method: 'POST',
+        signal: controller.signal,
+      })
       if (!res.ok || !res.body) {
         throw new Error(`Request failed (${res.status})`)
       }
@@ -415,8 +421,27 @@ export function MatchingView({
         }
       }
 
+      // Watchdog: a healthy pass streams a progress event every few seconds.
+      // If nothing arrives for this long, assume the stream died (killed
+      // function, dropped connection) and bail out so we show an error rather
+      // than a bar frozen mid-run.
+      const IDLE_MS = 120_000
+
       for (;;) {
-        const { done, value } = await reader.read()
+        let idleTimer: ReturnType<typeof setTimeout> | undefined
+        const idle = new Promise<never>((_, reject) => {
+          idleTimer = setTimeout(
+            () => reject(new Error('Stream stalled (no progress for 120s)')),
+            IDLE_MS,
+          )
+        })
+        let result: ReadableStreamReadResult<Uint8Array>
+        try {
+          result = await Promise.race([reader.read(), idle])
+        } finally {
+          clearTimeout(idleTimer)
+        }
+        const { done, value } = result
         if (done) break
         buffer += decoder.decode(value, { stream: true })
         const lines = buffer.split('\n')
@@ -437,6 +462,9 @@ export function MatchingView({
       setTimeout(() => setAiProgress(null), 2500)
     } catch (err) {
       console.log('[v0] AI pass failed:', err)
+      // Tear down the underlying request if it's still open (e.g. the idle
+      // watchdog fired) so the stalled connection doesn't linger.
+      controller.abort()
       setAiProgress((prev) =>
         prev
           ? { ...prev, phase: 'error' }
