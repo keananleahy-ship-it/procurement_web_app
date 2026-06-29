@@ -94,6 +94,13 @@ export async function POST(req: NextRequest) {
   // User-supplied vendor for the whole price list. Used as the default for any
   // row the AI couldn't attribute to a vendor on its own.
   const userVendorName = String(formData.get('vendorName') ?? '').trim() || null
+  // User-declared freight basis for the whole list. When set, it overrides the
+  // AI's per-row guess; otherwise (null) we keep the per-row extraction.
+  const freightRaw = String(formData.get('freightTerms') ?? '').trim()
+  const userFreightTerms =
+    freightRaw === 'fob' || freightRaw === 'delivered' || freightRaw === 'both'
+      ? freightRaw
+      : null
 
   if (!(file instanceof File)) {
     return NextResponse.json({ error: 'No file provided' }, { status: 400 })
@@ -213,6 +220,9 @@ export async function POST(req: NextRequest) {
         })
           ? 'base'
           : 'pack'
+        // An explicit document-level freight choice wins; otherwise use the
+        // per-row extracted terms.
+        const rowFreight = userFreightTerms ?? normalizeFreight(r.freightTerms)
         return {
         userId,
         importId,
@@ -226,8 +236,13 @@ export async function POST(req: NextRequest) {
         priceBasis,
         category: r.category?.trim() || null,
         unitPrice: toNumericString(r.unitPrice),
-        shippingCost: toNumericString(r.shippingCost) ?? '0',
-        freightTerms: normalizeFreight(r.freightTerms),
+        // A delivered all-in price already includes freight, so force shipping
+        // to 0 in that case; otherwise keep the extracted/estimated freight.
+        shippingCost:
+          rowFreight === 'delivered'
+            ? '0'
+            : toNumericString(r.shippingCost) ?? '0',
+        freightTerms: rowFreight,
         deliveredPrice: toNumericString(r.deliveredPrice),
         minOrderQty: r.minOrderQty && r.minOrderQty > 0 ? Math.round(r.minOrderQty) : 1,
         currency: (r.currency?.trim() || 'USD').toUpperCase(),

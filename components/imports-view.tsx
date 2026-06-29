@@ -75,6 +75,9 @@ export function ImportsView({
   const [open, setOpen] = useState(false)
   const [locationId, setLocationId] = useState('')
   const [vendorName, setVendorName] = useState('')
+  // 'auto' lets the AI decide freight terms per row; any other value forces the
+  // whole file to that basis (FOB origin / Delivered / Both).
+  const [freightTerms, setFreightTerms] = useState('auto')
   const [effectiveDate, setEffectiveDate] = useState(
     new Date().toISOString().slice(0, 10),
   )
@@ -97,6 +100,7 @@ export function ImportsView({
     body.set('effectiveDate', effectiveDate)
     if (locationId) body.set('locationId', locationId)
     if (vendorName.trim()) body.set('vendorName', vendorName.trim())
+    if (freightTerms !== 'auto') body.set('freightTerms', freightTerms)
 
     setUploading(true)
     try {
@@ -109,6 +113,7 @@ export function ImportsView({
       setOpen(false)
       setFileName('')
       setVendorName('')
+      setFreightTerms('auto')
       if (fileRef.current) fileRef.current.value = ''
       router.push(`/imports/${data.importId}`)
     } catch {
@@ -175,6 +180,27 @@ export function ImportsView({
                     Applied to every line item we can&apos;t attribute to a
                     vendor automatically. You can still change individual rows
                     when reviewing.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label>Pricing terms</Label>
+                  <Select
+                    value={freightTerms}
+                    onValueChange={(v) => setFreightTerms(v ?? 'auto')}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">Auto-detect</SelectItem>
+                      <SelectItem value="fob">FOB origin</SelectItem>
+                      <SelectItem value="delivered">Delivered</SelectItem>
+                      <SelectItem value="both">Both</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Whether this list is priced FOB origin, delivered, or both.
+                    Leave on Auto-detect to read it from the document per line.
                   </p>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
