@@ -1,13 +1,15 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useMemo, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   updateImportRow,
   deleteImportRow,
   commitImport,
   discardImport,
+  setImportRowsBasis,
 } from '@/app/actions/imports'
+import { isBasisAmbiguous } from '@/lib/uom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
@@ -26,7 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Check, X, Trash2, CheckCircle2, Loader2 } from 'lucide-react'
+import { Check, X, Trash2, CheckCircle2, Loader2, HelpCircle } from 'lucide-react'
 import { formatDate } from '@/lib/format'
 
 export type StagingRow = {
@@ -34,12 +36,14 @@ export type StagingRow = {
   productName: string
   vendorName: string | null
   unitPrice: string | null
+  priceBasis: string
   shippingCost: string
   freightEstimated: boolean
   freightTerms: string
   deliveredPrice: string | null
   minOrderQty: number
   currency: string
+  unit: string | null
   packSize: string
   baseUnit: string | null
   include: boolean
@@ -71,6 +75,52 @@ export function ImportReview({
   const [isPending, startTransition] = useTransition()
   const [committing, setCommitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The sheet-level basis prompt is answered once; dismiss it afterward.
+  const [basisResolved, setBasisResolved] = useState(false)
+
+  // Rows where we cannot tell from the data alone whether the price is per
+  // container or per base unit (multi-unit packs priced in a container/count
+  // word). Since a price sheet is consistent, one answer covers them all.
+  const ambiguousRows = useMemo(
+    () =>
+      rows.filter((r) =>
+        isBasisAmbiguous({
+          unit: r.unit,
+          packSize: Number(r.packSize),
+          storedBasis: r.priceBasis,
+        }),
+      ),
+    [rows],
+  )
+
+  // A representative base unit to phrase the question (e.g. "per gallon").
+  const exampleBaseUnit = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const r of ambiguousRows) {
+      const b = r.baseUnit?.trim()
+      if (b) counts.set(b, (counts.get(b) ?? 0) + 1)
+    }
+    let best: string | null = null
+    let bestN = 0
+    for (const [b, n] of counts) {
+      if (n > bestN) {
+        best = b
+        bestN = n
+      }
+    }
+    return best
+  }, [ambiguousRows])
+
+  function applySheetBasis(basis: 'base' | 'pack') {
+    const ids = ambiguousRows.map((r) => r.id)
+    setRows((prev) =>
+      prev.map((r) => (ids.includes(r.id) ? { ...r, priceBasis: basis } : r)),
+    )
+    setBasisResolved(true)
+    startTransition(() => {
+      void setImportRowsBasis(ids, basis)
+    })
+  }
 
   const includable = rows.filter(
     (r) => r.include && r.unitPrice !== null && r.unitPrice !== '' && r.vendorName?.trim(),
@@ -148,6 +198,43 @@ export function ImportReview({
         </div>
       </div>
 
+      {ambiguousRows.length > 0 && !basisResolved && (
+        <div className="flex flex-col gap-3 rounded-lg border border-warning/40 bg-warning/10 p-4">
+          <div className="flex items-start gap-2">
+            <HelpCircle className="mt-0.5 size-4 shrink-0 text-warning" />
+            <div className="flex flex-col gap-1">
+              <p className="text-sm font-medium text-foreground">
+                How are prices on this sheet quoted?
+              </p>
+              <p className="text-sm text-pretty text-muted-foreground">
+                {ambiguousRows.length} of {rows.length} rows are sold by the
+                container (e.g. drum, pail, case) holding more than one{' '}
+                {exampleBaseUnit?.trim() || 'base unit'}. We can&apos;t tell from
+                the file whether each listed price is for the{' '}
+                <span className="font-medium">whole container</span> or{' '}
+                <span className="font-medium">
+                  per {exampleBaseUnit?.trim() || 'base unit'}
+                </span>
+                . Pick the one that matches this sheet — it applies to all of
+                them, and you can still change any single row below.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2 pl-6">
+            <Button size="sm" onClick={() => applySheetBasis('pack')}>
+              Price is per whole container
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => applySheetBasis('base')}
+            >
+              Price is per {exampleBaseUnit?.trim() || 'base unit'}
+            </Button>
+          </div>
+        </div>
+      )}
+
       {error && (
         <p className="text-sm text-destructive" role="alert">
           {error}
@@ -163,6 +250,7 @@ export function ImportReview({
               <TableHead className="min-w-40">Vendor</TableHead>
               <TableHead className="min-w-36">Freight</TableHead>
               <TableHead className="text-right">Unit price</TableHead>
+              <TableHead className="min-w-28">Priced per</TableHead>
               <TableHead className="text-right">Freight / unit</TableHead>
               <TableHead className="text-right">Delivered</TableHead>
               <TableHead className="text-right">Min qty</TableHead>
@@ -217,8 +305,9 @@ export function ImportReview({
                     <Select
                       value={r.freightTerms}
                       onValueChange={(v) => {
-                        patchRow(r.id, { freightTerms: v })
-                        persist(r.id, { freightTerms: v })
+                        const terms = v ?? 'fob'
+                        patchRow(r.id, { freightTerms: terms })
+                        persist(r.id, { freightTerms: terms })
                       }}
                     >
                       <SelectTrigger className="h-8">
@@ -247,6 +336,34 @@ export function ImportReview({
                         persist(r.id, { unitPrice: e.target.value === '' ? null : e.target.value })
                       }
                     />
+                  </TableCell>
+                  <TableCell>
+                    <Select
+                      value={r.priceBasis === 'base' ? 'base' : 'pack'}
+                      onValueChange={(v) => {
+                        const basis = v === 'base' ? 'base' : 'pack'
+                        patchRow(r.id, { priceBasis: basis })
+                        persist(r.id, { priceBasis: basis })
+                      }}
+                    >
+                      <SelectTrigger className="h-8">
+                        <SelectValue>
+                          {(value: string) =>
+                            value === 'base'
+                              ? `per ${r.baseUnit?.trim() || 'base unit'}`
+                              : `per ${r.unit?.trim() || 'pack'}`
+                          }
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="pack">
+                          Per selling unit ({r.unit?.trim() || 'pack'})
+                        </SelectItem>
+                        <SelectItem value="base">
+                          Per base unit ({r.baseUnit?.trim() || 'e.g. gallon'})
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-col items-end gap-1">

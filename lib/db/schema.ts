@@ -97,6 +97,71 @@ export const canonicalItems = pgTable('canonical_items', {
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 
+// Annualized purchase volume for an item at a location, expressed in the item's
+// BASE UNIT (e.g. gallons/year). This is what turns a per-unit price advantage
+// into a real, rankable dollar opportunity: savings/unit * annualVolume.
+// Volume is keyed to a canonical item when the item is matched (so it follows
+// the product across vendors) or to a standalone product otherwise. `source`
+// records provenance ('manual' demo/seed entry today; 'snowflake' once a
+// purchasing-system sync is wired up) so imported volumes can be refreshed
+// without clobbering hand-entered ones.
+export const purchaseVolumes = pgTable('purchase_volumes', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  canonicalItemId: integer('canonicalItemId'),
+  productId: integer('productId'),
+  locationId: integer('locationId'),
+  // annual volume in base units (e.g. USG/year)
+  annualVolume: numeric('annualVolume', { precision: 14, scale: 2 }).notNull(),
+  baseUnit: text('baseUnit'),
+  // human label for the period the volume covers, e.g. 'TTM' or '2025'
+  period: text('period'),
+  // 'manual' | 'snowflake'
+  source: text('source').notNull().default('manual'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
+// Captures why a user rejected a suggested match. Persisted independently of
+// the product row so the feedback survives re-matching, and so the AI pass can
+// learn from past rejections instead of re-proposing the same wrong pairings.
+// NOTE: uses its own table (not `match_feedback`, which is a separate, broader
+// feedback/support system) to avoid a schema collision on the shared database.
+export const matchRejectionFeedback = pgTable('match_rejection_feedback', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  productId: integer('productId').notNull(),
+  productName: text('productName').notNull(),
+  // The canonical item that was wrongly suggested (null if it was unmatched).
+  canonicalItemId: integer('canonicalItemId'),
+  canonicalItemName: text('canonicalItemName'),
+  note: text('note').notNull(),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
+// A request, raised by any signed-in user from the compare page, to remove a
+// product from its confirmed match. It is queued for an admin to approve (which
+// unlinks the product and all its pack sizes from the canonical item, exactly
+// like a Match Verification reject) or deny. The reason is captured up front so
+// admins have context and so approval can feed it into the rejection feedback.
+export const matchRemovalRequests = pgTable('match_removal_requests', {
+  id: serial('id').primaryKey(),
+  // who asked for the removal (snapshot of name for display stability)
+  requestedByUserId: text('requestedByUserId').notNull(),
+  requestedByName: text('requestedByName'),
+  productId: integer('productId').notNull(),
+  productName: text('productName').notNull(),
+  // the canonical item the product is currently matched to, if any
+  canonicalItemId: integer('canonicalItemId'),
+  canonicalItemName: text('canonicalItemName'),
+  reason: text('reason').notNull(),
+  // 'pending' | 'approved' | 'denied'
+  status: text('status').notNull().default('pending'),
+  resolvedByUserId: text('resolvedByUserId'),
+  resolvedByName: text('resolvedByName'),
+  resolvedAt: timestamp('resolvedAt'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
 export const products = pgTable('products', {
   id: serial('id').primaryKey(),
   userId: text('userId').notNull(),
@@ -105,7 +170,9 @@ export const products = pgTable('products', {
   sku: text('sku'),
   unit: text('unit'),
   // Fuzzy-matching to a canonical item. matchStatus is one of:
-  // 'unmatched' | 'suggested' | 'confirmed' | 'rejected'.
+  // 'unmatched' | 'suggested' | 'confirmed' | 'rejected' | 'excluded'.
+  // 'excluded' = a reviewer rule marked the product irrelevant (e.g. OEM-
+  // specific); it is removed from price comparison and skipped by match passes.
   canonicalItemId: integer('canonicalItemId'),
   matchStatus: text('matchStatus').notNull().default('unmatched'),
   matchScore: numeric('matchScore', { precision: 5, scale: 4 }),
@@ -130,8 +197,14 @@ export const vendorPrices = pgTable('vendor_prices', {
   vendorId: integer('vendorId').notNull(),
   locationId: integer('locationId'),
   unitPrice: numeric('unitPrice', { precision: 12, scale: 2 }).notNull(),
-  // Inbound freight expressed PER SELLING UNIT (same basis as unitPrice). Per-
-  // order/per-shipment freight is converted to per-unit at import or entry.
+  // What unitPrice is quoted per:
+  //  'pack' -> price is per SELLING UNIT (a drum/case/jug); normalize to a
+  //            per-base-unit cost by dividing by packSize.
+  //  'base' -> price is ALREADY per BASE UNIT (e.g. $/gallon); it must NOT be
+  //            divided by packSize again.
+  priceBasis: text('priceBasis').notNull().default('pack'),
+  // Inbound freight expressed PER SELLING UNIT (same basis as a 'pack' price).
+  // Per-order/per-shipment freight is converted to per-unit at import or entry.
   shippingCost: numeric('shippingCost', { precision: 12, scale: 2 })
     .notNull()
     .default('0'),
@@ -188,6 +261,9 @@ export const importRows = pgTable('import_rows', {
   unit: text('unit'),
   category: text('category'),
   unitPrice: numeric('unitPrice', { precision: 12, scale: 2 }),
+  // What unitPrice is quoted per: 'pack' (per selling unit, divide by packSize)
+  // or 'base' (already per base unit, e.g. $/gallon — do not divide again).
+  priceBasis: text('priceBasis').notNull().default('pack'),
   // Inbound freight per selling unit (converted from per-order at extraction).
   shippingCost: numeric('shippingCost', { precision: 12, scale: 2 })
     .notNull()

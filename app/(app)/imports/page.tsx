@@ -2,11 +2,13 @@ import { PageHeader } from '@/components/page-header'
 import { ImportsView } from '@/components/imports-view'
 import { getImports } from '@/app/actions/imports'
 import { getLocations } from '@/app/actions/locations'
+import { getVendors } from '@/app/actions/vendors'
 
 export default async function ImportsPage() {
-  const [imports, locations] = await Promise.all([
+  const [imports, locations, vendors] = await Promise.all([
     getImports(),
     getLocations(),
+    getVendors(),
   ])
 
   const locationMap = new Map(locations.map((l) => [l.id, l.name]))
@@ -34,6 +36,7 @@ export default async function ImportsPage() {
       <ImportsView
         imports={rows}
         locations={locations.map((l) => ({ id: l.id, name: l.name }))}
+        vendors={vendors.map((v) => ({ id: v.id, name: v.name }))}
       />
     </>
   )

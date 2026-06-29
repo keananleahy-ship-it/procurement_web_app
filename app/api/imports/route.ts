@@ -5,6 +5,7 @@ import { getCurrentUser, canEdit } from '@/lib/roles'
 import { db } from '@/lib/db'
 import { imports, importRows } from '@/lib/db/schema'
 import { extractPriceRows, type ExtractedRow } from '@/lib/extract'
+import { isPerBaseUnitPrice } from '@/lib/uom'
 
 export const maxDuration = 120
 
@@ -90,6 +91,16 @@ export async function POST(req: NextRequest) {
   const locationRaw = formData.get('locationId')
   const locationId =
     locationRaw && String(locationRaw) !== '' ? Number(locationRaw) : null
+  // User-supplied vendor for the whole price list. Used as the default for any
+  // row the AI couldn't attribute to a vendor on its own.
+  const userVendorName = String(formData.get('vendorName') ?? '').trim() || null
+  // User-declared freight basis for the whole list. When set, it overrides the
+  // AI's per-row guess; otherwise (null) we keep the per-row extraction.
+  const freightRaw = String(formData.get('freightTerms') ?? '').trim()
+  const userFreightTerms =
+    freightRaw === 'fob' || freightRaw === 'delivered' || freightRaw === 'both'
+      ? freightRaw
+      : null
 
   if (!(file instanceof File)) {
     return NextResponse.json({ error: 'No file provided' }, { status: 400 })
@@ -169,6 +180,11 @@ export async function POST(req: NextRequest) {
   const rows = (extraction.rows ?? []).filter((r) => r.productName?.trim())
   const fileType = isPdf ? 'pdf' : 'xls'
 
+  // The vendor to fall back to for rows without their own detected vendor. An
+  // explicit vendor the user typed on the upload form wins over the AI's
+  // document-level guess.
+  const defaultVendorName = userVendorName || extraction.defaultVendorName || null
+
   // Create the import record, then its staging rows.
   const [created] = await db
     .insert(imports)
@@ -181,9 +197,7 @@ export async function POST(req: NextRequest) {
       effectiveDate,
       status: 'pending',
       rowCount: rows.length,
-      note: extraction.defaultVendorName
-        ? `Document vendor: ${extraction.defaultVendorName}`
-        : null,
+      note: defaultVendorName ? `Document vendor: ${defaultVendorName}` : null,
     })
     .returning({ id: imports.id })
 
@@ -191,25 +205,50 @@ export async function POST(req: NextRequest) {
 
   if (rows.length > 0) {
     await db.insert(importRows).values(
-      rows.map((r) => ({
+      rows.map((r) => {
+        const unit = r.unit?.trim() || null
+        const baseUnit = r.baseUnit?.trim() || r.unit?.trim() || null
+        // Record whether the price is already per base unit. The shared helper
+        // normalizes UOM synonyms (gal/USG) and excludes count units like
+        // "each", so a per-gallon quote is stored 'base' while a 12-pack priced
+        // "each" stays 'pack' (a case price to be divided). An explicit 'base'
+        // from extraction always wins.
+        const priceBasis = isPerBaseUnitPrice({
+          unit,
+          baseUnit,
+          storedBasis: r.priceBasis,
+        })
+          ? 'base'
+          : 'pack'
+        // An explicit document-level freight choice wins; otherwise use the
+        // per-row extracted terms.
+        const rowFreight = userFreightTerms ?? normalizeFreight(r.freightTerms)
+        return {
         userId,
         importId,
         productName: r.productName.trim(),
-        vendorName: r.vendorName?.trim() || extraction.defaultVendorName || null,
+        vendorName: r.vendorName?.trim() || defaultVendorName,
         sku: r.sku?.trim() || null,
-        unit: r.unit?.trim() || null,
+        unit,
         packSize:
           r.packSize && r.packSize > 0 ? String(r.packSize) : '1',
-        baseUnit: r.baseUnit?.trim() || r.unit?.trim() || null,
+        baseUnit,
+        priceBasis,
         category: r.category?.trim() || null,
         unitPrice: toNumericString(r.unitPrice),
-        shippingCost: toNumericString(r.shippingCost) ?? '0',
-        freightTerms: normalizeFreight(r.freightTerms),
+        // A delivered all-in price already includes freight, so force shipping
+        // to 0 in that case; otherwise keep the extracted/estimated freight.
+        shippingCost:
+          rowFreight === 'delivered'
+            ? '0'
+            : toNumericString(r.shippingCost) ?? '0',
+        freightTerms: rowFreight,
         deliveredPrice: toNumericString(r.deliveredPrice),
         minOrderQty: r.minOrderQty && r.minOrderQty > 0 ? Math.round(r.minOrderQty) : 1,
         currency: (r.currency?.trim() || 'USD').toUpperCase(),
         include: true,
-      })),
+        }
+      }),
     )
   }
 
