@@ -13,6 +13,11 @@ import {
 
 export const maxDuration = 300
 
+// Per-batch ceiling. Normal batches return in ~10-20s; if one stalls past this
+// we abort it (counted as skipped) so the worker pool can finish and the
+// stream always closes instead of hanging open.
+const BATCH_TIMEOUT_MS = 90_000
+
 // Streaming AI match pass. Mirrors the generateAiSuggestions server action but
 // emits newline-delimited JSON progress events per batch so the client can show
 // a real, determinate progress bar instead of an indeterminate spinner.
@@ -98,11 +103,18 @@ export async function POST(req: Request) {
       // the run. Counter mutations are safe under concurrency because JS runs
       // them synchronously between awaits on a single thread.
       const processBatch = async (batch: typeof batches[number]) => {
+        // Bound every batch so a stalled OpenAI socket can't hang the run.
+        // A normal batch returns in ~10-20s; 90s is a generous ceiling after
+        // which we abort, count the batch as skipped, and move on. Also abort
+        // if the client navigated away (req.signal).
+        const timeout = AbortSignal.timeout(BATCH_TIMEOUT_MS)
+        const signal = AbortSignal.any([req.signal, timeout])
         try {
           const matches = await matchProductBatch(
             batch,
             canonicalOptions,
             feedback,
+            signal,
           )
           const byId = new Map(matches.map((m) => [m.productId, m]))
 

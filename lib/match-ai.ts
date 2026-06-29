@@ -112,6 +112,10 @@ export async function matchProductBatch(
   batch: ProductInput[],
   canonicalOptions: CanonicalInput[],
   feedback: RejectionFeedback[],
+  // Optional abort signal so callers can bound each batch with a timeout and/or
+  // cancel in-flight requests. Without it a stalled OpenAI socket would never
+  // resolve or reject, hanging the whole pass.
+  signal?: AbortSignal,
 ): Promise<AiMatch[]> {
   const payload = {
     products: batch,
@@ -127,6 +131,7 @@ export async function matchProductBatch(
   const { output } = await generateText({
     // Direct OpenAI provider (paid key) — see note at top of file.
     model: openai('gpt-5-mini'),
+    abortSignal: signal,
     system: SYSTEM_PROMPT,
     output: Output.object({ schema: matchSchema }),
     // 'low' reasoning keeps this catalog-classification task fast (high
