@@ -187,6 +187,12 @@ export function ImportsView({
                   <Select
                     value={freightTerms}
                     onValueChange={(v) => setFreightTerms(v ?? 'auto')}
+                    items={{
+                      auto: 'Auto-detect',
+                      fob: 'FOB origin',
+                      delivered: 'Delivered',
+                      both: 'Both',
+                    }}
                   >
                     <SelectTrigger>
                       <SelectValue />
@@ -219,6 +225,9 @@ export function ImportsView({
                     <Select
                       value={locationId}
                       onValueChange={(v) => setLocationId(v ?? '')}
+                      items={Object.fromEntries(
+                        locations.map((l) => [String(l.id), l.name]),
+                      )}
                     >
                       <SelectTrigger>
                         <SelectValue placeholder="Optional" />
