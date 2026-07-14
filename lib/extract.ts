@@ -195,7 +195,11 @@ async function mapWithConcurrency<T, R>(
 // output truncates. So we split spreadsheet rows into batches, extract each in
 // parallel, and merge the results.
 const ROWS_PER_CHUNK = 40
-const CONCURRENCY = 8
+// Each ~40-row structured-output call takes ~35s, so wall time is dominated by
+// the number of waves (chunks / concurrency). 12-wide keeps even a ~1500-row
+// file to ~3 waves (~110s) instead of ~5 (~180s), well under the 300s route
+// budget, while staying within OpenAI's per-minute request limits.
+const CONCURRENCY = 12
 const CHUNK_MAX_TOKENS = 24_000
 
 async function extractTextChunked(text: string): Promise<ExtractionResult> {

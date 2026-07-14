@@ -7,7 +7,12 @@ import { imports, importRows } from '@/lib/db/schema'
 import { extractPriceRows, type ExtractedRow } from '@/lib/extract'
 import { isPerBaseUnitPrice } from '@/lib/uom'
 
-export const maxDuration = 120
+// Large price lists (500+ rows) chunk into many sequential-ish AI extraction
+// waves; 700 rows measured ~110s for extraction alone, and the route also
+// parses the file, attributes vendors, and inserts every row afterward. 120s
+// (the previous cap) killed those uploads mid-run on production, surfacing as a
+// red error. Pro plan allows up to 300s, so give large files real headroom.
+export const maxDuration = 300
 
 // Cap how much text we send to the model. XLSX sheets can have a huge "used
 // range" full of empty cells; without bounding this the prompt balloons to
