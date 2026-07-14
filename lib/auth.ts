@@ -41,6 +41,10 @@ export const auth = betterAuth({
     // which won't match V0_RUNTIME_URL exactly. Trust the whole domain so the
     // sign-in POST isn't rejected with "Invalid origin".
     'https://*.vusercontent.net',
+    // Production custom domain. Without these, sign-in requests coming from the
+    // custom domain are rejected as "Invalid origin" once DNS is pointed here.
+    'https://leahywolf.net',
+    'https://www.leahywolf.net',
     ...(process.env.V0_RUNTIME_URL ? [process.env.V0_RUNTIME_URL] : []),
     ...(process.env.VERCEL_URL ? [`https://${process.env.VERCEL_URL}`] : []),
     ...(process.env.VERCEL_PROJECT_PRODUCTION_URL
