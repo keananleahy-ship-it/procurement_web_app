@@ -108,10 +108,10 @@ export function SavingsAssistant() {
             }
             return (
               <div key={m.id} className="flex flex-col gap-2">
-                {usingTool && !text && (
+                {!text && (
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <Loader2 className="size-3.5 animate-spin" />
-                    Analyzing savings data…
+                    {usingTool ? 'Analyzing savings data…' : 'Thinking…'}
                   </div>
                 )}
                 {text && (

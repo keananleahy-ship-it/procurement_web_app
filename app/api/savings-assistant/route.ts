@@ -12,8 +12,12 @@ import {
 } from '@/app/actions/comparisons'
 import { requireUser } from '@/lib/roles'
 
-// Allow generous time for multi-step tool reasoning.
-export const maxDuration = 60
+// gpt-5 spends significant time on internal reasoning before emitting answer
+// text (measured 20-50s+), and with a tool round-trip a full answer can exceed
+// 60s. At the old 60s cap the function was killed mid-stream after emitting
+// only reasoning tokens (which the UI doesn't render), so the user saw no
+// response at all. Pro plan allows up to 300s.
+export const maxDuration = 300
 
 // Shape the rich ProductComparison objects into a compact, token-friendly
 // payload the model can reason over: per-group vendor price matrix + volumes.
@@ -109,6 +113,13 @@ export async function POST(req: Request) {
     system: SYSTEM,
     messages: await convertToModelMessages(messages),
     stopWhen: stepCountIs(6),
+    // This is a grounded data-lookup task, not a hard reasoning problem. gpt-5
+    // defaults to high reasoning effort and can burn 20-50s "thinking" before
+    // emitting any answer text, which previously blew the function timeout and
+    // showed the user nothing. Low effort keeps answers fast and responsive.
+    providerOptions: {
+      openai: { reasoningEffort: 'low' },
+    },
     tools: {
       getSavingsData: tool({
         description:
