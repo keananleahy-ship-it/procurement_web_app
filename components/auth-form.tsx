@@ -1,7 +1,6 @@
 'use client'
 
 import { useState } from 'react'
-import Link from 'next/link'
 import { authClient } from '@/lib/auth-client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -107,14 +106,9 @@ export function AuthForm({ mode }: { mode: 'sign-in' | 'sign-up' }) {
           </Button>
         </form>
 
-        <p className="text-sm text-muted-foreground text-center mt-6">
-          {isSignUp ? 'Already have an account? ' : "Don't have an account? "}
-          <Link
-            href={isSignUp ? '/sign-in' : '/sign-up'}
-            className="text-foreground font-medium underline-offset-4 hover:underline"
-          >
-            {isSignUp ? 'Sign in' : 'Sign up'}
-          </Link>
+        <p className="text-sm text-muted-foreground text-center mt-6 text-balance">
+          Access is invite-only. Contact an administrator if you need an
+          account.
         </p>
       </Card>
     </main>

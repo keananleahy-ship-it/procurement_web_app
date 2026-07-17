@@ -175,7 +175,8 @@ export function UsersManager({
         </Table>
       </div>
       <p className="text-xs text-muted-foreground">
-        New sign-ups join as viewers. Promote them to uploader or admin here.
+        Members join with the role set on their invite. Change roles or remove
+        access here.
       </p>
     </div>
   )

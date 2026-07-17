@@ -1,30 +1,14 @@
 import { betterAuth } from 'better-auth'
-import { eq, sql } from 'drizzle-orm'
-import { pool, db } from '@/lib/db'
-import { user } from '@/lib/db/schema'
+import { pool } from '@/lib/db'
 
 export const auth = betterAuth({
   database: pool,
-  databaseHooks: {
-    user: {
-      create: {
-        // After a new account is created, promote it to admin if no admin
-        // exists yet — making the very first registered user the admin.
-        after: async (createdUser) => {
-          const [{ count }] = await db
-            .select({ count: sql<number>`count(*)::int` })
-            .from(user)
-            .where(eq(user.role, 'admin'))
-          if (count === 0) {
-            await db
-              .update(user)
-              .set({ role: 'admin' })
-              .where(eq(user.id, createdUser.id))
-          }
-        },
-      },
-    },
-  },
+  // Access is invite-only. Public sign-up is disabled so accounts can only be
+  // created by accepting a valid admin-issued invitation (see
+  // app/actions/invitations.ts, which creates users through the internal
+  // adapter with the pre-assigned role). The old "first user becomes admin"
+  // create-hook was removed: an existing admin is already in place, and with
+  // invite-based creation that hook could wrongly promote an invited viewer.
   baseURL:
     process.env.BETTER_AUTH_URL ??
     (process.env.VERCEL_PROJECT_PRODUCTION_URL
@@ -35,6 +19,9 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
     autoSignIn: true,
+    // Invite-only: block the public sign-up endpoint. New accounts are created
+    // exclusively via the accept-invite flow (internal adapter), not this API.
+    disableSignUp: true,
   },
   trustedOrigins: [
     // v0 preview iframes are served from rotating *.vusercontent.net origins,
