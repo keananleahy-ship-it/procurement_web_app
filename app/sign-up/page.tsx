@@ -1,10 +1,8 @@
-import { auth } from '@/lib/auth'
-import { headers } from 'next/headers'
 import { redirect } from 'next/navigation'
-import { AuthForm } from '@/components/auth-form'
 
-export default async function SignUpPage() {
-  const session = await auth.api.getSession({ headers: await headers() })
-  if (session?.user) redirect('/')
-  return <AuthForm mode="sign-up" />
+// Access is invite-only. Public sign-up has been removed — anyone hitting this
+// route is sent to sign in. New accounts are created only via a valid invite
+// link (/accept-invite).
+export default function SignUpPage() {
+  redirect('/sign-in')
 }

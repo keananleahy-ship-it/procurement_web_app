@@ -3,9 +3,20 @@
 import { useMemo, useState, useTransition } from 'react'
 import type { ProductComparison, PriceRow } from '@/app/actions/comparisons'
 import { setFreightEstimate } from '@/app/actions/prices'
+import { submitRemovalRequest } from '@/app/actions/removal-requests'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import {
   Table,
   TableBody,
@@ -18,7 +29,7 @@ import { Card } from '@/components/ui/card'
 import { DataPagination } from '@/components/data-pagination'
 import { EmptyState } from '@/components/empty-state'
 import { useCanEdit } from '@/components/role-provider'
-import { formatCurrency, formatDate } from '@/lib/format'
+import { formatCurrency, formatDate, formatNumber } from '@/lib/format'
 import {
   packFamily,
   PACK_FAMILIES,
@@ -28,8 +39,10 @@ import {
   ArrowDownNarrowWide,
   Boxes,
   CalendarClock,
+  ChevronDown,
   GitCompareArrows,
   Layers,
+  MinusCircle,
   Search,
   TrendingDown,
   TriangleAlert,
@@ -44,7 +57,23 @@ export function CompareView({
   const [query, setQuery] = useState('')
   const [families, setFamilies] = useState<Set<PackFamilyId>>(new Set())
   const [page, setPage] = useState(1)
+  // Cards are collapsed by default — only the selected ones reveal their price
+  // table, keeping the list scannable when there are many products.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const PAGE_SIZE = 15
+
+  function toggleExpanded(key: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  // The offer the user is requesting to remove from its match, if any. Opening
+  // the dialog stashes the target product so the reason prompt can submit it.
+  const [removalTarget, setRemovalTarget] = useState<PriceRow | null>(null)
 
   // Count offers per family across the whole catalog so we only show buttons
   // for families that actually exist, and can label each with its offer count.
@@ -213,7 +242,15 @@ export function CompareView({
       <div className="flex flex-col gap-6">
         {paged.map((c) => (
           <Card key={c.key} className="overflow-hidden p-0">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
+            <button
+              type="button"
+              onClick={() => toggleExpanded(c.key)}
+              aria-expanded={expanded.has(c.key)}
+              className={cn(
+                'flex w-full flex-wrap items-center justify-between gap-3 px-5 py-4 text-left transition-colors hover:bg-muted/40',
+                expanded.has(c.key) && 'border-b border-border',
+              )}
+            >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <h3 className="text-base font-semibold text-foreground">
@@ -264,14 +301,33 @@ export function CompareView({
                   )}
                 </p>
               </div>
-              {c.potentialSavings > 0 && (
-                <div className="flex items-center gap-1.5 rounded-md bg-success/10 px-3 py-1.5 text-sm font-medium text-success">
-                  <TrendingDown className="size-4" />
-                  Save {formatCurrency(c.potentialSavings)} / {c.baseUnit ?? 'unit'}
-                </div>
-              )}
-            </div>
+              <div className="flex items-center gap-3">
+                {c.potentialSavings > 0 && (
+                  <div className="flex flex-col items-end gap-0.5 rounded-md bg-success/10 px-3 py-1.5 text-sm font-medium text-success">
+                    <span className="flex items-center gap-1.5">
+                      <TrendingDown className="size-4" />
+                      Save {formatCurrency(c.potentialSavings)} /{' '}
+                      {c.baseUnit ?? 'unit'}
+                    </span>
+                    {c.realizableSavings > 0 && (
+                      <span className="text-xs font-normal text-success/80">
+                        {formatCurrency(c.realizableSavings)}/yr ·{' '}
+                        {formatNumber(Math.round(c.annualVolume))}{' '}
+                        {c.baseUnit ?? 'units'}/yr
+                      </span>
+                    )}
+                  </div>
+                )}
+                <ChevronDown
+                  className={cn(
+                    'size-5 shrink-0 text-muted-foreground transition-transform',
+                    expanded.has(c.key) && 'rotate-180',
+                  )}
+                />
+              </div>
+            </button>
 
+            {expanded.has(c.key) && (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -290,6 +346,9 @@ export function CompareView({
                   </TableHead>
                   <TableHead>Effective</TableHead>
                   <TableHead className="text-right">Status</TableHead>
+                  <TableHead className="text-right">
+                    <span className="sr-only">Actions</span>
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -343,7 +402,9 @@ export function CompareView({
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">
                         {o.packSize === 1 ? (
-                          <span className="text-muted-foreground/60">—</span>
+                          <span title={`Priced per ${o.baseUnit ?? 'unit'}`}>
+                            Bulk
+                          </span>
                         ) : (
                           <span title={`${o.packSize} ${o.baseUnit ?? 'units'} per ${o.unit ?? 'unit'}`}>
                             ×{o.packSize}
@@ -351,13 +412,26 @@ export function CompareView({
                         )}
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">
-                        {formatCurrency(
-                          o.effectiveBasis === 'delivered' &&
-                            o.deliveredPrice !== null
-                            ? o.deliveredPrice
-                            : o.unitPrice,
-                          o.currency,
-                        )}
+                        <span
+                          title={
+                            o.priceBasis === 'base'
+                              ? `Quoted per ${o.baseUnit ?? 'base unit'}; shown per ${o.unit ?? 'selling unit'} (×${o.packSize})`
+                              : undefined
+                          }
+                        >
+                          {formatCurrency(
+                            o.effectiveBasis === 'delivered' &&
+                              o.deliveredPrice !== null
+                              ? o.deliveredPrice
+                              : o.unitPrice,
+                            o.currency,
+                          )}
+                          {o.priceBasis === 'base' && (
+                            <span className="ml-1 text-[11px] font-normal text-muted-foreground/70">
+                              /{o.baseUnit ?? 'unit'}→pack
+                            </span>
+                          )}
+                        </span>
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">
                         {o.effectiveBasis === 'delivered' ? (
@@ -407,6 +481,18 @@ export function CompareView({
                               ex-freight
                             </span>
                           </span>
+                        ) : o.unitConverted ? (
+                          <span
+                            title={`Quoted ${formatCurrency(o.pricePerBaseUnit, o.currency)}/${o.baseUnit ?? 'unit'}; normalized to per ${c.baseUnit ?? 'base unit'} using gear-oil density`}
+                          >
+                            {formatCurrency(
+                              o.comparablePricePerBaseUnit,
+                              o.currency,
+                            )}
+                            <span className="ml-1 text-[11px] font-normal text-muted-foreground/70">
+                              ≈ from /{o.baseUnit ?? 'unit'}
+                            </span>
+                          </span>
                         ) : (
                           formatCurrency(o.pricePerBaseUnit, o.currency)
                         )}
@@ -441,15 +527,39 @@ export function CompareView({
                           <Badge variant="outline" className="text-destructive">
                             Highest
                           </Badge>
+                        ) : o.unitConverted ? (
+                          <Badge
+                            variant="outline"
+                            className="gap-1 text-muted-foreground"
+                            title={`Normalized from per ${o.baseUnit ?? 'unit'} to per ${c.baseUnit ?? 'base unit'} (gear-oil density) so it can be compared`}
+                          >
+                            <GitCompareArrows className="size-3" />
+                            Converted
+                          </Badge>
                         ) : (
                           <span className="text-muted-foreground">—</span>
                         )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-muted-foreground hover:text-destructive"
+                          onClick={() => setRemovalTarget(o)}
+                          title="Request that this item be removed from its match"
+                        >
+                          <MinusCircle className="size-4" />
+                          <span className="sr-only">
+                            Request removal of {o.productName}
+                          </span>
+                        </Button>
                       </TableCell>
                     </TableRow>
                   )
                 })}
               </TableBody>
             </Table>
+            )}
           </Card>
         ))}
         <div className="rounded-lg border border-border bg-card">
@@ -463,7 +573,119 @@ export function CompareView({
         </div>
       </div>
       )}
+
+      <RemovalRequestDialog
+        offer={removalTarget}
+        onClose={() => setRemovalTarget(null)}
+      />
     </div>
+  )
+}
+
+// Dialog that collects a reason and submits a request to remove a product from
+// its match. Any signed-in user can submit; an admin approves it later.
+function RemovalRequestDialog({
+  offer,
+  onClose,
+}: {
+  offer: PriceRow | null
+  onClose: () => void
+}) {
+  const [reason, setReason] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [done, setDone] = useState(false)
+  const [isPending, startTransition] = useTransition()
+
+  // Reset transient state whenever a new target opens the dialog.
+  const open = offer !== null
+  function handleOpenChange(next: boolean) {
+    if (!next) {
+      onClose()
+      setReason('')
+      setError(null)
+      setDone(false)
+    }
+  }
+
+  function submit() {
+    if (!offer) return
+    const trimmed = reason.trim()
+    if (!trimmed) {
+      setError('Please enter a reason for the removal request.')
+      return
+    }
+    setError(null)
+    startTransition(async () => {
+      try {
+        await submitRemovalRequest(offer.productId, trimmed)
+        setDone(true)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not submit request.')
+      }
+    })
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Request match removal</DialogTitle>
+          <DialogDescription>
+            {done
+              ? 'Your request has been submitted for admin review.'
+              : 'Ask an admin to remove this item from its match. Tell them why — this also helps train future matching.'}
+          </DialogDescription>
+        </DialogHeader>
+
+        {!done && offer && (
+          <div className="flex flex-col gap-3">
+            <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+              <span className="font-medium text-foreground">
+                {offer.productName}
+              </span>
+              <span className="block text-muted-foreground">
+                {offer.vendorName}
+              </span>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="removal-reason">Reason</Label>
+              <Textarea
+                id="removal-reason"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="e.g. This is a different product than the others in this group."
+                rows={3}
+                autoFocus
+              />
+            </div>
+            {error && (
+              <p className="text-sm text-destructive" role="alert">
+                {error}
+              </p>
+            )}
+          </div>
+        )}
+
+        <DialogFooter>
+          {done ? (
+            <Button onClick={() => handleOpenChange(false)}>Close</Button>
+          ) : (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => handleOpenChange(false)}
+                disabled={isPending}
+              >
+                Cancel
+              </Button>
+              <Button onClick={submit} disabled={isPending}>
+                {isPending ? 'Submitting…' : 'Submit request'}
+              </Button>
+            </>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

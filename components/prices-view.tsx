@@ -73,6 +73,7 @@ export function PricesView({
   const [vendorId, setVendorId] = useState('')
   const [locationId, setLocationId] = useState('')
   const [freightTerms, setFreightTerms] = useState('fob')
+  const [priceBasis, setPriceBasis] = useState('pack')
   const [isPending, startTransition] = useTransition()
   const canEdit = useCanEdit()
 
@@ -109,6 +110,7 @@ export function PricesView({
     setVendorId('')
     setLocationId('')
     setFreightTerms('fob')
+    setPriceBasis('pack')
   }
 
   return (
@@ -230,6 +232,39 @@ export function PricesView({
                       required
                       placeholder="0.00"
                     />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label>Priced per</Label>
+                    <input type="hidden" name="priceBasis" value={priceBasis} />
+                    <Select
+                      value={priceBasis}
+                      onValueChange={(v) =>
+                        setPriceBasis(v === 'base' ? 'base' : 'pack')
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue>
+                          {(value: string) =>
+                            value === 'base'
+                              ? 'Base unit (e.g. gallon)'
+                              : 'Selling unit (pack)'
+                          }
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="pack">
+                          Selling unit — the whole pack/container
+                        </SelectItem>
+                        <SelectItem value="base">
+                          Base unit — e.g. per gallon/litre/kg
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      {priceBasis === 'base'
+                        ? 'Price is already per base unit — it will not be divided by pack size.'
+                        : 'Price covers the whole pack — it will be divided by pack size to compare.'}
+                    </p>
                   </div>
                   {showShipping && (
                     <div className="flex flex-col gap-2">
