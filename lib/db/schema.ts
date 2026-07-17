@@ -65,6 +65,29 @@ export const verification = pgTable('verification', {
   updatedAt: timestamp('updatedAt').defaultNow(),
 })
 
+// Admin-issued invitations. Access is invite-only: public sign-up is disabled,
+// and an account can only be created by accepting a valid invite. Only a hash
+// of the token is stored — the raw token exists solely in the link handed to
+// the admin, so a database leak can't be used to accept invites.
+export const invitations = pgTable('invitations', {
+  id: text('id').primaryKey(),
+  // The email the invite is locked to (lowercased). The recipient must
+  // register with this exact address.
+  email: text('email').notNull(),
+  // Role granted on acceptance: 'viewer' | 'uploader' | 'admin'.
+  role: text('role').notNull().default('viewer'),
+  // SHA-256 hex of the raw token. Never store the raw token.
+  tokenHash: text('tokenHash').notNull(),
+  // 'pending' | 'accepted' | 'revoked'. Expiry is derived from expiresAt.
+  status: text('status').notNull().default('pending'),
+  invitedByUserId: text('invitedByUserId'),
+  invitedByName: text('invitedByName'),
+  expiresAt: timestamp('expiresAt').notNull(),
+  acceptedAt: timestamp('acceptedAt'),
+  acceptedByUserId: text('acceptedByUserId'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
 // --- App tables ------------------------------------------------------------
 // Per-user scoping via `userId`; no FKs on app tables by design.
 
