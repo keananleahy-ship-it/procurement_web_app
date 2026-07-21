@@ -2,6 +2,7 @@ import 'server-only'
 
 import { eq, sql } from 'drizzle-orm'
 import { headers } from 'next/headers'
+import { redirect } from 'next/navigation'
 import { auth } from '@/lib/auth'
 import { db } from '@/lib/db'
 import { user } from '@/lib/db/schema'
@@ -48,10 +49,12 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
   return { ...row, role: normalizeRole(row.role) }
 }
 
-// Throws when unauthenticated; returns the session user otherwise.
+// Redirects to sign-in when unauthenticated; returns the session user otherwise.
+// Using redirect() (instead of throwing) keeps page renders and server actions
+// from surfacing an "Unauthorized" render error when the session is missing.
 export async function requireUser(): Promise<SessionUser> {
   const current = await getCurrentUser()
-  if (!current) throw new Error('Unauthorized')
+  if (!current) redirect('/sign-in')
   return current
 }
 
