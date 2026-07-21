@@ -8,7 +8,7 @@ import {
   products,
 } from '@/lib/db/schema'
 import { requireUser, requireAdmin } from '@/lib/roles'
-import { and, desc, eq, ne } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 
 /**
@@ -90,11 +90,11 @@ export async function getPendingRemovalRequestCount() {
 }
 
 /**
- * Admin approves a removal request: unlink the product from its canonical item
- * and mark it 'rejected', cascading to ALL other pack sizes of the same item
- * (these are confirmed matches on the compare page, so we intentionally include
- * confirmed siblings, not just suggested ones). The requester's reason is also
- * recorded as rejection feedback so the AI matcher learns from it.
+ * Admin approves a removal request: unlink ONLY the requested product from its
+ * canonical item and mark it 'rejected'. Other vendor products matched to the
+ * same canonical item are left intact, so the rest of the comparison group
+ * still stands. The requester's reason is also recorded as rejection feedback
+ * so the AI matcher learns from it.
  */
 export async function approveRemovalRequest(requestId: number) {
   const { id: adminId, name: adminName } = await requireAdmin()
@@ -121,7 +121,9 @@ export async function approveRemovalRequest(requestId: number) {
     note: reqRow.reason.slice(0, 1000),
   })
 
-  // Reject + unlink the requested product.
+  // Reject + unlink ONLY the requested product. Siblings matched to the same
+  // canonical item are intentionally left untouched so the comparison group
+  // keeps its other vendor offers.
   await db
     .update(products)
     .set({
@@ -131,29 +133,6 @@ export async function approveRemovalRequest(requestId: number) {
       matchReason: null,
     })
     .where(eq(products.id, reqRow.productId))
-
-  // Cascade to every OTHER pack size still linked to the same canonical item,
-  // regardless of confirmed/suggested status, so the whole item leaves the
-  // comparison together.
-  let cascaded = 0
-  if (canonicalItemId !== null) {
-    const siblings = await db
-      .update(products)
-      .set({
-        matchStatus: 'rejected',
-        canonicalItemId: null,
-        matchScore: null,
-        matchReason: null,
-      })
-      .where(
-        and(
-          eq(products.canonicalItemId, canonicalItemId),
-          ne(products.id, reqRow.productId),
-        ),
-      )
-      .returning({ id: products.id })
-    cascaded = siblings.length
-  }
 
   await db
     .update(matchRemovalRequests)
@@ -168,7 +147,7 @@ export async function approveRemovalRequest(requestId: number) {
   revalidatePath('/matching')
   revalidatePath('/compare')
   revalidatePath('/')
-  return { rejected: 1 + cascaded }
+  return { rejected: 1 }
 }
 
 /** Admin denies a removal request: the match is left intact. */
