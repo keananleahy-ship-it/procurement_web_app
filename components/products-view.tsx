@@ -72,7 +72,7 @@ function MatchEditor({
           })
         }
       >
-        <SelectTrigger className="h-8 w-48 text-xs">
+        <SelectTrigger className="h-8 w-64 text-xs">
           <SelectValue
             placeholder={
               product.matchStatus === 'confirmed'
@@ -81,9 +81,13 @@ function MatchEditor({
             }
           />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent className="max-w-[min(24rem,90vw)]">
           {canonicalItems.map((c) => (
-            <SelectItem key={c.id} value={String(c.id)} className="text-xs">
+            <SelectItem
+              key={c.id}
+              value={String(c.id)}
+              className="text-xs whitespace-normal"
+            >
               {c.name}
             </SelectItem>
           ))}
