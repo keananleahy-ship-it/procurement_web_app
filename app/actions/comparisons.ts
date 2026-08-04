@@ -98,6 +98,8 @@ export type ProductComparison = {
   // true when this group represents a confirmed canonical item spanning
   // potentially multiple vendor products
   isCanonical: boolean
+  // the canonical item id when isCanonical is true, else null
+  canonicalItemId: number | null
   // base unit used to normalize prices in this group (e.g. 'each', 'litre')
   baseUnit: string | null
   // true when offers in this group have differing pack sizes
@@ -518,6 +520,7 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
       category: offers[0].category,
       unit: offers[0].unit,
       isCanonical,
+      canonicalItemId: isCanonical ? offers[0].canonicalItemId : null,
       baseUnit,
       mixedPackSizes,
       hasUnitMismatch,

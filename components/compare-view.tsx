@@ -165,8 +165,8 @@ export function CompareView({
     type: EntityType
     id: number
   } {
-    if (c.isCanonical) {
-      return { type: 'canonical', id: Number(c.key.slice(1)) }
+    if (c.isCanonical && c.canonicalItemId !== null) {
+      return { type: 'canonical', id: c.canonicalItemId }
     }
     return { type: 'product', id: c.productId }
   }
@@ -615,21 +615,15 @@ export function CompareView({
                     </TableRow>
                   )
                 })}
-              </TableBody>
-            </Table>
-            )}
-          </Card>
-        ))}
-        <div className="rounded-lg border border-border bg-card">
-          <DataPagination
-            page={currentPage}
-            pageSize={PAGE_SIZE}
-            total={filtered.length}
-            onPageChange={setPage}
-            label="products"
-          />
-        </div>
-      </div>
+                          </TableBody>
+                        </Table>
+                      )}
+                  </Card>
+                )
+              })}
+            </div>
+          )}
+        />
       )}
 
       <RemovalRequestDialog
