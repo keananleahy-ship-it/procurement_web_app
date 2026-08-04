@@ -50,6 +50,7 @@ type CanonicalOption = { id: number; name: string }
 type Product = {
   id: number
   name: string
+  brand: string | null
   category: string | null
   subcategory: string | null
   viscosity: string | null
@@ -206,6 +207,7 @@ function ProductTable({
                       label={p.name}
                       values={{
                         supplier: p.supplier,
+                        brand: p.brand,
                         category: p.category,
                         subcategory: p.subcategory,
                         viscosity: p.viscosity,
@@ -258,12 +260,13 @@ export function ProductsView({
         id: String(p.id),
         attributes: {
           supplier: p.supplier,
+          brand: p.brand,
           category: p.category,
           subcategory: p.subcategory,
           viscosity: p.viscosity,
           packageType: p.packageType,
         },
-        searchText: [p.name, p.category, p.sku, p.canonicalItemName]
+        searchText: [p.name, p.brand, p.category, p.sku, p.canonicalItemName]
           .filter(Boolean)
           .join(' ')
           .toLowerCase(),

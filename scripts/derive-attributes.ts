@@ -50,13 +50,22 @@ async function deriveProducts() {
     const a = deriveAttributes(r.name, packSize)
     await pool.query(
       `UPDATE products
-         SET category = $2,
-             subcategory = $3,
-             viscosity = $4,
-             "packageType" = $5,
-             supplier = $6
+         SET brand = $2,
+             category = $3,
+             subcategory = $4,
+             viscosity = $5,
+             "packageType" = $6,
+             supplier = $7
        WHERE id = $1`,
-      [r.id, a.category, a.subcategory, a.viscosity, a.packageType, r.supplier],
+      [
+        r.id,
+        a.brand,
+        a.category,
+        a.subcategory,
+        a.viscosity,
+        a.packageType,
+        r.supplier,
+      ],
     )
     if (++n % 250 === 0) console.log(`[derive]   products ${n}/${rows.length}`)
   }

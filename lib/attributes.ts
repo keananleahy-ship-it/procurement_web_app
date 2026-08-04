@@ -11,6 +11,7 @@
 
 export type AttributeKey =
   | 'supplier'
+  | 'brand'
   | 'category'
   | 'subcategory'
   | 'viscosity'
@@ -21,28 +22,38 @@ export type AttributeDef = {
   label: string
 }
 
-// Full ordered set. The default Products hierarchy uses all five; Compare and
-// Canonical use a subset (see each screen).
+// Shared attribute defs. "Subcategory" holds the application / duty (Heavy
+// Duty Diesel, Passenger Car, Industrial, Aviation, ...), not a brand.
 export const ALL_ATTRIBUTES: AttributeDef[] = [
   { key: 'supplier', label: 'Supplier' },
   { key: 'category', label: 'Category' },
-  { key: 'subcategory', label: 'Subcategory' },
+  { key: 'subcategory', label: 'Application / Duty' },
   { key: 'viscosity', label: 'Viscosity' },
   { key: 'packageType', label: 'Package size' },
 ]
 
-// Attributes available on the Products screen (each product has one supplier
-// and one pack size, so all five apply).
-export const PRODUCT_ATTRIBUTES: AttributeDef[] = ALL_ATTRIBUTES
+const BRAND_ATTRIBUTE: AttributeDef = { key: 'brand', label: 'Brand' }
 
-// Compare compares suppliers/pack sizes side-by-side *inside* each card, so
-// those two are excluded as grouping levels there.
+// Attributes available on the Products screen. Each product has exactly one
+// supplier, brand, and pack size, so all apply. Brand slots in right after
+// supplier so the common "supplier > brand > category" drill-down is easy.
+export const PRODUCT_ATTRIBUTES: AttributeDef[] = [
+  { key: 'supplier', label: 'Supplier' },
+  BRAND_ATTRIBUTE,
+  { key: 'category', label: 'Category' },
+  { key: 'subcategory', label: 'Application / Duty' },
+  { key: 'viscosity', label: 'Viscosity' },
+  { key: 'packageType', label: 'Package size' },
+]
+
+// Compare compares suppliers/pack sizes side-by-side *inside* each card, and a
+// comparison row can span several brands, so all three are excluded here.
 export const COMPARE_ATTRIBUTES: AttributeDef[] = ALL_ATTRIBUTES.filter(
   (a) => a.key !== 'supplier' && a.key !== 'packageType',
 )
 
-// A canonical item spans vendors and pack sizes, so it only carries the
-// item-intrinsic attributes.
+// A canonical item spans vendors, brands, and pack sizes, so it only carries
+// the item-intrinsic attributes.
 export const CANONICAL_ATTRIBUTES: AttributeDef[] = ALL_ATTRIBUTES.filter(
   (a) => a.key === 'category' || a.key === 'subcategory' || a.key === 'viscosity',
 )
@@ -52,10 +63,12 @@ export function emptyLabelFor(key: AttributeKey): string {
   switch (key) {
     case 'supplier':
       return 'No supplier'
+    case 'brand':
+      return 'No brand'
     case 'category':
       return 'Uncategorized'
     case 'subcategory':
-      return 'No subcategory'
+      return 'No application'
     case 'viscosity':
       return 'No viscosity'
     case 'packageType':
@@ -146,45 +159,65 @@ const CATEGORY_PATTERNS: { label: string; test: RegExp }[] = [
   { label: 'Chain & Bar Oil', test: /\bCHAIN\b|\bBAR\b\s*OIL|CHAINSAW/ },
 ]
 
-// Tokens stripped from a name to derive the product "line" (subcategory). These
-// are package words, size tokens, and noise so that e.g.
-// "ACCUFLO TK 68 205L DRUM" -> "Accuflo Tk".
-const SUBCATEGORY_STRIP = [
-  /\bBULK\b/g,
-  /\bDECANT\b/g,
-  /\bIBC\b/g,
-  /\bTOTE\b/g,
-  /\bDRUMS?\b/g,
-  /\bDRM\b/g,
-  /\bPAILS?\b/g,
-  /\bKEG\b/g,
-  /\bCASE\b/g,
-  /\bCS\b/g,
-  /\bJUGS?\b/g,
-  /PETRO\s*-?\s*PAK|PETROPAK/g,
-  /\bPETROPAK\b/g,
-  /\bUS\s*GAL(LON)?\b/g,
-  /\bUSG\b/g,
-  /\d+\s*X\s*\d+\s*L?/g, // 12X1L, 4X1
-  /\d+(\.\d+)?\s*L\b/g, // 205 L, 20L, 1040L
-  /\d+(\.\d+)?\s*ML\b/g,
-  /\d+(\.\d+)?\s*KG\b/g,
-  /\d+(\.\d+)?\s*USG\b/g,
-  /\(T\)/g,
-  /\bDRUM\b/g,
+// Application / duty ("subcategory"). Ordered, first match wins, so the more
+// specific end use is checked before the generic industrial fallback. These
+// key off end-use signals in the name (API service categories, product
+// families, application words), NOT brand names. Left null when nothing
+// clearly indicates an application, so a reviewer can assign it.
+const APPLICATION_PATTERNS: { label: string; test: RegExp }[] = [
+  { label: 'Aviation', test: /AVIATION|\bAERO\b|\b5606\b/ },
+  { label: 'Marine', test: /\bMARINE\b|OUTBOARD/ },
+  {
+    label: 'Food Grade',
+    test: /FOOD\s*GRADE|\bFG\b|PURITY|WHITE\s*OIL|\bH1\b|\bNSF\b/,
+  },
+  {
+    // Diesel / fleet engine oils. Checked before Passenger Car so dual-rated
+    // oils (e.g. "CK-4/SN") land under the heavier duty.
+    label: 'Heavy Duty Diesel',
+    test: /HEAVY\s*DUTY\s*DIESEL|\bHDD\b|\bDIESEL\b|\bC[IJKF]-?4\b|\bCH-?4\b|DURON|GUARDOL|\bFLEET\b|SUPER-?\s*D\b|\bT5X\b|SUPER\s*C\b/,
+  },
+  {
+    // Gasoline passenger-car engine oils, signalled by ILSAC GF-x or API S*.
+    label: 'Passenger Car',
+    test: /\bGF-?\d\b|\bILSAC\b|\bPCMO\b|PASSENGER|GASOLINE|\bS[NPMLJ]\/GF|\bAPI\s*S[NPMLJ]\b|\bS[NP]\b/,
+  },
+  {
+    // Off-highway / heavy-equipment drivetrain & transmission oils.
+    label: 'Off-Highway & Drivetrain',
+    test: /\bTO-?4\b|PRODURO|POWERDRIVE|POWERTRAN|DURATRAN|\bUTTO\b|\bSTOU\b|TRACTOR|AGRICULT|HYDROSTATIC/,
+  },
+  {
+    // Industrial plant lubricants: hydraulics, gears, turbines, compressors,
+    // circulating / R&O, rock drill, metalworking, way/slideway oils.
+    label: 'Industrial',
+    test: /HYDRAULIC|\bHVI\b|\bAW\s*\d|TURBINE|COMPRESSOR|R\s*&\s*O|\bR\s+O\b|RUST.*OXID|CIRCULAT|ROCK\s*DRILL|METALWORK|CUTTING|SOLUBLE|SLIDEWAY|\bWAY\s*OIL\b|HEAT\s*TRANSFER|SYNDUSTRIAL/,
+  },
 ]
 
-function normalizeSpace(s: string): string {
-  return s.replace(/\s+/g, ' ').trim()
-}
-
-function titleCase(s: string): string {
-  return s
-    .toLowerCase()
-    .split(' ')
-    .map((w) => (w.length ? w[0].toUpperCase() + w.slice(1) : w))
-    .join(' ')
-}
+// Brand / product-line mapping. Ordered, first match wins. Product-line names
+// map to their parent brand (e.g. Duron/Hydrex/Turboflo -> Petro-Canada).
+// Left null when the brand can't be identified, so a reviewer can assign it.
+const BRAND_PATTERNS: { label: string; test: RegExp }[] = [
+  { label: 'Phillips 66', test: /\bP66\b|PHILLIPS\s*66/ },
+  { label: 'Kendall', test: /\bKENDALL\b/ },
+  { label: 'Pennzoil', test: /\bPZL\b|PENNZOIL/ },
+  { label: 'Sunoco', test: /\bSUNOCO\b|\bSUNVIS\b|\bSUNEP\b/ },
+  {
+    label: 'Petro-Canada',
+    test: /PETRO\s*-?\s*CANADA|\bDURON\b|\bSUPREME\b|\bHYDREX\b|\bTURBOFLO\b|\bPURITY\b|\bPRODURO\b|\bENDURATEX\b|\bENVIRON\b|\bSYNDURO\b|\bPC\b/,
+  },
+  {
+    label: 'Shell',
+    test: /\bSHELL\b|\bTELLUS\b|\bOMALA\b|\bRIMULA\b|\bCORENA\b|\bMORLINA\b|\bTURBO\s*[ST]\d?\b/,
+  },
+  { label: 'Performax', test: /PERFORMAX|\bPERF\b/ },
+  { label: 'Honda', test: /\bHONDA\b/ },
+  { label: 'JCB', test: /\bJCB\b/ },
+  { label: 'Mesa', test: /\bMESA\b/ },
+  { label: 'Black Bear', test: /BLACK\s*BEAR/ },
+  { label: 'HRC', test: /\bHRC\b/ },
+]
 
 export function derivePackageType(name: string, packSize?: number): string | null {
   const upper = name.toUpperCase()
@@ -230,26 +263,47 @@ export function deriveViscosity(name: string): string | null {
   return null
 }
 
-export function deriveSubcategory(name: string): string | null {
-  let s = name.toUpperCase()
-  for (const re of SUBCATEGORY_STRIP) s = s.replace(re, ' ')
-  // Drop standalone numbers (grades/sizes) once package words are gone. Also
-  // eat a dash directly attached to the number (e.g. "CK-4" -> "CK", not
-  // "CK-") so no orphaned hyphen is left behind.
-  s = s.replace(/-?\b\d+(\.\d+)?\b/g, ' ')
-  // Drop leftover single-letter noise and punctuation.
-  s = s.replace(/[^A-Z0-9\s-]/g, ' ')
-  // Collapse orphaned dashes: dashes flanked by spaces, dashes trailing a word
-  // ("CK- " -> "CK "), dashes leading a word, and any left at the edges.
-  s = s
-    .replace(/\s-+\s/g, ' ')
-    .replace(/([A-Z0-9])-+(\s|$)/g, '$1$2')
-    .replace(/(^|\s)-+([A-Z0-9])/g, '$1$2')
-  s = normalizeSpace(s).replace(/^-+\s*|\s*-+$/g, '')
-  if (!s) return null
-  // Keep the first few words as the product line to avoid over-long labels.
-  const words = s.split(' ').slice(0, 4).join(' ')
-  return titleCase(words)
+// Product categories that are inherently industrial-plant lubricants. When a
+// name carries no more-specific application signal, membership in one of these
+// categories is itself the application/duty.
+const INDUSTRIAL_CATEGORIES = new Set([
+  'Hydraulic Fluid',
+  'Gear Oil',
+  'Compressor Fluid',
+  'Turbine Oil',
+  'Circulating / R&O Oil',
+  'Heat Transfer Fluid',
+  'Rock Drill Oil',
+  'Metalworking Fluid',
+  'Grease',
+  'Chain & Bar Oil',
+])
+
+// Application / duty (stored in the `subcategory` column). Returns a value from
+// a controlled set (Aviation, Heavy Duty Diesel, Industrial, ...) or null when
+// nothing indicates an end use. Checks explicit name signals first, then falls
+// back to the category for inherently-industrial product classes. This
+// deliberately does NOT fall back to the brand/product-line name, which was the
+// source of the earlier "brand as subcategory" mislabeling.
+export function deriveSubcategory(
+  name: string,
+  category?: string | null,
+): string | null {
+  const upper = name.toUpperCase()
+  for (const a of APPLICATION_PATTERNS) {
+    if (a.test.test(upper)) return a.label
+  }
+  if (category && INDUSTRIAL_CATEGORIES.has(category)) return 'Industrial'
+  return null
+}
+
+// Manufacturer / product-line brand. Returns a known brand or null.
+export function deriveBrand(name: string): string | null {
+  const upper = name.toUpperCase()
+  for (const b of BRAND_PATTERNS) {
+    if (b.test.test(upper)) return b.label
+  }
+  return null
 }
 
 // Derive all name-based attributes for an item at once.
@@ -257,14 +311,17 @@ export function deriveAttributes(
   name: string,
   packSize?: number,
 ): {
+  brand: string | null
   category: string | null
   subcategory: string | null
   viscosity: string | null
   packageType: string | null
 } {
+  const category = deriveCategory(name)
   return {
-    category: deriveCategory(name),
-    subcategory: deriveSubcategory(name),
+    brand: deriveBrand(name),
+    category,
+    subcategory: deriveSubcategory(name, category),
     viscosity: deriveViscosity(name),
     packageType: derivePackageType(name, packSize),
   }

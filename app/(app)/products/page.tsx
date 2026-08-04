@@ -28,6 +28,7 @@ export default async function ProductsPage() {
           return {
             id: p.id,
             name: p.name,
+            brand: p.brand,
             category: p.category,
             subcategory: p.subcategory,
             viscosity: p.viscosity,

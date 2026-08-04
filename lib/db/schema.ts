@@ -199,11 +199,14 @@ export const products = pgTable('products', {
   // --- Hierarchy attributes (for the roll-up / expand grouping views) -------
   // These are derived from the product name + pack size by a batch script and
   // then editable by reviewers. The grouping UI nests products by an ordered,
-  // user-chosen subset of: supplier > category > subcategory > viscosity >
-  // packageType. `supplier` mirrors the product's single vendor (each product
-  // has exactly one) so it can be grouped without a join. `attributesEdited`
-  // guards a value a human corrected so the derivation script won't overwrite
-  // it on a re-run.
+  // user-chosen subset of: supplier > brand > category > subcategory >
+  // viscosity > packageType. `supplier` mirrors the product's single vendor
+  // (each product has exactly one) so it can be grouped without a join.
+  // `brand` is the manufacturer/product-line brand parsed from the name (e.g.
+  // Phillips 66, Petro-Canada). `subcategory` is the application/duty (e.g.
+  // Heavy Duty Diesel, Industrial). `attributesEdited` guards a value a human
+  // corrected so the derivation script won't overwrite it on a re-run.
+  brand: text('brand'),
   subcategory: text('subcategory'),
   viscosity: text('viscosity'),
   packageType: text('packageType'),
