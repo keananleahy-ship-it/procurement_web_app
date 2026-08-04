@@ -233,11 +233,19 @@ export function deriveViscosity(name: string): string | null {
 export function deriveSubcategory(name: string): string | null {
   let s = name.toUpperCase()
   for (const re of SUBCATEGORY_STRIP) s = s.replace(re, ' ')
-  // Drop standalone numbers (grades/sizes) once package words are gone.
-  s = s.replace(/\b\d+(\.\d+)?\b/g, ' ')
+  // Drop standalone numbers (grades/sizes) once package words are gone. Also
+  // eat a dash directly attached to the number (e.g. "CK-4" -> "CK", not
+  // "CK-") so no orphaned hyphen is left behind.
+  s = s.replace(/-?\b\d+(\.\d+)?\b/g, ' ')
   // Drop leftover single-letter noise and punctuation.
   s = s.replace(/[^A-Z0-9\s-]/g, ' ')
-  s = normalizeSpace(s)
+  // Collapse orphaned dashes: dashes flanked by spaces, dashes trailing a word
+  // ("CK- " -> "CK "), dashes leading a word, and any left at the edges.
+  s = s
+    .replace(/\s-+\s/g, ' ')
+    .replace(/([A-Z0-9])-+(\s|$)/g, '$1$2')
+    .replace(/(^|\s)-+([A-Z0-9])/g, '$1$2')
+  s = normalizeSpace(s).replace(/^-+\s*|\s*-+$/g, '')
   if (!s) return null
   // Keep the first few words as the product line to avoid over-long labels.
   const words = s.split(' ').slice(0, 4).join(' ')
