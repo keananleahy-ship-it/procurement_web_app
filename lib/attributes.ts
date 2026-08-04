@@ -31,6 +31,22 @@ export const ALL_ATTRIBUTES: AttributeDef[] = [
   { key: 'packageType', label: 'Package size' },
 ]
 
+// Attributes available on the Products screen (each product has one supplier
+// and one pack size, so all five apply).
+export const PRODUCT_ATTRIBUTES: AttributeDef[] = ALL_ATTRIBUTES
+
+// Compare compares suppliers/pack sizes side-by-side *inside* each card, so
+// those two are excluded as grouping levels there.
+export const COMPARE_ATTRIBUTES: AttributeDef[] = ALL_ATTRIBUTES.filter(
+  (a) => a.key !== 'supplier' && a.key !== 'packageType',
+)
+
+// A canonical item spans vendors and pack sizes, so it only carries the
+// item-intrinsic attributes.
+export const CANONICAL_ATTRIBUTES: AttributeDef[] = ALL_ATTRIBUTES.filter(
+  (a) => a.key === 'category' || a.key === 'subcategory' || a.key === 'viscosity',
+)
+
 // Label shown for items missing a value for the grouping attribute.
 export function emptyLabelFor(key: AttributeKey): string {
   switch (key) {

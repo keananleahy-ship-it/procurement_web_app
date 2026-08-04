@@ -28,13 +28,11 @@ import {
 import { Card } from '@/components/ui/card'
 import { EmptyState } from '@/components/empty-state'
 import { useCanEdit } from '@/components/role-provider'
-import { GroupedSections } from '@/components/grouped-sections'
-import { GroupPicker } from '@/components/group-controls'
-import type {
-  EntityType,
-  GroupNode,
-  MembershipMap,
-} from '@/lib/groups'
+import {
+  AttributeGroupedList,
+  type GroupItem,
+} from '@/components/attribute-grouped-list'
+import { COMPARE_ATTRIBUTES } from '@/lib/attributes'
 import { formatCurrency, formatDate, formatNumber } from '@/lib/format'
 import {
   packFamily,
@@ -57,18 +55,9 @@ import { cn } from '@/lib/utils'
 
 export function CompareView({
   comparisons,
-  groupTree,
-  canonicalMemberships,
-  productMemberships,
 }: {
   comparisons: ProductComparison[]
-  groupTree: GroupNode[]
-  // Group memberships for canonical items and standalone products. A compare
-  // row maps to whichever entity it represents, so both maps are needed.
-  canonicalMemberships: MembershipMap
-  productMemberships: MembershipMap
 }) {
-  const canEdit = useCanEdit()
   const [query, setQuery] = useState('')
   const [families, setFamilies] = useState<Set<PackFamilyId>>(new Set())
   // Cards are collapsed by default — only the selected ones reveal their price
@@ -158,37 +147,26 @@ export function CompareView({
     })
   }
 
-  // Resolve which entity (canonical item or standalone product) a comparison
-  // row represents, so we can look it up in the right membership map. Canonical
-  // groups use the key `c<canonicalItemId>`; standalone products use productId.
-  function entityOf(c: ProductComparison): {
-    type: EntityType
-    id: number
-  } {
-    if (c.isCanonical && c.canonicalItemId !== null) {
-      return { type: 'canonical', id: c.canonicalItemId }
-    }
-    return { type: 'product', id: c.productId }
-  }
-
-  function groupIdOf(c: ProductComparison): number | null {
-    const { type, id } = entityOf(c)
-    const map = type === 'canonical' ? canonicalMemberships : productMemberships
-    return map[id] ?? null
-  }
-
-  // Bucket the filtered comparisons by group id; null = Ungrouped.
-  const itemsByGroup = useMemo(() => {
-    const map = new Map<number | null, ProductComparison[]>()
-    for (const c of filtered) {
-      const gid = groupIdOf(c)
-      const list = map.get(gid)
-      if (list) list.push(c)
-      else map.set(gid, [c])
-    }
-    return map
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, canonicalMemberships, productMemberships])
+  // Map each (filtered) comparison to a GroupItem the hierarchy nests by its
+  // own attributes. Supplier and package size stay *inside* each card (that's
+  // the whole point of Compare), so those two aren't offered as levels here.
+  const groupItems = useMemo<GroupItem[]>(
+    () =>
+      filtered.map((c) => ({
+        id: c.key,
+        attributes: {
+          category: c.category,
+          subcategory: c.subcategory,
+          viscosity: c.viscosity,
+        },
+        searchText: [c.displayName, c.category]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase(),
+        node: <ComparisonCard c={c} onRemove={setRemovalTarget} />,
+      })),
+    [filtered],
+  )
 
   if (comparisons.length === 0) {
     return (
@@ -270,34 +248,47 @@ export function CompareView({
               : `No products match “${query}”.`}
         </p>
       ) : (
-        <GroupedSections
+        <AttributeGroupedList
+          items={groupItems}
+          available={COMPARE_ATTRIBUTES}
+          defaultGroupBy={['category', 'subcategory']}
           storageKey="compare"
-          tree={groupTree}
-          entityType="product"
-          canEdit={canEdit}
-          itemsByGroup={itemsByGroup}
-          forceExpandAll={query.trim() !== '' || families.size > 0}
-          totalCount={filtered.length}
-          itemNoun="products"
-          renderItems={(bucket) => (
-            <div className="flex flex-col gap-4">
-              {bucket.map((c) => {
-                const entity = entityOf(c)
-                const currentGroupId = groupIdOf(c)
-                return (
-                  <Card key={c.key} className="overflow-hidden p-0">
-                    <div
-                      className={cn(
-                        'flex items-stretch',
-                        expanded.has(c.key) && 'border-b border-border',
-                      )}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => toggleExpanded(c.key)}
-                        aria-expanded={expanded.has(c.key)}
-                        className="flex flex-1 flex-wrap items-center justify-between gap-3 px-5 py-4 text-left transition-colors hover:bg-muted/40"
-                      >
+          query={query.trim() !== '' || families.size > 0 ? query || ' ' : ''}
+          itemLabel="products"
+        />
+      )}
+
+      <RemovalRequestDialog
+        offer={removalTarget}
+        onClose={() => setRemovalTarget(null)}
+      />
+    </div>
+  )
+}
+
+// One comparison card: a collapsible header summarizing the item plus, when
+// expanded, the per-vendor price table. Owns its own expand state so each card
+// toggles independently inside the grouped hierarchy.
+function ComparisonCard({
+  c,
+  onRemove,
+}: {
+  c: ProductComparison
+  onRemove: (offer: PriceRow) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+
+  return (
+    <Card className="overflow-hidden p-0">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className={cn(
+          'flex w-full flex-wrap items-center justify-between gap-3 px-5 py-4 text-left transition-colors hover:bg-muted/40',
+          expanded && 'border-b border-border',
+        )}
+      >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <h3 className="text-base font-semibold text-foreground">
@@ -368,24 +359,13 @@ export function CompareView({
                 <ChevronDown
                   className={cn(
                     'size-5 shrink-0 text-muted-foreground transition-transform',
-                    expanded.has(c.key) && 'rotate-180',
+                    expanded && 'rotate-180',
                   )}
                 />
               </div>
-                      </button>
-                      {canEdit && (
-                        <div className="flex items-center border-l border-border px-2">
-                          <GroupPicker
-                            tree={groupTree}
-                            entityType={entity.type}
-                            entityId={entity.id}
-                            currentGroupId={currentGroupId}
-                          />
-                        </div>
-                      )}
-                    </div>
+      </button>
 
-                    {expanded.has(c.key) && (
+      {expanded && (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -603,7 +583,7 @@ export function CompareView({
                           variant="ghost"
                           size="sm"
                           className="text-muted-foreground hover:text-destructive"
-                          onClick={() => setRemovalTarget(o)}
+                          onClick={() => onRemove(o)}
                           title="Request that this item be removed from its match"
                         >
                           <MinusCircle className="size-4" />
@@ -615,22 +595,10 @@ export function CompareView({
                     </TableRow>
                   )
                 })}
-                          </TableBody>
-                        </Table>
-                      )}
-                  </Card>
-                )
-              })}
-            </div>
-          )}
-        />
+              </TableBody>
+            </Table>
       )}
-
-      <RemovalRequestDialog
-        offer={removalTarget}
-        onClose={() => setRemovalTarget(null)}
-      />
-    </div>
+    </Card>
   )
 }
 

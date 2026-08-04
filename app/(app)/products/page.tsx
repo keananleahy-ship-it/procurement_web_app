@@ -2,17 +2,13 @@ import { PageHeader } from '@/components/page-header'
 import { ProductsView } from '@/components/products-view'
 import { getProducts } from '@/app/actions/products'
 import { getMatchRows, getCanonicalItems } from '@/app/actions/canonical'
-import { getGroupTree, getGroupMemberships } from '@/app/actions/groups'
 
 export default async function ProductsPage() {
-  const [products, matchRows, canonicalItems, groupTree, memberships] =
-    await Promise.all([
-      getProducts(),
-      getMatchRows(),
-      getCanonicalItems(),
-      getGroupTree(),
-      getGroupMemberships('product'),
-    ])
+  const [products, matchRows, canonicalItems] = await Promise.all([
+    getProducts(),
+    getMatchRows(),
+    getCanonicalItems(),
+  ])
 
   const matchByProduct = new Map(matchRows.map((m) => [m.productId, m]))
 
@@ -23,8 +19,6 @@ export default async function ProductsPage() {
         description="Vendor-specific items you collect prices for. Match them to canonical items to compare across vendors."
       />
       <ProductsView
-        groupTree={groupTree}
-        memberships={memberships}
         canonicalItems={canonicalItems.map((c) => ({
           id: c.id,
           name: c.name,
@@ -35,6 +29,10 @@ export default async function ProductsPage() {
             id: p.id,
             name: p.name,
             category: p.category,
+            subcategory: p.subcategory,
+            viscosity: p.viscosity,
+            packageType: p.packageType,
+            supplier: p.supplier,
             sku: p.sku,
             unit: p.unit,
             matchStatus: m?.matchStatus ?? 'unmatched',

@@ -5,6 +5,7 @@ import {
   createCanonicalItem,
   deleteCanonicalItem,
 } from '@/app/actions/canonical'
+import { updateCanonicalAttribute } from '@/app/actions/products'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -26,33 +27,35 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { Plus, Trash2, Layers } from 'lucide-react'
+import { Plus, Trash2, Layers, Search } from 'lucide-react'
 import { EmptyState } from '@/components/empty-state'
 import { useCanEdit } from '@/components/role-provider'
-import { GroupedSections } from '@/components/grouped-sections'
-import { GroupPicker } from '@/components/group-controls'
-import type { GroupNode, MembershipMap } from '@/lib/groups'
+import {
+  AttributeGroupedList,
+  type GroupItem,
+} from '@/components/attribute-grouped-list'
+import { AttributeEditor } from '@/components/attribute-editor'
+import { CANONICAL_ATTRIBUTES } from '@/lib/attributes'
 
 type CanonicalItem = {
   id: number
   name: string
   category: string | null
+  subcategory: string | null
+  viscosity: string | null
   unit: string | null
   baseUnit: string | null
   matchedCount: number
 }
 
-// Table for a bucket of canonical items, shared across group sections.
+// Single-item table row shared across group sections so each group renders the
+// familiar columns.
 function CanonicalTable({
   items,
   canEdit,
-  tree,
-  memberships,
 }: {
   items: CanonicalItem[]
   canEdit: boolean
-  tree: GroupNode[]
-  memberships: MembershipMap
 }) {
   const [isPending, startTransition] = useTransition()
 
@@ -66,8 +69,7 @@ function CanonicalTable({
             <TableHead>Selling unit</TableHead>
             <TableHead>Base unit</TableHead>
             <TableHead className="text-right">Matched products</TableHead>
-            {canEdit && <TableHead className="text-right">Group</TableHead>}
-            {canEdit && <TableHead className="w-12" />}
+            {canEdit && <TableHead className="w-20 text-right">Edit</TableHead>}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -100,29 +102,33 @@ function CanonicalTable({
               </TableCell>
               {canEdit && (
                 <TableCell className="text-right">
-                  <GroupPicker
-                    tree={tree}
-                    entityType="canonical"
-                    entityId={it.id}
-                    currentGroupId={memberships[it.id] ?? null}
-                  />
-                </TableCell>
-              )}
-              {canEdit && (
-                <TableCell>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Delete ${it.name}`}
-                    disabled={isPending}
-                    onClick={() =>
-                      startTransition(() => {
-                        void deleteCanonicalItem(it.id)
-                      })
-                    }
-                  >
-                    <Trash2 className="size-4 text-muted-foreground" />
-                  </Button>
+                  <div className="flex items-center justify-end gap-1">
+                    <AttributeEditor
+                      editable={CANONICAL_ATTRIBUTES}
+                      label={it.name}
+                      values={{
+                        category: it.category,
+                        subcategory: it.subcategory,
+                        viscosity: it.viscosity,
+                      }}
+                      onSave={(key, value) =>
+                        updateCanonicalAttribute(it.id, key, value)
+                      }
+                    />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Delete ${it.name}`}
+                      disabled={isPending}
+                      onClick={() =>
+                        startTransition(() => {
+                          void deleteCanonicalItem(it.id)
+                        })
+                      }
+                    >
+                      <Trash2 className="size-4 text-muted-foreground" />
+                    </Button>
+                  </div>
                 </TableCell>
               )}
             </TableRow>
@@ -133,28 +139,28 @@ function CanonicalTable({
   )
 }
 
-export function CanonicalView({
-  items,
-  groupTree,
-  memberships,
-}: {
-  items: CanonicalItem[]
-  groupTree: GroupNode[]
-  memberships: MembershipMap
-}) {
+export function CanonicalView({ items }: { items: CanonicalItem[] }) {
   const [open, setOpen] = useState(false)
   const canEdit = useCanEdit()
+  const [query, setQuery] = useState('')
 
-  const itemsByGroup = useMemo(() => {
-    const map = new Map<number | null, CanonicalItem[]>()
-    for (const it of items) {
-      const gid = memberships[it.id] ?? null
-      const list = map.get(gid)
-      if (list) list.push(it)
-      else map.set(gid, [it])
-    }
-    return map
-  }, [items, memberships])
+  const groupItems = useMemo<GroupItem[]>(
+    () =>
+      items.map((it) => ({
+        id: String(it.id),
+        attributes: {
+          category: it.category,
+          subcategory: it.subcategory,
+          viscosity: it.viscosity,
+        },
+        searchText: [it.name, it.category, it.unit, it.baseUnit]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase(),
+        node: <CanonicalTable items={[it]} canEdit={canEdit} />,
+      })),
+    [items, canEdit],
+  )
 
   async function handleCreate(formData: FormData) {
     await createCanonicalItem(formData)
@@ -230,23 +236,26 @@ export function CanonicalView({
           description="Define the master items you want to compare against, then run matching to link vendor products to them."
         />
       ) : (
-        <GroupedSections
-          storageKey="canonical"
-          tree={groupTree}
-          entityType="canonical"
-          canEdit={canEdit}
-          itemsByGroup={itemsByGroup}
-          totalCount={items.length}
-          itemNoun="canonical items"
-          renderItems={(bucket) => (
-            <CanonicalTable
-              items={bucket}
-              canEdit={canEdit}
-              tree={groupTree}
-              memberships={memberships}
+        <div className="flex flex-col gap-4">
+          <div className="relative max-w-sm">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search canonical items"
+              className="pl-9"
             />
-          )}
-        />
+          </div>
+
+          <AttributeGroupedList
+            items={groupItems}
+            available={CANONICAL_ATTRIBUTES}
+            defaultGroupBy={['category', 'subcategory']}
+            storageKey="canonical"
+            query={query}
+            itemLabel="canonical items"
+          />
+        </div>
       )}
     </div>
   )

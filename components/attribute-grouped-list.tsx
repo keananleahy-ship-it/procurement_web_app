@@ -256,11 +256,13 @@ export function AttributeGroupedList({
 
         {remaining.length > 0 && (
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="h-7 gap-1">
-                <Plus className="size-3.5" aria-hidden="true" />
-                Add level
-              </Button>
+            <DropdownMenuTrigger
+              render={
+                <Button variant="outline" size="sm" className="h-7 gap-1" />
+              }
+            >
+              <Plus className="size-3.5" aria-hidden="true" />
+              Add level
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
               {remaining.map((a) => (

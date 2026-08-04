@@ -1,7 +1,11 @@
 'use client'
 
 import { useMemo, useState, useTransition } from 'react'
-import { createProduct, deleteProduct } from '@/app/actions/products'
+import {
+  createProduct,
+  deleteProduct,
+  updateProductAttribute,
+} from '@/app/actions/products'
 import { assignMatch, resetMatch } from '@/app/actions/canonical'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -34,9 +38,12 @@ import {
 import { Plus, Trash2, Package, Search, RotateCcw } from 'lucide-react'
 import { EmptyState } from '@/components/empty-state'
 import { useCanEdit } from '@/components/role-provider'
-import { GroupedSections } from '@/components/grouped-sections'
-import { GroupPicker } from '@/components/group-controls'
-import type { GroupNode, MembershipMap } from '@/lib/groups'
+import {
+  AttributeGroupedList,
+  type GroupItem,
+} from '@/components/attribute-grouped-list'
+import { AttributeEditor } from '@/components/attribute-editor'
+import { PRODUCT_ATTRIBUTES, type AttributeKey } from '@/lib/attributes'
 
 type CanonicalOption = { id: number; name: string }
 
@@ -44,6 +51,10 @@ type Product = {
   id: number
   name: string
   category: string | null
+  subcategory: string | null
+  viscosity: string | null
+  packageType: string | null
+  supplier: string | null
   sku: string | null
   unit: string | null
   matchStatus: string
@@ -117,14 +128,10 @@ function ProductTable({
   products,
   canonicalItems,
   canEdit,
-  tree,
-  memberships,
 }: {
   products: Product[]
   canonicalItems: CanonicalOption[]
   canEdit: boolean
-  tree: GroupNode[]
-  memberships: MembershipMap
 }) {
   const [isPending, startTransition] = useTransition()
 
@@ -138,8 +145,7 @@ function ProductTable({
             <TableHead>Unit</TableHead>
             <TableHead>SKU</TableHead>
             <TableHead>Canonical match</TableHead>
-            {canEdit && <TableHead className="text-right">Group</TableHead>}
-            {canEdit && <TableHead className="w-12" />}
+            {canEdit && <TableHead className="w-20 text-right">Edit</TableHead>}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -194,29 +200,35 @@ function ProductTable({
               </TableCell>
               {canEdit && (
                 <TableCell className="text-right">
-                  <GroupPicker
-                    tree={tree}
-                    entityType="product"
-                    entityId={p.id}
-                    currentGroupId={memberships[p.id] ?? null}
-                  />
-                </TableCell>
-              )}
-              {canEdit && (
-                <TableCell>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Delete ${p.name}`}
-                    disabled={isPending}
-                    onClick={() =>
-                      startTransition(() => {
-                        void deleteProduct(p.id)
-                      })
-                    }
-                  >
-                    <Trash2 className="size-4 text-muted-foreground" />
-                  </Button>
+                  <div className="flex items-center justify-end gap-1">
+                    <AttributeEditor
+                      editable={PRODUCT_ATTRIBUTES}
+                      label={p.name}
+                      values={{
+                        supplier: p.supplier,
+                        category: p.category,
+                        subcategory: p.subcategory,
+                        viscosity: p.viscosity,
+                        packageType: p.packageType,
+                      }}
+                      onSave={(key, value) =>
+                        updateProductAttribute(p.id, key, value)
+                      }
+                    />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Delete ${p.name}`}
+                      disabled={isPending}
+                      onClick={() =>
+                        startTransition(() => {
+                          void deleteProduct(p.id)
+                        })
+                      }
+                    >
+                      <Trash2 className="size-4 text-muted-foreground" />
+                    </Button>
+                  </div>
                 </TableCell>
               )}
             </TableRow>
@@ -230,41 +242,41 @@ function ProductTable({
 export function ProductsView({
   products,
   canonicalItems,
-  groupTree,
-  memberships,
 }: {
   products: Product[]
   canonicalItems: CanonicalOption[]
-  groupTree: GroupNode[]
-  memberships: MembershipMap
 }) {
   const [open, setOpen] = useState(false)
   const canEdit = useCanEdit()
   const [query, setQuery] = useState('')
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return products
-    return products.filter(
-      (p) =>
-        p.name.toLowerCase().includes(q) ||
-        (p.category ?? '').toLowerCase().includes(q) ||
-        (p.sku ?? '').toLowerCase().includes(q) ||
-        (p.canonicalItemName ?? '').toLowerCase().includes(q),
-    )
-  }, [products, query])
-
-  // Bucket the (filtered) products by their group id; null = Ungrouped.
-  const itemsByGroup = useMemo(() => {
-    const map = new Map<number | null, Product[]>()
-    for (const p of filtered) {
-      const gid = memberships[p.id] ?? null
-      const list = map.get(gid)
-      if (list) list.push(p)
-      else map.set(gid, [p])
-    }
-    return map
-  }, [filtered, memberships])
+  // Map each product to a GroupItem the hierarchy component can nest + count.
+  // The node is a single-row table so every group renders the familiar layout.
+  const groupItems = useMemo<GroupItem[]>(
+    () =>
+      products.map((p) => ({
+        id: String(p.id),
+        attributes: {
+          supplier: p.supplier,
+          category: p.category,
+          subcategory: p.subcategory,
+          viscosity: p.viscosity,
+          packageType: p.packageType,
+        },
+        searchText: [p.name, p.category, p.sku, p.canonicalItemName]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase(),
+        node: (
+          <ProductTable
+            products={[p]}
+            canonicalItems={canonicalItems}
+            canEdit={canEdit}
+          />
+        ),
+      })),
+    [products, canonicalItems, canEdit],
+  )
 
   async function handleCreate(formData: FormData) {
     await createProduct(formData)
@@ -345,31 +357,14 @@ export function ProductsView({
             />
           </div>
 
-          {filtered.length === 0 ? (
-            <p className="px-4 py-8 text-center text-sm text-muted-foreground">
-              No products match “{query}”.
-            </p>
-          ) : (
-            <GroupedSections
-              storageKey="products"
-              tree={groupTree}
-              entityType="product"
-              canEdit={canEdit}
-              itemsByGroup={itemsByGroup}
-              forceExpandAll={query.trim() !== ''}
-              totalCount={filtered.length}
-              itemNoun="products"
-              renderItems={(items) => (
-                <ProductTable
-                  products={items}
-                  canonicalItems={canonicalItems}
-                  canEdit={canEdit}
-                  tree={groupTree}
-                  memberships={memberships}
-                />
-              )}
-            />
-          )}
+          <AttributeGroupedList
+            items={groupItems}
+            available={PRODUCT_ATTRIBUTES}
+            defaultGroupBy={['supplier', 'category', 'subcategory']}
+            storageKey="products"
+            query={query}
+            itemLabel="products"
+          />
         </div>
       )}
     </div>
