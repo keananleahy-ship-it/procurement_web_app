@@ -67,10 +67,6 @@ type PersistedState = {
   expanded: string[]
 }
 
-function labelFor(key: AttributeKey): string {
-  return ALL_ATTRIBUTES.find((a) => a.key === key)?.label ?? key
-}
-
 // A node in the built grouping tree.
 type TreeGroup = {
   path: string
@@ -92,6 +88,17 @@ export function AttributeGroupedList({
   itemLabel = 'items',
 }: Props) {
   const lsKey = `attr-group:v1:${storageKey}`
+
+  // Resolve a display label for a key. Prefer this screen's `available` defs
+  // (which include screen-specific attributes like Brand that aren't in the
+  // shared ALL_ATTRIBUTES list), then fall back to the shared list, then key.
+  function labelFor(key: AttributeKey): string {
+    return (
+      available.find((a) => a.key === key)?.label ??
+      ALL_ATTRIBUTES.find((a) => a.key === key)?.label ??
+      key
+    )
+  }
 
   const [groupBy, setGroupBy] = useState<AttributeKey[]>(defaultGroupBy)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -326,6 +333,7 @@ export function AttributeGroupedList({
               isOpen={isOpen}
               onToggle={toggle}
               itemLabel={itemLabel}
+              labelFor={labelFor}
             />
           ))}
         </div>
@@ -340,12 +348,14 @@ function GroupPanel({
   isOpen,
   onToggle,
   itemLabel,
+  labelFor,
 }: {
   group: TreeGroup
   depth: number
   isOpen: (path: string) => boolean
   onToggle: (path: string) => void
   itemLabel: string
+  labelFor: (key: AttributeKey) => string
 }) {
   const open = isOpen(group.path)
   const hasChildren = group.children.length > 0
@@ -372,7 +382,7 @@ function GroupPanel({
           aria-hidden="true"
         />
         <span className="text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
-          {labelForShort(group.key)}
+          {labelFor(group.key)}
         </span>
         <span className="truncate font-medium text-foreground">
           {group.label}
@@ -394,6 +404,7 @@ function GroupPanel({
                   isOpen={isOpen}
                   onToggle={onToggle}
                   itemLabel={itemLabel}
+                  labelFor={labelFor}
                 />
               ))}
             </div>
@@ -408,10 +419,6 @@ function GroupPanel({
       )}
     </div>
   )
-}
-
-function labelForShort(key: AttributeKey): string {
-  return labelFor(key)
 }
 
 // Build a nested tree of groups from a flat item list and an ordered set of
