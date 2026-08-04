@@ -122,37 +122,37 @@ const CATEGORY_PATTERNS: { label: string; test: RegExp }[] = [
   },
   {
     label: 'Grease',
-    test: /GREASE|\bNLGI\b|#\s*\d{1,2}\b|MULTIPLEX|DYNALIFE|OMNIGUARD|DUOLEC|\bMOLY\b|LITHIUM|POLYUREA/,
+    test: /GREASE|\bNLGI\b|#\s*\d{1,2}\b|MULTIPLEX|DYNALIFE|OMNIGUARD|DUOLEC|\bMOLY\b|LITHIUM|POLYUREA|\bGADUS\b|ALVANIA|RETINAX|\bPEERLESS\b|\bPRECISION\b|\bGREASI/,
   },
   {
     label: 'Compressor Fluid',
-    test: /COMPRESSOR|COMPRO|PAG\s*COMP|\bCOMP\b|SYNDURO|\bPZA\b|AIR\s*COMP/,
+    test: /COMPRESSOR|COMPRO|PAG\s*COMP|\bCOMP\b|SYNDURO|\bPZA\b|AIR\s*COMP|\bCORENA\b/,
   },
   {
     label: 'Transmission Fluid',
-    test: /\bATF\b|ATF\s*\+?\s*4|ATF\s*D|TRANSMISSION|TRANSOIL|POWERTRAN|POWERDRIVE|DURATRAN|\bTRANS\b|\bMV\b|DEXRON|MERCON/,
+    test: /\bATF\b|ATF\s*\+?\s*4|ATF\s*D|TRANSMISSION|TRANSOIL|POWERTRAN|POWERDRIVE|DURATRAN|\bTRANS\b|\bMV\b|DEXRON|MERCON|DURADRIVE/,
   },
   {
     label: 'Antifreeze & Coolant',
-    test: /ANT[I]?\s*-?FRE?E?ZE|ANTFRZ|COOLANT|\bAF\b|AF\/CL|\d{2}\/\d{2}/,
+    test: /ANT[I]?\s*-?FRE?E?ZE|ANTFRZ|COOLANT|\bAF\b|AF\/CL|\d{2}\/\d{2}|SHELLZONE|DEX-?COOL|PRESTONE|\bZEREX\b|FLEET\s*(CHARGE|COOL)|\bELC\b|\bOAT\b/,
   },
   { label: 'Turbine Oil', test: /TURBINE|\bTURBO\b|TURBOFLO|SUNVIS/ },
   {
     label: 'Circulating / R&O Oil',
-    test: /R\s*&\s*O|\bR\s+O\b|RUST.*OXID|CIRCULAT/,
+    test: /R\s*&\s*O|\bR\s+O\b|RUST.*OXID|CIRCULAT|\bARDEE\b|\bMORLINA\b/,
   },
   {
     label: 'Hydraulic Fluid',
-    test: /HYDRAULIC|HYDREX|\bHVI\b|\bAW\s*\d|\bHYD\b|POWERFLOW|TELLUS|HYDRO/,
+    test: /HYDRAULIC|HYDREX|\bHVI\b|\bAW\s*\d|\bHYD\b|POWERFLOW|TELLUS|HYDRO|\bHARMONY\b/,
   },
   {
     label: 'Gear Oil',
-    test: /\bGEAR\b|\bEP\s*\d|\b80W|\b85W|\b75W|\bGL-?\d|OMALA|MORLINA/,
+    test: /\bGEAR\b|\bEP\s*\d|\b80W|\b85W|\b75W|\bGL-?\d|OMALA|\bSPIRAX\b|\bTRAXON\b|\bMEROPA\b/,
   },
   { label: 'Rock Drill Oil', test: /ROCK\s*DRILL/ },
   {
     label: 'Engine Oil',
-    test: /ENGINE|MOTOR\s*OIL|\bDURON\b|\b\d{1,2}W-?\d{2}\b|\bSAE\b|DIESEL|\bCF\b|\bCK-?4\b/,
+    test: /ENGINE|MOTOR\s*OIL|\bDURON\b|\b\d{1,2}W-?\d{2}\b|\bSAE\b|DIESEL|\bCF\b|\bCK-?4\b|ROTELLA|RIMULA|MYSELLA|ARGINA|SENTRON|\bDELO\b|DELVAC|\bRUBIA\b/,
   },
   { label: 'Metalworking Fluid', test: /METALWORK|CUTTING|SOLUBLE/ },
   { label: 'Solvent & Cleaner', test: /SOLVENT|CLEAN(ING|ER)?|FLUSH(ING)?|DEGREAS/ },
@@ -202,15 +202,19 @@ const BRAND_PATTERNS: { label: string; test: RegExp }[] = [
   { label: 'Phillips 66', test: /\bP66\b|PHILLIPS\s*66/ },
   { label: 'Kendall', test: /\bKENDALL\b/ },
   { label: 'Pennzoil', test: /\bPZL\b|PENNZOIL/ },
+  { label: 'Quaker State', test: /QUAKER\s*STATE|\bQS\b/ },
   { label: 'Sunoco', test: /\bSUNOCO\b|\bSUNVIS\b|\bSUNEP\b/ },
   {
     label: 'Petro-Canada',
-    test: /PETRO\s*-?\s*CANADA|\bDURON\b|\bSUPREME\b|\bHYDREX\b|\bTURBOFLO\b|\bPURITY\b|\bPRODURO\b|\bENDURATEX\b|\bENVIRON\b|\bSYNDURO\b|\bPC\b/,
+    test: /PETRO\s*-?\s*CANADA|\bDURON\b|\bSUPREME\b|\bHYDREX\b|\bTURBOFLO\b|\bPURITY\b|\bPRODURO\b|\bENDURATEX\b|\bENVIRON\b|\bSYNDURO\b|\bTRAXON\b|\bDURADRIVE\b|\bSENTRON\b|\bARDEE\b|\bCOMPRO\b|\bHARMONY\b|\bPEERLESS\b|\bPC\b/,
   },
   {
     label: 'Shell',
-    test: /\bSHELL\b|\bTELLUS\b|\bOMALA\b|\bRIMULA\b|\bCORENA\b|\bMORLINA\b|\bTURBO\s*[ST]\d?\b/,
+    test: /\bSHELL\b|\bTELLUS\b|\bOMALA\b|\bRIMULA\b|\bCORENA\b|\bMORLINA\b|\bGADUS\b|\bROTELLA\b|\bSPIRAX\b|\bMYSELLA\b|\bARGINA\b|\bALVANIA\b|\bRETINAX\b|SHELLZONE|\bTURBO\s*[ST]\d?\b/,
   },
+  { label: 'Chevron', test: /\bCHEVRON\b|\bDELO\b|\bMEROPA\b|\bRANDO\b|\bHDAX\b/ },
+  { label: 'Mobil', test: /\bMOBIL\b|DELVAC|MOBILUBE|MOBILGARD/ },
+  { label: 'Total', test: /\bTOTAL\b|\bRUBIA\b|\bAZOLLA\b|\bCARTER\b/ },
   { label: 'Performax', test: /PERFORMAX|\bPERF\b/ },
   { label: 'Honda', test: /\bHONDA\b/ },
   { label: 'JCB', test: /\bJCB\b/ },
@@ -218,6 +222,16 @@ const BRAND_PATTERNS: { label: string; test: RegExp }[] = [
   { label: 'Black Bear', test: /BLACK\s*BEAR/ },
   { label: 'HRC', test: /\bHRC\b/ },
 ]
+
+// Controlled vocabularies exposed for the LLM fallback classifier so it emits
+// exactly the same category/application labels the deterministic rules use
+// (keeping grouping buckets consistent). Brand is intentionally open-ended:
+// the model may return a known brand or a new one it recognizes.
+export const CATEGORY_LABELS: string[] = CATEGORY_PATTERNS.map((p) => p.label)
+export const APPLICATION_LABELS: string[] = APPLICATION_PATTERNS.map(
+  (p) => p.label,
+)
+export const KNOWN_BRAND_LABELS: string[] = BRAND_PATTERNS.map((p) => p.label)
 
 export function derivePackageType(name: string, packSize?: number): string | null {
   const upper = name.toUpperCase()
