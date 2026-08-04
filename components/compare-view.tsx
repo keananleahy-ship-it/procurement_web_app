@@ -253,7 +253,7 @@ export function CompareView({
           available={COMPARE_ATTRIBUTES}
           defaultGroupBy={['category', 'subcategory']}
           storageKey="compare"
-          query={query.trim() !== '' || families.size > 0 ? query || ' ' : ''}
+          forceExpand={query.trim() !== '' || families.size > 0}
           itemLabel="products"
         />
       )}

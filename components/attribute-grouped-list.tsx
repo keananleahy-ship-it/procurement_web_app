@@ -54,6 +54,10 @@ type Props = {
   storageKey: string
   // External search string. When non-empty, matching groups auto-expand.
   query?: string
+  // Force every group open regardless of expand state — used when the parent
+  // already applied its own filtering (e.g. Compare's pack-family filter) and
+  // wants results visible without manual expansion.
+  forceExpand?: boolean
   // Noun for counts, e.g. "products".
   itemLabel?: string
 }
@@ -84,6 +88,7 @@ export function AttributeGroupedList({
   defaultGroupBy,
   storageKey,
   query = '',
+  forceExpand = false,
   itemLabel = 'items',
 }: Props) {
   const lsKey = `attr-group:v1:${storageKey}`
@@ -156,10 +161,11 @@ export function AttributeGroupedList({
   }, [tree])
 
   const searching = q.length > 0
+  const forceOpen = searching || forceExpand
 
   const isOpen = useCallback(
-    (path: string) => searching || expanded.has(path),
-    [searching, expanded],
+    (path: string) => forceOpen || expanded.has(path),
+    [forceOpen, expanded],
   )
 
   function toggle(path: string) {
