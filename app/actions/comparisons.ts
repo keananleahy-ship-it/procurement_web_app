@@ -25,6 +25,7 @@ export type PriceRow = {
   productId: number
   productName: string
   category: string | null
+  application: string | null
   subcategory: string | null
   viscosity: string | null
   unit: string | null
@@ -98,6 +99,7 @@ export type ProductComparison = {
   category: string | null
   // hierarchy attributes used to group the Compare list (supplier/pack size
   // are compared inside each card, so they are not included here)
+  application: string | null
   subcategory: string | null
   viscosity: string | null
   unit: string | null
@@ -173,6 +175,7 @@ async function getAllRows(): Promise<PriceRow[]> {
       createdAt: vendorPrices.createdAt,
       productName: products.name,
       category: products.category,
+      application: products.application,
       subcategory: products.subcategory,
       viscosity: products.viscosity,
       unit: products.unit,
@@ -183,6 +186,7 @@ async function getAllRows(): Promise<PriceRow[]> {
       canonicalItemName: canonicalItems.name,
       canonicalBaseUnit: canonicalItems.baseUnit,
       canonicalCategory: canonicalItems.category,
+      canonicalApplication: canonicalItems.application,
       canonicalSubcategory: canonicalItems.subcategory,
       canonicalViscosity: canonicalItems.viscosity,
       vendorName: vendors.name,
@@ -288,6 +292,7 @@ async function getAllRows(): Promise<PriceRow[]> {
       // this product is matched to one (so a group shows a single, consistent
       // classification), otherwise fall back to the product's own.
       category: r.canonicalCategory ?? r.category,
+      application: r.canonicalApplication ?? r.application,
       subcategory: r.canonicalSubcategory ?? r.subcategory,
       viscosity: r.canonicalViscosity ?? r.viscosity,
       unit: r.unit,
@@ -534,6 +539,7 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
       productId: offers[0].productId,
       productName: displayName,
       category: offers[0].category,
+      application: offers[0].application,
       subcategory: offers[0].subcategory,
       viscosity: offers[0].viscosity,
       unit: offers[0].unit,

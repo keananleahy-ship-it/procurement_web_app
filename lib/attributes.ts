@@ -13,6 +13,7 @@ export type AttributeKey =
   | 'supplier'
   | 'brand'
   | 'category'
+  | 'application'
   | 'subcategory'
   | 'viscosity'
   | 'packageType'
@@ -22,40 +23,50 @@ export type AttributeDef = {
   label: string
 }
 
-// Shared attribute defs. "Subcategory" holds the application / duty (Heavy
-// Duty Diesel, Passenger Car, Industrial, Aviation, ...), not a brand.
+// Shared attribute defs, in the canonical drill-down order:
+// category > application > subcategory (formulation) > viscosity > package,
+// with supplier and brand as the outer product-only levels. "Application" is
+// the end-use / duty (Heavy Duty Diesel, Industrial, ...); "Subcategory" is the
+// formulation / base oil (Full Synthetic, Synthetic Blend, Conventional).
 export const ALL_ATTRIBUTES: AttributeDef[] = [
   { key: 'supplier', label: 'Supplier' },
+  { key: 'brand', label: 'Brand' },
   { key: 'category', label: 'Category' },
-  { key: 'subcategory', label: 'Application / Duty' },
+  { key: 'application', label: 'Application / Duty' },
+  { key: 'subcategory', label: 'Formulation' },
   { key: 'viscosity', label: 'Viscosity' },
   { key: 'packageType', label: 'Package size' },
 ]
 
-const BRAND_ATTRIBUTE: AttributeDef = { key: 'brand', label: 'Brand' }
-
 // Attributes available on the Products screen. Each product has exactly one
-// supplier, brand, and pack size, so all apply. Brand slots in right after
-// supplier so the common "supplier > brand > category" drill-down is easy.
-export const PRODUCT_ATTRIBUTES: AttributeDef[] = [
-  { key: 'supplier', label: 'Supplier' },
-  BRAND_ATTRIBUTE,
-  { key: 'category', label: 'Category' },
-  { key: 'subcategory', label: 'Application / Duty' },
-  { key: 'viscosity', label: 'Viscosity' },
-  { key: 'packageType', label: 'Package size' },
+// supplier, brand, and pack size, so all apply.
+export const PRODUCT_ATTRIBUTES: AttributeDef[] = ALL_ATTRIBUTES
+
+// The default Products grouping: category > application > subcategory >
+// viscosity > package (supplier and brand stay available as optional levels).
+export const PRODUCT_DEFAULT_GROUP_BY: AttributeKey[] = [
+  'category',
+  'application',
+  'subcategory',
+  'viscosity',
+  'packageType',
 ]
 
 // Compare compares suppliers/pack sizes side-by-side *inside* each card, and a
 // comparison row can span several brands, so all three are excluded here.
 export const COMPARE_ATTRIBUTES: AttributeDef[] = ALL_ATTRIBUTES.filter(
-  (a) => a.key !== 'supplier' && a.key !== 'packageType',
+  (a) =>
+    a.key !== 'supplier' && a.key !== 'packageType' && a.key !== 'brand',
 )
 
 // A canonical item spans vendors, brands, and pack sizes, so it only carries
 // the item-intrinsic attributes.
 export const CANONICAL_ATTRIBUTES: AttributeDef[] = ALL_ATTRIBUTES.filter(
-  (a) => a.key === 'category' || a.key === 'subcategory' || a.key === 'viscosity',
+  (a) =>
+    a.key === 'category' ||
+    a.key === 'application' ||
+    a.key === 'subcategory' ||
+    a.key === 'viscosity',
 )
 
 // Label shown for items missing a value for the grouping attribute.
@@ -67,8 +78,10 @@ export function emptyLabelFor(key: AttributeKey): string {
       return 'No brand'
     case 'category':
       return 'Uncategorized'
-    case 'subcategory':
+    case 'application':
       return 'No application'
+    case 'subcategory':
+      return 'No formulation'
     case 'viscosity':
       return 'No viscosity'
     case 'packageType':
@@ -195,6 +208,24 @@ const APPLICATION_PATTERNS: { label: string; test: RegExp }[] = [
   },
 ]
 
+// Formulation / base oil ("subcategory"). Ordered, first match wins. Synthetic
+// Blend is checked before Full Synthetic because "SYNTHETIC BLEND" also
+// contains "SYNTHETIC". Left null when the name gives no formulation signal.
+const FORMULATION_PATTERNS: { label: string; test: RegExp }[] = [
+  {
+    label: 'Synthetic Blend',
+    test: /SYN(THETIC)?\s*BLEND|SEMI-?\s*SYN(THETIC)?|\bBLEND\b|\bSB\b/,
+  },
+  {
+    label: 'Full Synthetic',
+    test: /FULL(Y)?\s*SYN(THETIC)?|100%\s*SYN(THETIC)?|\bSYNTHETIC\b|\bSYN\b|\bFS\b|\bPAO\b|\bESTER\b/,
+  },
+  {
+    label: 'Conventional',
+    test: /CONVENTIONAL|\bMINERAL\b|\bCONV\b|PARAFFINIC|GROUP\s*[I1]\b/,
+  },
+]
+
 // Brand / product-line mapping. Ordered, first match wins. Product-line names
 // map to their parent brand (e.g. Duron/Hydrex/Turboflo -> Petro-Canada).
 // Left null when the brand can't be identified, so a reviewer can assign it.
@@ -229,6 +260,9 @@ const BRAND_PATTERNS: { label: string; test: RegExp }[] = [
 // the model may return a known brand or a new one it recognizes.
 export const CATEGORY_LABELS: string[] = CATEGORY_PATTERNS.map((p) => p.label)
 export const APPLICATION_LABELS: string[] = APPLICATION_PATTERNS.map(
+  (p) => p.label,
+)
+export const FORMULATION_LABELS: string[] = FORMULATION_PATTERNS.map(
   (p) => p.label,
 )
 export const KNOWN_BRAND_LABELS: string[] = BRAND_PATTERNS.map((p) => p.label)
@@ -293,13 +327,12 @@ const INDUSTRIAL_CATEGORIES = new Set([
   'Chain & Bar Oil',
 ])
 
-// Application / duty (stored in the `subcategory` column). Returns a value from
+// Application / duty (stored in the `application` column). Returns a value from
 // a controlled set (Aviation, Heavy Duty Diesel, Industrial, ...) or null when
 // nothing indicates an end use. Checks explicit name signals first, then falls
 // back to the category for inherently-industrial product classes. This
-// deliberately does NOT fall back to the brand/product-line name, which was the
-// source of the earlier "brand as subcategory" mislabeling.
-export function deriveSubcategory(
+// deliberately does NOT fall back to the brand/product-line name.
+export function deriveApplication(
   name: string,
   category?: string | null,
 ): string | null {
@@ -308,6 +341,17 @@ export function deriveSubcategory(
     if (a.test.test(upper)) return a.label
   }
   if (category && INDUSTRIAL_CATEGORIES.has(category)) return 'Industrial'
+  return null
+}
+
+// Formulation / base oil (stored in the `subcategory` column). Returns Full
+// Synthetic / Synthetic Blend / Conventional, or null when the name gives no
+// formulation signal.
+export function deriveSubcategory(name: string): string | null {
+  const upper = name.toUpperCase()
+  for (const f of FORMULATION_PATTERNS) {
+    if (f.test.test(upper)) return f.label
+  }
   return null
 }
 
@@ -327,6 +371,7 @@ export function deriveAttributes(
 ): {
   brand: string | null
   category: string | null
+  application: string | null
   subcategory: string | null
   viscosity: string | null
   packageType: string | null
@@ -335,7 +380,8 @@ export function deriveAttributes(
   return {
     brand: deriveBrand(name),
     category,
-    subcategory: deriveSubcategory(name, category),
+    application: deriveApplication(name, category),
+    subcategory: deriveSubcategory(name),
     viscosity: deriveViscosity(name),
     packageType: derivePackageType(name, packSize),
   }

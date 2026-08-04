@@ -30,6 +30,7 @@ export default async function CanonicalPage() {
           id: i.id,
           name: i.name,
           category: i.category,
+          application: i.application,
           subcategory: i.subcategory,
           viscosity: i.viscosity,
           unit: i.unit,

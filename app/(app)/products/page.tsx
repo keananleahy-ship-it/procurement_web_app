@@ -30,6 +30,7 @@ export default async function ProductsPage() {
             name: p.name,
             brand: p.brand,
             category: p.category,
+            application: p.application,
             subcategory: p.subcategory,
             viscosity: p.viscosity,
             packageType: p.packageType,

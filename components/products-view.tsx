@@ -43,7 +43,11 @@ import {
   type GroupItem,
 } from '@/components/attribute-grouped-list'
 import { AttributeEditor } from '@/components/attribute-editor'
-import { PRODUCT_ATTRIBUTES, type AttributeKey } from '@/lib/attributes'
+import {
+  PRODUCT_ATTRIBUTES,
+  PRODUCT_DEFAULT_GROUP_BY,
+  type AttributeKey,
+} from '@/lib/attributes'
 
 type CanonicalOption = { id: number; name: string }
 
@@ -52,6 +56,7 @@ type Product = {
   name: string
   brand: string | null
   category: string | null
+  application: string | null
   subcategory: string | null
   viscosity: string | null
   packageType: string | null
@@ -209,6 +214,7 @@ function ProductTable({
                         supplier: p.supplier,
                         brand: p.brand,
                         category: p.category,
+                        application: p.application,
                         subcategory: p.subcategory,
                         viscosity: p.viscosity,
                         packageType: p.packageType,
@@ -262,6 +268,7 @@ export function ProductsView({
           supplier: p.supplier,
           brand: p.brand,
           category: p.category,
+          application: p.application,
           subcategory: p.subcategory,
           viscosity: p.viscosity,
           packageType: p.packageType,
@@ -363,8 +370,8 @@ export function ProductsView({
           <AttributeGroupedList
             items={groupItems}
             available={PRODUCT_ATTRIBUTES}
-            defaultGroupBy={['supplier', 'category', 'subcategory']}
-            storageKey="products"
+            defaultGroupBy={PRODUCT_DEFAULT_GROUP_BY}
+            storageKey="products-v2"
             query={query}
             itemLabel="products"
           />

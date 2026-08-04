@@ -156,6 +156,7 @@ export function CompareView({
         id: c.key,
         attributes: {
           category: c.category,
+          application: c.application,
           subcategory: c.subcategory,
           viscosity: c.viscosity,
         },
@@ -251,8 +252,8 @@ export function CompareView({
         <AttributeGroupedList
           items={groupItems}
           available={COMPARE_ATTRIBUTES}
-          defaultGroupBy={['category', 'subcategory']}
-          storageKey="compare"
+            defaultGroupBy={['category', 'application', 'subcategory']}
+            storageKey="compare-v2"
           forceExpand={query.trim() !== '' || families.size > 0}
           itemLabel="products"
         />

@@ -41,6 +41,7 @@ type CanonicalItem = {
   id: number
   name: string
   category: string | null
+  application: string | null
   subcategory: string | null
   viscosity: string | null
   unit: string | null
@@ -106,11 +107,12 @@ function CanonicalTable({
                     <AttributeEditor
                       editable={CANONICAL_ATTRIBUTES}
                       label={it.name}
-                      values={{
-                        category: it.category,
-                        subcategory: it.subcategory,
-                        viscosity: it.viscosity,
-                      }}
+              values={{
+                category: it.category,
+                application: it.application,
+                subcategory: it.subcategory,
+                viscosity: it.viscosity,
+              }}
                       onSave={(key, value) =>
                         updateCanonicalAttribute(it.id, key, value)
                       }
@@ -148,11 +150,12 @@ export function CanonicalView({ items }: { items: CanonicalItem[] }) {
     () =>
       items.map((it) => ({
         id: String(it.id),
-        attributes: {
-          category: it.category,
-          subcategory: it.subcategory,
-          viscosity: it.viscosity,
-        },
+      attributes: {
+        category: it.category,
+        application: it.application,
+        subcategory: it.subcategory,
+        viscosity: it.viscosity,
+      },
         searchText: [it.name, it.category, it.unit, it.baseUnit]
           .filter(Boolean)
           .join(' ')
@@ -250,8 +253,8 @@ export function CanonicalView({ items }: { items: CanonicalItem[] }) {
           <AttributeGroupedList
             items={groupItems}
             available={CANONICAL_ATTRIBUTES}
-            defaultGroupBy={['category', 'subcategory']}
-            storageKey="canonical"
+            defaultGroupBy={['category', 'application', 'subcategory']}
+            storageKey="canonical-v2"
             query={query}
             itemLabel="canonical items"
           />
