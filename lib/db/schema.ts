@@ -7,6 +7,8 @@ import {
   integer,
   numeric,
   date,
+  uniqueIndex,
+  index,
 } from 'drizzle-orm/pg-core'
 
 // --- Better Auth required tables -------------------------------------------
@@ -250,6 +252,46 @@ export const vendorPrices = pgTable('vendor_prices', {
   importId: integer('importId'),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
+
+// --- Item hierarchy (user-defined groups) ----------------------------------
+// Editors organize items into nestable groups that any user can roll up
+// (collapse) / expand. Groups are workspace-wide (this is a shared workspace),
+// and `parentId` self-references to allow subgroups to arbitrary depth.
+// `userId` records the creator for provenance only. No FKs, matching the
+// convention of the other app tables.
+export const itemGroups = pgTable('item_groups', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  name: text('name').notNull(),
+  // null = top-level group. A non-null value nests this group under another.
+  parentId: integer('parentId'),
+  sortOrder: integer('sortOrder').notNull().default(0),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
+// Polymorphic membership: an item (either a product or a canonical item) belongs
+// to at most one group. entityType is 'product' | 'canonical'. The unique index
+// on (entityType, entityId) enforces the single-group rule; a missing row means
+// the item is Ungrouped.
+export const groupMembers = pgTable(
+  'group_members',
+  {
+    id: serial('id').primaryKey(),
+    userId: text('userId').notNull(),
+    groupId: integer('groupId').notNull(),
+    // 'product' | 'canonical'
+    entityType: text('entityType').notNull(),
+    entityId: integer('entityId').notNull(),
+    createdAt: timestamp('createdAt').notNull().defaultNow(),
+  },
+  (t) => ({
+    entityUnique: uniqueIndex('group_members_entity_unique').on(
+      t.entityType,
+      t.entityId,
+    ),
+    groupIdx: index('group_members_group_idx').on(t.groupId),
+  }),
+)
 
 // --- File imports ----------------------------------------------------------
 // Each upload (XLS or PDF) from a location is staged here, AI-parsed into

@@ -2,11 +2,14 @@ import { PageHeader } from '@/components/page-header'
 import { CanonicalView } from '@/components/canonical-view'
 import { getCanonicalItems } from '@/app/actions/canonical'
 import { getMatchRows } from '@/app/actions/canonical'
+import { getGroupTree, getGroupMemberships } from '@/app/actions/groups'
 
 export default async function CanonicalPage() {
-  const [items, rows] = await Promise.all([
+  const [items, rows, groupTree, memberships] = await Promise.all([
     getCanonicalItems(),
     getMatchRows(),
+    getGroupTree(),
+    getGroupMemberships('canonical'),
   ])
 
   const matchedCounts = new Map<number, number>()
@@ -26,6 +29,8 @@ export default async function CanonicalPage() {
         description="Master item definitions. Vendor products are matched to these so similar offerings compare as one."
       />
       <CanonicalView
+        groupTree={groupTree}
+        memberships={memberships}
         items={items.map((i) => ({
           id: i.id,
           name: i.name,

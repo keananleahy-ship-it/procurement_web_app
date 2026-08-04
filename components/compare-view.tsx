@@ -26,9 +26,15 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Card } from '@/components/ui/card'
-import { DataPagination } from '@/components/data-pagination'
 import { EmptyState } from '@/components/empty-state'
 import { useCanEdit } from '@/components/role-provider'
+import { GroupedSections } from '@/components/grouped-sections'
+import { GroupPicker } from '@/components/group-controls'
+import type {
+  EntityType,
+  GroupNode,
+  MembershipMap,
+} from '@/lib/groups'
 import { formatCurrency, formatDate, formatNumber } from '@/lib/format'
 import {
   packFamily,
@@ -51,16 +57,23 @@ import { cn } from '@/lib/utils'
 
 export function CompareView({
   comparisons,
+  groupTree,
+  canonicalMemberships,
+  productMemberships,
 }: {
   comparisons: ProductComparison[]
+  groupTree: GroupNode[]
+  // Group memberships for canonical items and standalone products. A compare
+  // row maps to whichever entity it represents, so both maps are needed.
+  canonicalMemberships: MembershipMap
+  productMemberships: MembershipMap
 }) {
+  const canEdit = useCanEdit()
   const [query, setQuery] = useState('')
   const [families, setFamilies] = useState<Set<PackFamilyId>>(new Set())
-  const [page, setPage] = useState(1)
   // Cards are collapsed by default — only the selected ones reveal their price
   // table, keeping the list scannable when there are many products.
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const PAGE_SIZE = 15
 
   function toggleExpanded(key: string) {
     setExpanded((prev) => {
@@ -137,7 +150,6 @@ export function CompareView({
   }, [comparisons, query, families])
 
   function toggleFamily(id: PackFamilyId) {
-    setPage(1)
     setFamilies((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
@@ -146,12 +158,37 @@ export function CompareView({
     })
   }
 
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
-  const currentPage = Math.min(page, pageCount)
-  const paged = filtered.slice(
-    (currentPage - 1) * PAGE_SIZE,
-    currentPage * PAGE_SIZE,
-  )
+  // Resolve which entity (canonical item or standalone product) a comparison
+  // row represents, so we can look it up in the right membership map. Canonical
+  // groups use the key `c<canonicalItemId>`; standalone products use productId.
+  function entityOf(c: ProductComparison): {
+    type: EntityType
+    id: number
+  } {
+    if (c.isCanonical) {
+      return { type: 'canonical', id: Number(c.key.slice(1)) }
+    }
+    return { type: 'product', id: c.productId }
+  }
+
+  function groupIdOf(c: ProductComparison): number | null {
+    const { type, id } = entityOf(c)
+    const map = type === 'canonical' ? canonicalMemberships : productMemberships
+    return map[id] ?? null
+  }
+
+  // Bucket the filtered comparisons by group id; null = Ungrouped.
+  const itemsByGroup = useMemo(() => {
+    const map = new Map<number | null, ProductComparison[]>()
+    for (const c of filtered) {
+      const gid = groupIdOf(c)
+      const list = map.get(gid)
+      if (list) list.push(c)
+      else map.set(gid, [c])
+    }
+    return map
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, canonicalMemberships, productMemberships])
 
   if (comparisons.length === 0) {
     return (
@@ -171,10 +208,7 @@ export function CompareView({
         <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           value={query}
-          onChange={(e) => {
-            setQuery(e.target.value)
-            setPage(1)
-          }}
+          onChange={(e) => setQuery(e.target.value)}
           placeholder="Search products or categories"
           className="pl-9"
         />
@@ -217,10 +251,7 @@ export function CompareView({
             type="button"
             size="sm"
             variant="ghost"
-            onClick={() => {
-              setFamilies(new Set())
-              setPage(1)
-            }}
+            onClick={() => setFamilies(new Set())}
             className="h-8 text-muted-foreground"
           >
             Clear
@@ -239,18 +270,34 @@ export function CompareView({
               : `No products match “${query}”.`}
         </p>
       ) : (
-      <div className="flex flex-col gap-6">
-        {paged.map((c) => (
-          <Card key={c.key} className="overflow-hidden p-0">
-            <button
-              type="button"
-              onClick={() => toggleExpanded(c.key)}
-              aria-expanded={expanded.has(c.key)}
-              className={cn(
-                'flex w-full flex-wrap items-center justify-between gap-3 px-5 py-4 text-left transition-colors hover:bg-muted/40',
-                expanded.has(c.key) && 'border-b border-border',
-              )}
-            >
+        <GroupedSections
+          storageKey="compare"
+          tree={groupTree}
+          entityType="product"
+          canEdit={canEdit}
+          itemsByGroup={itemsByGroup}
+          forceExpandAll={query.trim() !== '' || families.size > 0}
+          totalCount={filtered.length}
+          itemNoun="products"
+          renderItems={(bucket) => (
+            <div className="flex flex-col gap-4">
+              {bucket.map((c) => {
+                const entity = entityOf(c)
+                const currentGroupId = groupIdOf(c)
+                return (
+                  <Card key={c.key} className="overflow-hidden p-0">
+                    <div
+                      className={cn(
+                        'flex items-stretch',
+                        expanded.has(c.key) && 'border-b border-border',
+                      )}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => toggleExpanded(c.key)}
+                        aria-expanded={expanded.has(c.key)}
+                        className="flex flex-1 flex-wrap items-center justify-between gap-3 px-5 py-4 text-left transition-colors hover:bg-muted/40"
+                      >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <h3 className="text-base font-semibold text-foreground">
@@ -325,9 +372,20 @@ export function CompareView({
                   )}
                 />
               </div>
-            </button>
+                      </button>
+                      {canEdit && (
+                        <div className="flex items-center border-l border-border px-2">
+                          <GroupPicker
+                            tree={groupTree}
+                            entityType={entity.type}
+                            entityId={entity.id}
+                            currentGroupId={currentGroupId}
+                          />
+                        </div>
+                      )}
+                    </div>
 
-            {expanded.has(c.key) && (
+                    {expanded.has(c.key) && (
             <Table>
               <TableHeader>
                 <TableRow>

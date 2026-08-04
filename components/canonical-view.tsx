@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useMemo, useState, useTransition } from 'react'
 import {
   createCanonicalItem,
   deleteCanonicalItem,
@@ -29,6 +29,9 @@ import {
 import { Plus, Trash2, Layers } from 'lucide-react'
 import { EmptyState } from '@/components/empty-state'
 import { useCanEdit } from '@/components/role-provider'
+import { GroupedSections } from '@/components/grouped-sections'
+import { GroupPicker } from '@/components/group-controls'
+import type { GroupNode, MembershipMap } from '@/lib/groups'
 
 type CanonicalItem = {
   id: number
@@ -39,10 +42,119 @@ type CanonicalItem = {
   matchedCount: number
 }
 
-export function CanonicalView({ items }: { items: CanonicalItem[] }) {
-  const [open, setOpen] = useState(false)
+// Table for a bucket of canonical items, shared across group sections.
+function CanonicalTable({
+  items,
+  canEdit,
+  tree,
+  memberships,
+}: {
+  items: CanonicalItem[]
+  canEdit: boolean
+  tree: GroupNode[]
+  memberships: MembershipMap
+}) {
   const [isPending, startTransition] = useTransition()
+
+  return (
+    <div className="overflow-hidden rounded-md border border-border">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Canonical item</TableHead>
+            <TableHead>Category</TableHead>
+            <TableHead>Selling unit</TableHead>
+            <TableHead>Base unit</TableHead>
+            <TableHead className="text-right">Matched products</TableHead>
+            {canEdit && <TableHead className="text-right">Group</TableHead>}
+            {canEdit && <TableHead className="w-12" />}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {items.map((it) => (
+            <TableRow key={it.id}>
+              <TableCell className="font-medium text-foreground">
+                {it.name}
+              </TableCell>
+              <TableCell>
+                {it.category ? (
+                  <Badge variant="secondary">{it.category}</Badge>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )}
+              </TableCell>
+              <TableCell className="text-muted-foreground">
+                {it.unit ?? '—'}
+              </TableCell>
+              <TableCell className="text-muted-foreground">
+                {it.baseUnit ?? '—'}
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                {it.matchedCount > 0 ? (
+                  <Badge className="bg-success text-success-foreground hover:bg-success">
+                    {it.matchedCount}
+                  </Badge>
+                ) : (
+                  <span className="text-muted-foreground">0</span>
+                )}
+              </TableCell>
+              {canEdit && (
+                <TableCell className="text-right">
+                  <GroupPicker
+                    tree={tree}
+                    entityType="canonical"
+                    entityId={it.id}
+                    currentGroupId={memberships[it.id] ?? null}
+                  />
+                </TableCell>
+              )}
+              {canEdit && (
+                <TableCell>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Delete ${it.name}`}
+                    disabled={isPending}
+                    onClick={() =>
+                      startTransition(() => {
+                        void deleteCanonicalItem(it.id)
+                      })
+                    }
+                  >
+                    <Trash2 className="size-4 text-muted-foreground" />
+                  </Button>
+                </TableCell>
+              )}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  )
+}
+
+export function CanonicalView({
+  items,
+  groupTree,
+  memberships,
+}: {
+  items: CanonicalItem[]
+  groupTree: GroupNode[]
+  memberships: MembershipMap
+}) {
+  const [open, setOpen] = useState(false)
   const canEdit = useCanEdit()
+
+  const itemsByGroup = useMemo(() => {
+    const map = new Map<number | null, CanonicalItem[]>()
+    for (const it of items) {
+      const gid = memberships[it.id] ?? null
+      const list = map.get(gid)
+      if (list) list.push(it)
+      else map.set(gid, [it])
+    }
+    return map
+  }, [items, memberships])
 
   async function handleCreate(formData: FormData) {
     await createCanonicalItem(formData)
@@ -52,62 +164,63 @@ export function CanonicalView({ items }: { items: CanonicalItem[] }) {
   return (
     <div className="p-6">
       {canEdit && (
-      <div className="mb-4 flex justify-end">
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger render={<Button />}>
-            <Plus className="size-4" />
-            Add canonical item
-          </DialogTrigger>
-          <DialogContent>
-            <form action={handleCreate}>
-              <DialogHeader>
-                <DialogTitle>Add canonical item</DialogTitle>
-                <DialogDescription>
-                  A canonical item is the master definition that vendor-specific
-                  products get matched to, so differently-named offerings compare
-                  as one.
-                </DialogDescription>
-              </DialogHeader>
-              <div className="flex flex-col gap-4 py-4">
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="name">Canonical name</Label>
-                  <Input
-                    id="name"
-                    name="name"
-                    required
-                    placeholder="Copy Paper, A4 80gsm"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
+        <div className="mb-4 flex justify-end">
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger render={<Button />}>
+              <Plus className="size-4" />
+              Add canonical item
+            </DialogTrigger>
+            <DialogContent>
+              <form action={handleCreate}>
+                <DialogHeader>
+                  <DialogTitle>Add canonical item</DialogTitle>
+                  <DialogDescription>
+                    A canonical item is the master definition that
+                    vendor-specific products get matched to, so differently-named
+                    offerings compare as one.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="flex flex-col gap-4 py-4">
                   <div className="flex flex-col gap-2">
-                    <Label htmlFor="category">Category</Label>
-                    <Input id="category" name="category" placeholder="Office" />
+                    <Label htmlFor="name">Canonical name</Label>
+                    <Input
+                      id="name"
+                      name="name"
+                      required
+                      placeholder="Copy Paper, A4 80gsm"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="flex flex-col gap-2">
+                      <Label htmlFor="category">Category</Label>
+                      <Input
+                        id="category"
+                        name="category"
+                        placeholder="Office"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <Label htmlFor="unit">Selling unit</Label>
+                      <Input id="unit" name="unit" placeholder="ream" />
+                    </div>
                   </div>
                   <div className="flex flex-col gap-2">
-                    <Label htmlFor="unit">Selling unit</Label>
-                    <Input id="unit" name="unit" placeholder="ream" />
+                    <Label htmlFor="baseUnit">Base unit (for comparison)</Label>
+                    <Input id="baseUnit" name="baseUnit" placeholder="sheet" />
+                    <p className="text-xs text-muted-foreground">
+                      Prices are normalized to this unit so different pack sizes
+                      compare fairly (e.g. compare per sheet, per litre, per
+                      each).
+                    </p>
                   </div>
                 </div>
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="baseUnit">Base unit (for comparison)</Label>
-                  <Input
-                    id="baseUnit"
-                    name="baseUnit"
-                    placeholder="sheet"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Prices are normalized to this unit so different pack sizes
-                    compare fairly (e.g. compare per sheet, per litre, per each).
-                  </p>
-                </div>
-              </div>
-              <DialogFooter>
-                <Button type="submit">Save canonical item</Button>
-              </DialogFooter>
-            </form>
-          </DialogContent>
-        </Dialog>
-      </div>
+                <DialogFooter>
+                  <Button type="submit">Save canonical item</Button>
+                </DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
+        </div>
       )}
 
       {items.length === 0 ? (
@@ -117,68 +230,23 @@ export function CanonicalView({ items }: { items: CanonicalItem[] }) {
           description="Define the master items you want to compare against, then run matching to link vendor products to them."
         />
       ) : (
-        <div className="rounded-lg border border-border bg-card">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Canonical item</TableHead>
-                <TableHead>Category</TableHead>
-                <TableHead>Selling unit</TableHead>
-                <TableHead>Base unit</TableHead>
-                <TableHead className="text-right">Matched products</TableHead>
-                {canEdit && <TableHead className="w-12" />}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {items.map((it) => (
-                <TableRow key={it.id}>
-                  <TableCell className="font-medium text-foreground">
-                    {it.name}
-                  </TableCell>
-                  <TableCell>
-                    {it.category ? (
-                      <Badge variant="secondary">{it.category}</Badge>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {it.unit ?? '—'}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {it.baseUnit ?? '—'}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {it.matchedCount > 0 ? (
-                      <Badge className="bg-success text-success-foreground hover:bg-success">
-                        {it.matchedCount}
-                      </Badge>
-                    ) : (
-                      <span className="text-muted-foreground">0</span>
-                    )}
-                  </TableCell>
-                  {canEdit && (
-                    <TableCell>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`Delete ${it.name}`}
-                        disabled={isPending}
-                        onClick={() =>
-                          startTransition(() => {
-                            void deleteCanonicalItem(it.id)
-                          })
-                        }
-                      >
-                        <Trash2 className="size-4 text-muted-foreground" />
-                      </Button>
-                    </TableCell>
-                  )}
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+        <GroupedSections
+          storageKey="canonical"
+          tree={groupTree}
+          entityType="canonical"
+          canEdit={canEdit}
+          itemsByGroup={itemsByGroup}
+          totalCount={items.length}
+          itemNoun="canonical items"
+          renderItems={(bucket) => (
+            <CanonicalTable
+              items={bucket}
+              canEdit={canEdit}
+              tree={groupTree}
+              memberships={memberships}
+            />
+          )}
+        />
       )}
     </div>
   )
