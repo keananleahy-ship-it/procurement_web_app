@@ -50,6 +50,7 @@ import {
   Layers,
   MinusCircle,
   Search,
+  Store,
   TrendingDown,
   TriangleAlert,
   X,
@@ -63,6 +64,7 @@ export function CompareView({
 }) {
   const [query, setQuery] = useState('')
   const [families, setFamilies] = useState<Set<PackFamilyId>>(new Set())
+  const [vendors, setVendors] = useState<Set<number>>(new Set())
   // Cards are collapsed by default — only the selected ones reveal their price
   // table, keeping the list scannable when there are many products.
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -123,6 +125,22 @@ export function CompareView({
     return counts
   }, [comparisons])
 
+  // Distinct vendors across the catalog with an offer count, sorted by name so
+  // the filter chips are stable and only list suppliers that actually appear.
+  const vendorOptions = useMemo(() => {
+    const map = new Map<number, { name: string; count: number }>()
+    for (const c of comparisons) {
+      for (const o of c.offers) {
+        const existing = map.get(o.vendorId)
+        if (existing) existing.count += 1
+        else map.set(o.vendorId, { name: o.vendorName, count: 1 })
+      }
+    }
+    return [...map.entries()]
+      .map(([id, v]) => ({ id, ...v }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [comparisons])
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     const result: ProductComparison[] = []
@@ -139,16 +157,20 @@ export function CompareView({
         continue
       }
 
-      // No family selected → show the group unchanged.
-      if (families.size === 0) {
+      // No pack-family or vendor filter → show the group unchanged.
+      if (families.size === 0 && vendors.size === 0) {
         result.push(c)
         continue
       }
 
-      // Hide offers outside the selected families, then re-rank best/worst
-      // within what remains so the badges and savings stay accurate.
-      const offers = c.offers.filter((o) =>
-        families.has(packFamily(o.packSize, o.baseUnit)),
+      // Hide offers outside the selected pack families and/or vendors, then
+      // re-rank best/worst within what remains so badges and savings stay
+      // accurate.
+      const offers = c.offers.filter(
+        (o) =>
+          (families.size === 0 ||
+            families.has(packFamily(o.packSize, o.baseUnit))) &&
+          (vendors.size === 0 || vendors.has(o.vendorId)),
       )
       if (offers.length === 0) continue
 
@@ -169,10 +191,19 @@ export function CompareView({
       })
     }
     return result
-  }, [comparisons, query, families])
+  }, [comparisons, query, families, vendors])
 
   function toggleFamily(id: PackFamilyId) {
     setFamilies((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleVendor(id: number) {
+    setVendors((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
@@ -279,15 +310,57 @@ export function CompareView({
         )}
       </div>
 
+      {vendorOptions.length > 1 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+            <Store className="size-4" />
+            Vendor
+          </span>
+          {vendorOptions.map((v) => {
+            const active = vendors.has(v.id)
+            return (
+              <Button
+                key={v.id}
+                type="button"
+                size="sm"
+                variant={active ? 'default' : 'outline'}
+                onClick={() => toggleVendor(v.id)}
+                aria-pressed={active}
+                className="h-8 gap-1.5"
+              >
+                {v.name}
+                <span
+                  className={cn(
+                    'rounded-full px-1.5 text-xs tabular-nums',
+                    active
+                      ? 'bg-primary-foreground/20 text-primary-foreground'
+                      : 'bg-muted text-muted-foreground',
+                  )}
+                >
+                  {v.count}
+                </span>
+              </Button>
+            )
+          })}
+          {vendors.size > 0 && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => setVendors(new Set())}
+              className="h-8 text-muted-foreground"
+            >
+              Clear
+            </Button>
+          )}
+        </div>
+      )}
+
       {filtered.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">
-          {query && families.size > 0
-            ? `No products match “${query}” in the selected pack ${
-                families.size === 1 ? 'family' : 'families'
-              }.`
-            : families.size > 0
-              ? 'No products have offers in the selected pack families.'
-              : `No products match “${query}”.`}
+          {query
+            ? `No products match “${query}” with the selected filters.`
+            : 'No products have offers matching the selected filters.'}
         </p>
       ) : (
         <AttributeGroupedList
@@ -295,7 +368,9 @@ export function CompareView({
           available={COMPARE_ATTRIBUTES}
             defaultGroupBy={['category', 'application', 'subcategory']}
             storageKey="compare-v2"
-          forceExpand={query.trim() !== '' || families.size > 0}
+          forceExpand={
+            query.trim() !== '' || families.size > 0 || vendors.size > 0
+          }
           itemLabel="products"
         />
       )}
