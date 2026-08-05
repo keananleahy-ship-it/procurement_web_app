@@ -80,28 +80,35 @@ export function CompareView({
   // the dialog stashes the target product so the reason prompt can submit it.
   const [removalTarget, setRemovalTarget] = useState<PriceRow | null>(null)
 
-  // Up to two products picked (by key) for a one-to-one replacement analysis.
-  // Kept as an ordered list so a third pick evicts the oldest selection.
-  const [selectedKeys, setSelectedKeys] = useState<string[]>([])
-  const toggleSelect = useCallback((key: string) => {
-    setSelectedKeys((prev) => {
-      if (prev.includes(key)) return prev.filter((k) => k !== key)
-      if (prev.length < 2) return [...prev, key]
+  // Up to two individual vendor offers (by priceId) picked for a one-to-one
+  // replacement analysis. Ordered so a third pick evicts the oldest.
+  const [selectedPriceIds, setSelectedPriceIds] = useState<number[]>([])
+  const toggleSelect = useCallback((priceId: number) => {
+    setSelectedPriceIds((prev) => {
+      if (prev.includes(priceId)) return prev.filter((id) => id !== priceId)
+      if (prev.length < 2) return [...prev, priceId]
       // Two already picked — drop the oldest and keep this newest pick.
-      return [prev[1], key]
+      return [prev[1], priceId]
     })
   }, [])
 
-  // Resolve selections from the full catalog (not the family-filtered view) so
-  // the replacement always uses each product's true best available price.
-  const byKey = useMemo(() => {
-    const m = new Map<string, ProductComparison>()
-    for (const c of comparisons) m.set(c.key, c)
+  // Index every offer across the full catalog back to its parent group, so a
+  // selected offer resolves to both its own price and the group-level annual
+  // volume that turns a per-unit gap into a dollar figure.
+  const offerIndex = useMemo(() => {
+    const m = new Map<number, SelectedOffer>()
+    for (const group of comparisons) {
+      for (const offer of group.offers) m.set(offer.priceId, { offer, group })
+    }
     return m
   }, [comparisons])
-  const selectionFull = selectedKeys.length >= 2
-  const selectedA = selectedKeys[0] ? (byKey.get(selectedKeys[0]) ?? null) : null
-  const selectedB = selectedKeys[1] ? (byKey.get(selectedKeys[1]) ?? null) : null
+  const selectionFull = selectedPriceIds.length >= 2
+  const selectedA = selectedPriceIds[0]
+    ? (offerIndex.get(selectedPriceIds[0]) ?? null)
+    : null
+  const selectedB = selectedPriceIds[1]
+    ? (offerIndex.get(selectedPriceIds[1]) ?? null)
+    : null
 
   // Count offers per family across the whole catalog so we only show buttons
   // for families that actually exist, and can label each with its offer count.
@@ -194,13 +201,13 @@ export function CompareView({
           <ComparisonCard
             c={c}
             onRemove={setRemovalTarget}
-            selected={selectedKeys.includes(c.key)}
+            selectedPriceIds={selectedPriceIds}
             selectionFull={selectionFull}
             onToggleSelect={toggleSelect}
           />
         ),
       })),
-    [filtered, selectedKeys, selectionFull, toggleSelect],
+    [filtered, selectedPriceIds, selectionFull, toggleSelect],
   )
 
   if (comparisons.length === 0) {
@@ -293,12 +300,12 @@ export function CompareView({
         />
       )}
 
-      {selectedKeys.length > 0 && (
+      {selectedPriceIds.length > 0 && (
         <ReplacementPanel
           a={selectedA}
           b={selectedB}
           onRemove={toggleSelect}
-          onClear={() => setSelectedKeys([])}
+          onClear={() => setSelectedPriceIds([])}
         />
       )}
 
@@ -316,67 +323,35 @@ export function CompareView({
 function ComparisonCard({
   c,
   onRemove,
-  selected,
+  selectedPriceIds,
   selectionFull,
   onToggleSelect,
 }: {
   c: ProductComparison
   onRemove: (offer: PriceRow) => void
-  selected: boolean
+  selectedPriceIds: number[]
   selectionFull: boolean
-  onToggleSelect: (key: string) => void
+  onToggleSelect: (priceId: number) => void
 }) {
   const [expanded, setExpanded] = useState(false)
-  // Disable picking only when two others are already chosen (this one isn't).
-  const selectDisabled = selectionFull && !selected
+  // Whether any offer in this card is part of the active replacement selection,
+  // so a collapsed card still hints that it holds a picked product.
+  const hasSelection = c.offers.some((o) => selectedPriceIds.includes(o.priceId))
 
   return (
     <Card
       className={cn(
         'overflow-hidden p-0 transition-colors',
-        selected && 'border-primary ring-1 ring-primary/40',
+        hasSelection && 'border-primary ring-1 ring-primary/40',
       )}
     >
-      <div
-        className={cn(
-          'flex items-stretch',
-          expanded && 'border-b border-border',
-        )}
-      >
-        <div className="flex items-center pl-4">
-          <button
-            type="button"
-            role="checkbox"
-            aria-checked={selected}
-            aria-label={
-              selected
-                ? `Remove ${c.displayName} from replacement comparison`
-                : `Select ${c.displayName} for replacement comparison`
-            }
-            disabled={selectDisabled}
-            title={
-              selectDisabled
-                ? 'Two products already selected — clear one first'
-                : 'Compare as a one-to-one replacement'
-            }
-            onClick={() => onToggleSelect(c.key)}
-            className={cn(
-              'flex size-5 items-center justify-center rounded border transition-colors',
-              selected
-                ? 'border-primary bg-primary text-primary-foreground'
-                : 'border-input bg-background hover:border-primary',
-              selectDisabled && 'cursor-not-allowed opacity-40 hover:border-input',
-            )}
-          >
-            {selected && <Check className="size-3.5" aria-hidden="true" />}
-          </button>
-        </div>
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
           className={cn(
             'flex w-full flex-wrap items-center justify-between gap-3 px-5 py-4 text-left transition-colors hover:bg-muted/40',
+            expanded && 'border-b border-border',
           )}
         >
               <div className="min-w-0">
@@ -454,12 +429,14 @@ function ComparisonCard({
                 />
               </div>
         </button>
-      </div>
 
       {expanded && (
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-10">
+                    <span className="sr-only">Select for comparison</span>
+                  </TableHead>
                   <TableHead>Vendor</TableHead>
                   <TableHead>Location</TableHead>
                   <TableHead>Freight</TableHead>
@@ -487,14 +464,53 @@ function ComparisonCard({
                     !o.unitMismatch &&
                     c.best?.priceId !== c.worst?.priceId &&
                     o.priceId === c.worst?.priceId
+                  const selected = selectedPriceIds.includes(o.priceId)
+                  // Only two offers can be picked; block new picks once full.
+                  const selectDisabled = selectionFull && !selected
+                  const offerLabel =
+                    o.productName && o.productName !== o.vendorName
+                      ? `${o.productName} from ${o.vendorName}`
+                      : o.vendorName
                   return (
                     <TableRow
                       key={o.priceId}
                       className={cn(
                         isBest && 'bg-success/5',
+                        selected && 'bg-primary/5',
                         !o.comparable && 'opacity-70',
                       )}
                     >
+                      <TableCell className="pl-4">
+                        <button
+                          type="button"
+                          role="checkbox"
+                          aria-checked={selected}
+                          aria-label={
+                            selected
+                              ? `Remove ${offerLabel} from replacement comparison`
+                              : `Select ${offerLabel} for replacement comparison`
+                          }
+                          disabled={selectDisabled}
+                          title={
+                            selectDisabled
+                              ? 'Two products already selected — clear one first'
+                              : 'Compare as a one-to-one replacement'
+                          }
+                          onClick={() => onToggleSelect(o.priceId)}
+                          className={cn(
+                            'flex size-5 items-center justify-center rounded border transition-colors',
+                            selected
+                              ? 'border-primary bg-primary text-primary-foreground'
+                              : 'border-input bg-background hover:border-primary',
+                            selectDisabled &&
+                              'cursor-not-allowed opacity-40 hover:border-input',
+                          )}
+                        >
+                          {selected && (
+                            <Check className="size-3.5" aria-hidden="true" />
+                          )}
+                        </button>
+                      </TableCell>
                       <TableCell className="font-medium text-foreground">
                         {o.vendorName}
                         {c.isCanonical &&
@@ -693,41 +709,61 @@ function ComparisonCard({
   )
 }
 
-// Best comparable per-base-unit price for a product, or null when it has no
-// rankable offer (all offers unit-mismatched or missing freight).
-function bestPrice(c: ProductComparison): number | null {
-  return c.best?.comparablePricePerBaseUnit ?? null
+// A specific vendor offer picked for the replacement, paired with the group it
+// belongs to — the group supplies the annual purchase volume and base unit.
+type SelectedOffer = { offer: PriceRow; group: ProductComparison }
+
+// The comparable per-base-unit price for a picked offer, or null when the offer
+// isn't rankable (unit mismatch or missing freight) so it can't be costed.
+function offerPrice(s: SelectedOffer): number | null {
+  return s.offer.comparable ? s.offer.comparablePricePerBaseUnit : null
+}
+
+// Human label for a picked offer: its own product name, falling back to the
+// group name for single-product groups.
+function offerLabel(s: SelectedOffer): string {
+  return s.offer.productName || s.group.displayName
+}
+
+// Base unit the picked offer's comparable price is expressed in. Prices use
+// comparablePricePerBaseUnit, which is always normalized to the GROUP's base
+// unit, so comparability keys on the group's unit — not the offer's raw unit,
+// which may differ before normalization (e.g. quoted per gallon in a per-USG
+// group) and would otherwise flag a false "different units" mismatch.
+function offerUnit(s: SelectedOffer): string | null {
+  return s.group.baseUnit ?? s.offer.baseUnit
 }
 
 // Sticky bar summarizing a one-to-one replacement between the two selected
-// products: which to keep, the per-unit delta, and the annualized dollar
-// impact using the incumbent's (the pricier product's) purchase volume.
+// vendor offers: which to keep, the per-unit delta, and the annualized dollar
+// impact using the incumbent's (the pricier offer's) group purchase volume.
 function ReplacementPanel({
   a,
   b,
   onRemove,
   onClear,
 }: {
-  a: ProductComparison | null
-  b: ProductComparison | null
-  onRemove: (key: string) => void
+  a: SelectedOffer | null
+  b: SelectedOffer | null
+  onRemove: (priceId: number) => void
   onClear: () => void
 }) {
   const analysis = useMemo(() => {
     if (!a || !b) return null
-    const pa = bestPrice(a)
-    const pb = bestPrice(b)
+    const pa = offerPrice(a)
+    const pb = offerPrice(b)
     if (pa === null || pb === null) {
       return { kind: 'no-price' as const }
     }
-    // Higher price = the product you'd switch away from (the incumbent).
+    // Higher price = the offer you'd switch away from (the incumbent).
     const [incumbent, replacement, incPrice, repPrice] =
       pa >= pb ? [a, b, pa, pb] : [b, a, pb, pa]
-    const unitA = (a.baseUnit ?? '').toLowerCase()
-    const unitB = (b.baseUnit ?? '').toLowerCase()
+    const unitA = (offerUnit(a) ?? '').toLowerCase()
+    const unitB = (offerUnit(b) ?? '').toLowerCase()
     const unitCompatible = unitA === unitB
     const perUnitSavings = incPrice - repPrice
-    const annualVolume = incumbent.annualVolume
+    // Volume you'd actually convert = how much of the incumbent you buy a year.
+    const annualVolume = incumbent.group.annualVolume
     return {
       kind: 'ok' as const,
       incumbent,
@@ -737,12 +773,12 @@ function ReplacementPanel({
       perUnitSavings,
       annualVolume,
       annualSavings: perUnitSavings * annualVolume,
-      baseUnit: incumbent.baseUnit ?? replacement.baseUnit,
+      baseUnit: offerUnit(incumbent) ?? offerUnit(replacement),
       unitCompatible,
     }
   }, [a, b])
 
-  const chips = [a, b].filter(Boolean) as ProductComparison[]
+  const chips = [a, b].filter(Boolean) as SelectedOffer[]
 
   return (
     <div className="sticky bottom-4 z-20">
@@ -754,17 +790,17 @@ function ReplacementPanel({
               One-to-one replacement
             </span>
             <div className="flex items-center gap-1.5">
-              {chips.map((c) => (
+              {chips.map((s) => (
                 <Badge
-                  key={c.key}
+                  key={s.offer.priceId}
                   variant="secondary"
                   className="max-w-[16rem] gap-1 font-normal"
                 >
-                  <span className="truncate">{c.displayName}</span>
+                  <span className="truncate">{offerLabel(s)}</span>
                   <button
                     type="button"
-                    onClick={() => onRemove(c.key)}
-                    aria-label={`Remove ${c.displayName} from comparison`}
+                    onClick={() => onRemove(s.offer.priceId)}
+                    aria-label={`Remove ${offerLabel(s)} from comparison`}
                     className="rounded-full p-0.5 text-muted-foreground hover:bg-background hover:text-foreground"
                   >
                     <X className="size-3" aria-hidden="true" />
@@ -803,7 +839,7 @@ function ReplacementPanel({
               <div className="flex flex-1 items-center gap-3">
                 <ReplacementSide
                   label="Replace"
-                  c={analysis.incumbent}
+                  s={analysis.incumbent}
                   price={analysis.incPrice}
                   baseUnit={analysis.baseUnit}
                   tone="destructive"
@@ -811,7 +847,7 @@ function ReplacementPanel({
                 <ArrowRight className="size-5 shrink-0 text-muted-foreground" />
                 <ReplacementSide
                   label="With"
-                  c={analysis.replacement}
+                  s={analysis.replacement}
                   price={analysis.repPrice}
                   baseUnit={analysis.baseUnit}
                   tone="success"
@@ -843,7 +879,7 @@ function ReplacementPanel({
                     ) : (
                       <span className="text-xs font-normal text-success/80">
                         No purchase volume on file for{' '}
-                        {analysis.incumbent.displayName} — showing per-unit only.
+                        {offerLabel(analysis.incumbent)} — showing per-unit only.
                       </span>
                     )}
                   </>
@@ -851,8 +887,8 @@ function ReplacementPanel({
                 {!analysis.unitCompatible && (
                   <span className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-warning">
                     <TriangleAlert className="size-3.5" />
-                    Different base units ({analysis.incumbent.baseUnit ?? '—'} vs{' '}
-                    {analysis.replacement.baseUnit ?? '—'}) — not directly
+                    Different base units ({offerUnit(analysis.incumbent) ?? '—'}{' '}
+                    vs {offerUnit(analysis.replacement) ?? '—'}) — not directly
                     comparable.
                   </span>
                 )}
@@ -865,21 +901,22 @@ function ReplacementPanel({
   )
 }
 
-// One side of the replacement (the product being replaced, or its replacement):
-// name, best vendor, and best per-base-unit price.
+// One side of the replacement (the offer being replaced, or its replacement):
+// product name, vendor, and its per-base-unit price.
 function ReplacementSide({
   label,
-  c,
+  s,
   price,
   baseUnit,
   tone,
 }: {
   label: string
-  c: ProductComparison
+  s: SelectedOffer
   price: number
   baseUnit: string | null
   tone: 'destructive' | 'success'
 }) {
+  const name = offerLabel(s)
   return (
     <div className="min-w-0 flex-1 rounded-md border border-border bg-muted/20 px-3 py-2">
       <span
@@ -890,15 +927,15 @@ function ReplacementSide({
       >
         {label}
       </span>
-      <p className="truncate text-sm font-medium text-foreground" title={c.displayName}>
-        {c.displayName}
+      <p className="truncate text-sm font-medium text-foreground" title={name}>
+        {name}
       </p>
       <p className="flex flex-wrap items-baseline gap-x-1.5 text-xs text-muted-foreground">
         <span className="font-semibold tabular-nums text-foreground">
           {formatCurrency(price)}
           <span className="font-normal"> / {baseUnit ?? 'unit'}</span>
         </span>
-        {c.best?.vendorName && <span>· {c.best.vendorName}</span>}
+        {s.offer.vendorName && <span>· {s.offer.vendorName}</span>}
       </p>
     </div>
   )
