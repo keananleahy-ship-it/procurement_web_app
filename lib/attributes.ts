@@ -295,9 +295,11 @@ export function deriveViscosity(name: string): string | null {
   const upper = name.toUpperCase()
   // Coolant blend ratios like 50/50 are not a viscosity grade.
   const withoutRatios = upper.replace(/\d{2}\/\d{2}/g, ' ')
-  // SAE multigrade, e.g. 15W-40, 5W30, 80W-90.
-  const sae = withoutRatios.match(/\b(\d{1,2}W\s*-?\s*\d{2,3})\b/)
-  if (sae) return 'SAE ' + sae[1].replace(/\s/g, '')
+  // SAE multigrade, e.g. 15W-40, 5W30, 80W-90. Suppliers write the same grade
+  // with or without the hyphen ("10W30" vs "10W-30"); always emit the canonical
+  // hyphenated form so both collapse to one value.
+  const sae = withoutRatios.match(/\b(\d{1,2})W\s*-?\s*(\d{2,3})\b/)
+  if (sae) return `SAE ${sae[1]}W-${sae[2]}`
   // A single "W" grade, e.g. 0W, 5W.
   const saeSingle = withoutRatios.match(/\b(\d{1,2}W)\b/)
   if (saeSingle) return 'SAE ' + saeSingle[1]
