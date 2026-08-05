@@ -168,14 +168,40 @@ export function AttributeGroupedList({
   }, [tree])
 
   const searching = q.length > 0
-  const forceOpen = searching || forceExpand
+
+  // While a parent filter is active (forceExpand) we default every group open so
+  // results are visible, but the user can still collapse individual groups. We
+  // track those collapses in a separate override set instead of mutating (and
+  // persisting) `expanded`, so clearing the filter restores their real state.
+  const [collapsedInFilter, setCollapsedInFilter] = useState<Set<string>>(
+    new Set(),
+  )
+  useEffect(() => {
+    if (!forceExpand) setCollapsedInFilter(new Set())
+  }, [forceExpand])
 
   const isOpen = useCallback(
-    (path: string) => forceOpen || expanded.has(path),
-    [forceOpen, expanded],
+    (path: string) => {
+      // Text search always shows all matches fully expanded.
+      if (searching) return true
+      // Filter mode: open by default, minus anything the user collapsed.
+      if (forceExpand) return !collapsedInFilter.has(path)
+      return expanded.has(path)
+    },
+    [searching, forceExpand, collapsedInFilter, expanded],
   )
 
   function toggle(path: string) {
+    // In filter mode, toggling flips the collapse override, not saved state.
+    if (forceExpand && !searching) {
+      setCollapsedInFilter((prev) => {
+        const next = new Set(prev)
+        if (next.has(path)) next.delete(path)
+        else next.add(path)
+        return next
+      })
+      return
+    }
     setExpanded((prev) => {
       const next = new Set(prev)
       if (next.has(path)) next.delete(path)
@@ -185,9 +211,19 @@ export function AttributeGroupedList({
   }
 
   function expandAll() {
+    // In filter mode, "open" means no collapse overrides.
+    if (forceExpand && !searching) {
+      setCollapsedInFilter(new Set())
+      return
+    }
     setExpanded(new Set(allPaths))
   }
   function collapseAll() {
+    // In filter mode, "closed" means every visible path is overridden shut.
+    if (forceExpand && !searching) {
+      setCollapsedInFilter(new Set(allPaths))
+      return
+    }
     setExpanded(new Set())
   }
 
