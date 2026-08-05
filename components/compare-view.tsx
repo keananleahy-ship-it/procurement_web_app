@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, useTransition } from 'react'
+import { useCallback, useMemo, useState, useTransition } from 'react'
 import type { ProductComparison, PriceRow } from '@/app/actions/comparisons'
 import { setFreightEstimate } from '@/app/actions/prices'
 import { submitRemovalRequest } from '@/app/actions/removal-requests'
@@ -41,8 +41,10 @@ import {
 } from '@/lib/pack-family'
 import {
   ArrowDownNarrowWide,
+  ArrowRight,
   Boxes,
   CalendarClock,
+  Check,
   ChevronDown,
   GitCompareArrows,
   Layers,
@@ -50,6 +52,7 @@ import {
   Search,
   TrendingDown,
   TriangleAlert,
+  X,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -76,6 +79,29 @@ export function CompareView({
   // The offer the user is requesting to remove from its match, if any. Opening
   // the dialog stashes the target product so the reason prompt can submit it.
   const [removalTarget, setRemovalTarget] = useState<PriceRow | null>(null)
+
+  // Up to two products picked (by key) for a one-to-one replacement analysis.
+  // Kept as an ordered list so a third pick evicts the oldest selection.
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([])
+  const toggleSelect = useCallback((key: string) => {
+    setSelectedKeys((prev) => {
+      if (prev.includes(key)) return prev.filter((k) => k !== key)
+      if (prev.length < 2) return [...prev, key]
+      // Two already picked — drop the oldest and keep this newest pick.
+      return [prev[1], key]
+    })
+  }, [])
+
+  // Resolve selections from the full catalog (not the family-filtered view) so
+  // the replacement always uses each product's true best available price.
+  const byKey = useMemo(() => {
+    const m = new Map<string, ProductComparison>()
+    for (const c of comparisons) m.set(c.key, c)
+    return m
+  }, [comparisons])
+  const selectionFull = selectedKeys.length >= 2
+  const selectedA = selectedKeys[0] ? (byKey.get(selectedKeys[0]) ?? null) : null
+  const selectedB = selectedKeys[1] ? (byKey.get(selectedKeys[1]) ?? null) : null
 
   // Count offers per family across the whole catalog so we only show buttons
   // for families that actually exist, and can label each with its offer count.
@@ -164,9 +190,17 @@ export function CompareView({
           .filter(Boolean)
           .join(' ')
           .toLowerCase(),
-        node: <ComparisonCard c={c} onRemove={setRemovalTarget} />,
+        node: (
+          <ComparisonCard
+            c={c}
+            onRemove={setRemovalTarget}
+            selected={selectedKeys.includes(c.key)}
+            selectionFull={selectionFull}
+            onToggleSelect={toggleSelect}
+          />
+        ),
       })),
-    [filtered],
+    [filtered, selectedKeys, selectionFull, toggleSelect],
   )
 
   if (comparisons.length === 0) {
@@ -259,6 +293,15 @@ export function CompareView({
         />
       )}
 
+      {selectedKeys.length > 0 && (
+        <ReplacementPanel
+          a={selectedA}
+          b={selectedB}
+          onRemove={toggleSelect}
+          onClear={() => setSelectedKeys([])}
+        />
+      )}
+
       <RemovalRequestDialog
         offer={removalTarget}
         onClose={() => setRemovalTarget(null)}
@@ -273,23 +316,69 @@ export function CompareView({
 function ComparisonCard({
   c,
   onRemove,
+  selected,
+  selectionFull,
+  onToggleSelect,
 }: {
   c: ProductComparison
   onRemove: (offer: PriceRow) => void
+  selected: boolean
+  selectionFull: boolean
+  onToggleSelect: (key: string) => void
 }) {
   const [expanded, setExpanded] = useState(false)
+  // Disable picking only when two others are already chosen (this one isn't).
+  const selectDisabled = selectionFull && !selected
 
   return (
-    <Card className="overflow-hidden p-0">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
+    <Card
+      className={cn(
+        'overflow-hidden p-0 transition-colors',
+        selected && 'border-primary ring-1 ring-primary/40',
+      )}
+    >
+      <div
         className={cn(
-          'flex w-full flex-wrap items-center justify-between gap-3 px-5 py-4 text-left transition-colors hover:bg-muted/40',
+          'flex items-stretch',
           expanded && 'border-b border-border',
         )}
       >
+        <div className="flex items-center pl-4">
+          <button
+            type="button"
+            role="checkbox"
+            aria-checked={selected}
+            aria-label={
+              selected
+                ? `Remove ${c.displayName} from replacement comparison`
+                : `Select ${c.displayName} for replacement comparison`
+            }
+            disabled={selectDisabled}
+            title={
+              selectDisabled
+                ? 'Two products already selected — clear one first'
+                : 'Compare as a one-to-one replacement'
+            }
+            onClick={() => onToggleSelect(c.key)}
+            className={cn(
+              'flex size-5 items-center justify-center rounded border transition-colors',
+              selected
+                ? 'border-primary bg-primary text-primary-foreground'
+                : 'border-input bg-background hover:border-primary',
+              selectDisabled && 'cursor-not-allowed opacity-40 hover:border-input',
+            )}
+          >
+            {selected && <Check className="size-3.5" aria-hidden="true" />}
+          </button>
+        </div>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className={cn(
+            'flex w-full flex-wrap items-center justify-between gap-3 px-5 py-4 text-left transition-colors hover:bg-muted/40',
+          )}
+        >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <h3 className="text-base font-semibold text-foreground">
@@ -364,7 +453,8 @@ function ComparisonCard({
                   )}
                 />
               </div>
-      </button>
+        </button>
+      </div>
 
       {expanded && (
             <Table>
@@ -600,6 +690,217 @@ function ComparisonCard({
             </Table>
       )}
     </Card>
+  )
+}
+
+// Best comparable per-base-unit price for a product, or null when it has no
+// rankable offer (all offers unit-mismatched or missing freight).
+function bestPrice(c: ProductComparison): number | null {
+  return c.best?.comparablePricePerBaseUnit ?? null
+}
+
+// Sticky bar summarizing a one-to-one replacement between the two selected
+// products: which to keep, the per-unit delta, and the annualized dollar
+// impact using the incumbent's (the pricier product's) purchase volume.
+function ReplacementPanel({
+  a,
+  b,
+  onRemove,
+  onClear,
+}: {
+  a: ProductComparison | null
+  b: ProductComparison | null
+  onRemove: (key: string) => void
+  onClear: () => void
+}) {
+  const analysis = useMemo(() => {
+    if (!a || !b) return null
+    const pa = bestPrice(a)
+    const pb = bestPrice(b)
+    if (pa === null || pb === null) {
+      return { kind: 'no-price' as const }
+    }
+    // Higher price = the product you'd switch away from (the incumbent).
+    const [incumbent, replacement, incPrice, repPrice] =
+      pa >= pb ? [a, b, pa, pb] : [b, a, pb, pa]
+    const unitA = (a.baseUnit ?? '').toLowerCase()
+    const unitB = (b.baseUnit ?? '').toLowerCase()
+    const unitCompatible = unitA === unitB
+    const perUnitSavings = incPrice - repPrice
+    const annualVolume = incumbent.annualVolume
+    return {
+      kind: 'ok' as const,
+      incumbent,
+      replacement,
+      incPrice,
+      repPrice,
+      perUnitSavings,
+      annualVolume,
+      annualSavings: perUnitSavings * annualVolume,
+      baseUnit: incumbent.baseUnit ?? replacement.baseUnit,
+      unitCompatible,
+    }
+  }, [a, b])
+
+  const chips = [a, b].filter(Boolean) as ProductComparison[]
+
+  return (
+    <div className="sticky bottom-4 z-20">
+      <Card className="border-primary/30 shadow-lg">
+        <div className="flex flex-col gap-4 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <span className="inline-flex items-center gap-2 text-sm font-semibold text-foreground">
+              <GitCompareArrows className="size-4 text-primary" />
+              One-to-one replacement
+            </span>
+            <div className="flex items-center gap-1.5">
+              {chips.map((c) => (
+                <Badge
+                  key={c.key}
+                  variant="secondary"
+                  className="max-w-[16rem] gap-1 font-normal"
+                >
+                  <span className="truncate">{c.displayName}</span>
+                  <button
+                    type="button"
+                    onClick={() => onRemove(c.key)}
+                    aria-label={`Remove ${c.displayName} from comparison`}
+                    className="rounded-full p-0.5 text-muted-foreground hover:bg-background hover:text-foreground"
+                  >
+                    <X className="size-3" aria-hidden="true" />
+                  </button>
+                </Badge>
+              ))}
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={onClear}
+                className="h-7 text-muted-foreground"
+              >
+                Clear
+              </Button>
+            </div>
+          </div>
+
+          {!analysis && (
+            <p className="text-sm text-muted-foreground">
+              Select one more product to compare a one-to-one replacement.
+            </p>
+          )}
+
+          {analysis?.kind === 'no-price' && (
+            <p className="inline-flex items-center gap-1.5 text-sm text-warning">
+              <TriangleAlert className="size-4" />
+              One of the selected products has no comparable price (missing
+              freight or a unit mismatch), so a replacement can&apos;t be costed.
+            </p>
+          )}
+
+          {analysis?.kind === 'ok' && (
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-stretch">
+              {/* Incumbent → replacement */}
+              <div className="flex flex-1 items-center gap-3">
+                <ReplacementSide
+                  label="Replace"
+                  c={analysis.incumbent}
+                  price={analysis.incPrice}
+                  baseUnit={analysis.baseUnit}
+                  tone="destructive"
+                />
+                <ArrowRight className="size-5 shrink-0 text-muted-foreground" />
+                <ReplacementSide
+                  label="With"
+                  c={analysis.replacement}
+                  price={analysis.repPrice}
+                  baseUnit={analysis.baseUnit}
+                  tone="success"
+                />
+              </div>
+
+              {/* Savings readout */}
+              <div className="flex w-full flex-col justify-center rounded-md bg-success/10 px-4 py-2 text-success lg:w-72 lg:shrink-0">
+                {analysis.perUnitSavings <= 0 ? (
+                  <span className="text-sm font-medium">
+                    Same price — no savings from switching.
+                  </span>
+                ) : (
+                  <>
+                    <span className="inline-flex items-center gap-1.5 text-sm font-semibold">
+                      <TrendingDown className="size-4" />
+                      Save {formatCurrency(analysis.perUnitSavings)} /{' '}
+                      {analysis.baseUnit ?? 'unit'}
+                    </span>
+                    {analysis.annualVolume > 0 ? (
+                      <span className="text-lg font-bold tabular-nums">
+                        {formatCurrency(analysis.annualSavings)}/yr
+                        <span className="ml-1 text-xs font-normal text-success/80">
+                          over{' '}
+                          {formatNumber(Math.round(analysis.annualVolume))}{' '}
+                          {analysis.baseUnit ?? 'units'}/yr
+                        </span>
+                      </span>
+                    ) : (
+                      <span className="text-xs font-normal text-success/80">
+                        No purchase volume on file for{' '}
+                        {analysis.incumbent.displayName} — showing per-unit only.
+                      </span>
+                    )}
+                  </>
+                )}
+                {!analysis.unitCompatible && (
+                  <span className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-warning">
+                    <TriangleAlert className="size-3.5" />
+                    Different base units ({analysis.incumbent.baseUnit ?? '—'} vs{' '}
+                    {analysis.replacement.baseUnit ?? '—'}) — not directly
+                    comparable.
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </Card>
+    </div>
+  )
+}
+
+// One side of the replacement (the product being replaced, or its replacement):
+// name, best vendor, and best per-base-unit price.
+function ReplacementSide({
+  label,
+  c,
+  price,
+  baseUnit,
+  tone,
+}: {
+  label: string
+  c: ProductComparison
+  price: number
+  baseUnit: string | null
+  tone: 'destructive' | 'success'
+}) {
+  return (
+    <div className="min-w-0 flex-1 rounded-md border border-border bg-muted/20 px-3 py-2">
+      <span
+        className={cn(
+          'text-[0.6875rem] font-semibold uppercase tracking-wide',
+          tone === 'destructive' ? 'text-destructive' : 'text-success',
+        )}
+      >
+        {label}
+      </span>
+      <p className="truncate text-sm font-medium text-foreground" title={c.displayName}>
+        {c.displayName}
+      </p>
+      <p className="flex flex-wrap items-baseline gap-x-1.5 text-xs text-muted-foreground">
+        <span className="font-semibold tabular-nums text-foreground">
+          {formatCurrency(price)}
+          <span className="font-normal"> / {baseUnit ?? 'unit'}</span>
+        </span>
+        {c.best?.vendorName && <span>· {c.best.vendorName}</span>}
+      </p>
+    </div>
   )
 }
 
