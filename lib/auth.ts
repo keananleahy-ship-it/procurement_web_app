@@ -28,6 +28,9 @@ export const auth = betterAuth({
     // which won't match V0_RUNTIME_URL exactly. Trust the whole domain so the
     // sign-in POST isn't rejected with "Invalid origin".
     'https://*.vusercontent.net',
+    // The v0 sandbox dev preview is served from rotating *.vercel.run origins;
+    // trust the whole domain so preview sign-in isn't rejected either.
+    'https://*.vercel.run',
     // Production custom domain. Without these, sign-in requests coming from the
     // custom domain are rejected as "Invalid origin" once DNS is pointed here.
     'https://leahywolf.net',

@@ -113,6 +113,15 @@ export const canonicalItems = pgTable('canonical_items', {
   userId: text('userId').notNull(),
   name: text('name').notNull(),
   category: text('category'),
+  // Hierarchy attributes, mirroring products (minus supplier/packageType, which
+  // don't apply to a canonical item that spans vendors and pack sizes). Derived
+  // from the name and editable by reviewers. `application` is the end-use/duty
+  // (Heavy Duty Diesel, Industrial, ...) and `subcategory` is the formulation /
+  // base oil (Full Synthetic, Synthetic Blend, Conventional).
+  application: text('application'),
+  subcategory: text('subcategory'),
+  viscosity: text('viscosity'),
+  attributesEdited: boolean('attributesEdited').notNull().default(false),
   unit: text('unit'),
   // The base unit used to normalize prices across pack sizes for this item
   // (e.g. 'each', 'litre', 'kg'). Offers are compared per base unit.
@@ -190,6 +199,24 @@ export const products = pgTable('products', {
   userId: text('userId').notNull(),
   name: text('name').notNull(),
   category: text('category'),
+  // --- Hierarchy attributes (for the roll-up / expand grouping views) -------
+  // These are derived from the product name + pack size by a batch script and
+  // then editable by reviewers. The grouping UI nests products by an ordered,
+  // user-chosen subset of: supplier > brand > category > application >
+  // subcategory > viscosity > packageType. `supplier` mirrors the product's
+  // single vendor (each product has exactly one) so it can be grouped without a
+  // join. `brand` is the manufacturer/product-line brand parsed from the name
+  // (e.g. Phillips 66, Petro-Canada). `application` is the end-use / duty (e.g.
+  // Heavy Duty Diesel, Industrial). `subcategory` is the formulation / base oil
+  // (Full Synthetic, Synthetic Blend, Conventional). `attributesEdited` guards a
+  // value a human corrected so the derivation script won't overwrite it.
+  brand: text('brand'),
+  application: text('application'),
+  subcategory: text('subcategory'),
+  viscosity: text('viscosity'),
+  packageType: text('packageType'),
+  supplier: text('supplier'),
+  attributesEdited: boolean('attributesEdited').notNull().default(false),
   sku: text('sku'),
   unit: text('unit'),
   // Fuzzy-matching to a canonical item. matchStatus is one of:

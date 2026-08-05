@@ -28,7 +28,13 @@ export default async function ProductsPage() {
           return {
             id: p.id,
             name: p.name,
+            brand: p.brand,
             category: p.category,
+            application: p.application,
+            subcategory: p.subcategory,
+            viscosity: p.viscosity,
+            packageType: p.packageType,
+            supplier: p.supplier,
             sku: p.sku,
             unit: p.unit,
             matchStatus: m?.matchStatus ?? 'unmatched',

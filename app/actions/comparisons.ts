@@ -25,6 +25,9 @@ export type PriceRow = {
   productId: number
   productName: string
   category: string | null
+  application: string | null
+  subcategory: string | null
+  viscosity: string | null
   unit: string | null
   vendorId: number
   vendorName: string
@@ -94,10 +97,17 @@ export type ProductComparison = {
   productId: number
   productName: string
   category: string | null
+  // hierarchy attributes used to group the Compare list (supplier/pack size
+  // are compared inside each card, so they are not included here)
+  application: string | null
+  subcategory: string | null
+  viscosity: string | null
   unit: string | null
   // true when this group represents a confirmed canonical item spanning
   // potentially multiple vendor products
   isCanonical: boolean
+  // the canonical item id when isCanonical is true, else null
+  canonicalItemId: number | null
   // base unit used to normalize prices in this group (e.g. 'each', 'litre')
   baseUnit: string | null
   // true when offers in this group have differing pack sizes
@@ -165,6 +175,9 @@ async function getAllRows(): Promise<PriceRow[]> {
       createdAt: vendorPrices.createdAt,
       productName: products.name,
       category: products.category,
+      application: products.application,
+      subcategory: products.subcategory,
+      viscosity: products.viscosity,
       unit: products.unit,
       packSize: products.packSize,
       baseUnit: products.baseUnit,
@@ -172,6 +185,10 @@ async function getAllRows(): Promise<PriceRow[]> {
       matchStatus: products.matchStatus,
       canonicalItemName: canonicalItems.name,
       canonicalBaseUnit: canonicalItems.baseUnit,
+      canonicalCategory: canonicalItems.category,
+      canonicalApplication: canonicalItems.application,
+      canonicalSubcategory: canonicalItems.subcategory,
+      canonicalViscosity: canonicalItems.viscosity,
       vendorName: vendors.name,
       locationName: locations.name,
     })
@@ -271,7 +288,13 @@ async function getAllRows(): Promise<PriceRow[]> {
       priceId: r.priceId,
       productId: r.productId,
       productName: r.productName ?? 'Unknown product',
-      category: r.category,
+      // Effective hierarchy attributes: prefer the canonical item's values when
+      // this product is matched to one (so a group shows a single, consistent
+      // classification), otherwise fall back to the product's own.
+      category: r.canonicalCategory ?? r.category,
+      application: r.canonicalApplication ?? r.application,
+      subcategory: r.canonicalSubcategory ?? r.subcategory,
+      viscosity: r.canonicalViscosity ?? r.viscosity,
       unit: r.unit,
       vendorId: r.vendorId,
       vendorName: r.vendorName ?? 'Unknown vendor',
@@ -516,8 +539,12 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
       productId: offers[0].productId,
       productName: displayName,
       category: offers[0].category,
+      application: offers[0].application,
+      subcategory: offers[0].subcategory,
+      viscosity: offers[0].viscosity,
       unit: offers[0].unit,
       isCanonical,
+      canonicalItemId: isCanonical ? offers[0].canonicalItemId : null,
       baseUnit,
       mixedPackSizes,
       hasUnitMismatch,
