@@ -209,12 +209,16 @@ const APPLICATION_PATTERNS: { label: string; test: RegExp }[] = [
 ]
 
 // Formulation / base oil ("subcategory"). Ordered, first match wins. Synthetic
-// Blend is checked before Full Synthetic because "SYNTHETIC BLEND" also
-// contains "SYNTHETIC". Left null when the name gives no formulation signal.
+// Blend MUST be checked before Full Synthetic because a blend is often written
+// as "SYN BLEND" / "SYN BLD" and would otherwise match the bare "SYN" in the
+// Full Synthetic rule (this was the "SYN BLD -> Full Synthetic" mislabel bug).
+// Left null when the name gives no formulation signal.
 const FORMULATION_PATTERNS: { label: string; test: RegExp }[] = [
   {
     label: 'Synthetic Blend',
-    test: /SYN(THETIC)?\s*BLEND|SEMI-?\s*SYN(THETIC)?|\bBLEND\b|\bSB\b/,
+    // Covers SYN BLEND, SYNBLEND, SYN-BLEND, SYN BLD, SYNBLD, SEMI SYN, and the
+    // standalone BLEND / BLD / SB / S/B abbreviations suppliers use.
+    test: /SYN(THETIC)?\s*-?\s*(BLEND|BLD)|SEMI-?\s*SYN(THETIC)?|\bBLEND\b|\bBLD\b|\bS\/?B\b/,
   },
   {
     label: 'Full Synthetic',
