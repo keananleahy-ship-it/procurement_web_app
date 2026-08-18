@@ -134,9 +134,9 @@ export const canonicalItems = pgTable('canonical_items', {
 // into a real, rankable dollar opportunity: savings/unit * annualVolume.
 // Volume is keyed to a canonical item when the item is matched (so it follows
 // the product across vendors) or to a standalone product otherwise. `source`
-// records provenance ('manual' demo/seed entry today; 'snowflake' once a
-// purchasing-system sync is wired up) so imported volumes can be refreshed
-// without clobbering hand-entered ones.
+// records provenance ('manual' hand-entered; 'import' from a spreadsheet
+// upload; 'snowflake' once a purchasing-system sync is wired up) so imported
+// volumes can be refreshed without clobbering hand-entered ones.
 export const purchaseVolumes = pgTable('purchase_volumes', {
   id: serial('id').primaryKey(),
   userId: text('userId').notNull(),
@@ -146,9 +146,15 @@ export const purchaseVolumes = pgTable('purchase_volumes', {
   // annual volume in base units (e.g. USG/year)
   annualVolume: numeric('annualVolume', { precision: 14, scale: 2 }).notNull(),
   baseUnit: text('baseUnit'),
+  // The historical average unit cost actually paid, expressed PER BASE UNIT and
+  // in the same base unit as annualVolume (e.g. $/gallon). Null when unknown.
+  // When present, the comparison engine uses it as the savings baseline
+  // (baselineUnitCost - best available price) instead of the vendor-to-vendor
+  // price-sheet spread, so savings reflect what you pay today vs. the best quote.
+  baselineUnitCost: numeric('baselineUnitCost', { precision: 12, scale: 4 }),
   // human label for the period the volume covers, e.g. 'TTM' or '2025'
   period: text('period'),
-  // 'manual' | 'snowflake'
+  // 'manual' | 'import' | 'snowflake'
   source: text('source').notNull().default('manual'),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
@@ -330,6 +336,64 @@ export const importRows = pgTable('import_rows', {
     .default('1'),
   // Inferred base unit of measure (e.g. 'each', 'litre').
   baseUnit: text('baseUnit'),
+  include: boolean('include').notNull().default(true),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
+// --- Volume imports --------------------------------------------------------
+// A spreadsheet of actual purchasing history uploaded for ONE location. It is
+// AI-parsed into volume_import_rows for review (each row matched to a product
+// or canonical item), then committed into purchase_volumes as source='import'.
+// Unlike price imports, a volume upload is always tied to a single location the
+// uploader picks, and every row carries the quantity purchased plus the average
+// unit cost actually paid (the savings baseline).
+export const volumeImports = pgTable('volume_imports', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  // The location all rows in this upload belong to (required for volume data).
+  locationId: integer('locationId').notNull(),
+  fileName: text('fileName').notNull(),
+  blobPathname: text('blobPathname').notNull(),
+  // 'xls' | 'pdf'
+  fileType: text('fileType').notNull(),
+  // Default period label applied to rows that don't specify their own, e.g.
+  // 'TTM' or '2025'. Editable per row in review since periods can be mixed.
+  defaultPeriod: text('defaultPeriod'),
+  // 'pending' | 'committed' | 'discarded'
+  status: text('status').notNull().default('pending'),
+  rowCount: integer('rowCount').notNull().default(0),
+  note: text('note'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+  committedAt: timestamp('committedAt'),
+})
+
+// Staging rows parsed from a volume upload, matched/edited before commit. Each
+// row resolves to either a canonical item (preferred, so volume follows the
+// product across vendors) or a standalone product. matchStatus is one of
+// 'suggested' | 'confirmed' | 'unmatched'; unmatched/unconfirmed rows are
+// skipped at commit until a reviewer picks the right item.
+export const volumeImportRows = pgTable('volume_import_rows', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  volumeImportId: integer('volumeImportId').notNull(),
+  // The item name exactly as printed in the uploaded sheet.
+  itemName: text('itemName').notNull(),
+  sku: text('sku'),
+  // Annual quantity in base units (e.g. gallons/year).
+  annualVolume: numeric('annualVolume', { precision: 14, scale: 2 }),
+  baseUnit: text('baseUnit'),
+  // Average unit cost paid, per base unit (e.g. $/gallon). Null if not present.
+  baselineUnitCost: numeric('baselineUnitCost', { precision: 12, scale: 4 }),
+  // Period this row's volume covers; falls back to the import's defaultPeriod.
+  period: text('period'),
+  // Resolved match target. Exactly one of these is set once confirmed.
+  canonicalItemId: integer('canonicalItemId'),
+  productId: integer('productId'),
+  // Display name of the currently-matched item, for the review table.
+  matchName: text('matchName'),
+  // 'suggested' | 'confirmed' | 'unmatched'
+  matchStatus: text('matchStatus').notNull().default('unmatched'),
+  matchScore: numeric('matchScore', { precision: 5, scale: 4 }),
   include: boolean('include').notNull().default(true),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
