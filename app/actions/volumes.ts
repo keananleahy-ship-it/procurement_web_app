@@ -10,6 +10,7 @@ import {
   locations,
 } from '@/lib/db/schema'
 import { requireUser, requireEditor } from '@/lib/roles'
+import { buildMatchIndex, resolveMatch } from '@/lib/volume-match'
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
 import { del } from '@vercel/blob'
 import { revalidatePath } from 'next/cache'
@@ -79,6 +80,109 @@ export async function getMatchTargets() {
     canonicalItems: canon,
     products: prods,
   }
+}
+
+export type RematchResult = {
+  updated: number
+  confirmed: number
+  suggested: number
+  unmatched: number
+  rows: (typeof volumeImportRows.$inferSelect)[]
+}
+
+// Re-run auto-matching over a pending import's rows using the current catalog.
+// Useful after the catalog gains SKUs or products (e.g. a new price import or a
+// SKU backfill): rows that couldn't match before can now resolve. Rows a
+// reviewer already confirmed by hand are left untouched — only auto-matched
+// ('suggested') and 'unmatched' rows are recomputed.
+export async function rematchVolumeImport(
+  volumeImportId: number,
+): Promise<RematchResult> {
+  const { id: userId } = await requireEditor()
+
+  const [imp] = await db
+    .select()
+    .from(volumeImports)
+    .where(eq(volumeImports.id, volumeImportId))
+  if (!imp) throw new Error('Volume import not found')
+  if (imp.status === 'committed') {
+    throw new Error('A committed volume import cannot be re-matched')
+  }
+
+  const [canon, prods] = await Promise.all([
+    db
+      .select({
+        id: canonicalItems.id,
+        name: canonicalItems.name,
+        category: canonicalItems.category,
+      })
+      .from(canonicalItems)
+      .where(eq(canonicalItems.userId, userId)),
+    db
+      .select({
+        id: products.id,
+        name: products.name,
+        category: products.category,
+        sku: products.sku,
+        canonicalItemId: products.canonicalItemId,
+      })
+      .from(products)
+      .where(eq(products.userId, userId)),
+  ])
+  const index = buildMatchIndex(canon, prods)
+
+  const rows = await db
+    .select()
+    .from(volumeImportRows)
+    .where(eq(volumeImportRows.volumeImportId, volumeImportId))
+
+  const result: RematchResult = {
+    updated: 0,
+    confirmed: 0,
+    suggested: 0,
+    unmatched: 0,
+    rows: [],
+  }
+
+  for (const r of rows) {
+    // Preserve human decisions: only recompute rows still in an auto state.
+    if (r.matchStatus === 'confirmed') {
+      result.confirmed++
+      continue
+    }
+    const match = resolveMatch({ itemName: r.itemName, sku: r.sku }, index)
+    if (match.matchStatus === 'confirmed') result.confirmed++
+    else if (match.matchStatus === 'suggested') result.suggested++
+    else result.unmatched++
+
+    const changed =
+      match.canonicalItemId !== r.canonicalItemId ||
+      match.productId !== r.productId ||
+      match.matchStatus !== r.matchStatus
+    if (!changed) continue
+
+    await db
+      .update(volumeImportRows)
+      .set({
+        canonicalItemId: match.canonicalItemId,
+        productId: match.productId,
+        matchName: match.matchName,
+        matchStatus: match.matchStatus,
+        matchScore:
+          match.matchScore !== null ? match.matchScore.toFixed(4) : null,
+      })
+      .where(eq(volumeImportRows.id, r.id))
+    result.updated++
+  }
+
+  result.rows = await db
+    .select()
+    .from(volumeImportRows)
+    .where(eq(volumeImportRows.volumeImportId, volumeImportId))
+    .orderBy(volumeImportRows.id)
+
+  revalidatePath('/volumes')
+  return result
 }
 
 type VolumeRowPatch = {

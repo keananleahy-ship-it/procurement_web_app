@@ -11,8 +11,8 @@ import {
   products,
   locations,
 } from '@/lib/db/schema'
-import { extractVolumeRows, type ExtractedVolumeRow } from '@/lib/extract'
-import { bestMatch } from '@/lib/match'
+import { extractVolumeRows } from '@/lib/extract'
+import { buildMatchIndex, resolveMatch } from '@/lib/volume-match'
 
 // Purchase-history sheets can be large; mirror the price-import budget so big
 // files don't get killed mid-extraction.
@@ -59,100 +59,6 @@ function workbookToText(wb: XLSX.WorkBook): string {
 function toNumericString(n: number | null, scale: number): string | null {
   if (n === null || Number.isNaN(n)) return null
   return n.toFixed(scale)
-}
-
-// Auto-match a purchase-history row to a match target. Two signals are used, in
-// order of confidence:
-//  1. Vendor SKU — the price import stored each vendor's SKU on the product
-//     record, so an exact SKU on the purchase sheet is a deterministic hit.
-//     A SKU match resolves up to the product's canonical item when one is
-//     linked (so the volume spans every vendor offering that item) and is
-//     marked 'confirmed' since it needs no human judgement.
-//  2. Item name — a fuzzy name match, preferring canonical items over
-//     standalone products, surfaced as a 'suggested' match for review.
-type CanonTarget = { id: number; name: string; category: string | null }
-type ProdTarget = {
-  id: number
-  name: string
-  category: string | null
-  sku: string | null
-  canonicalItemId: number | null
-}
-
-// SKUs vary in punctuation/spacing/case between systems (e.g. "TK-68 205L" vs
-// "tk68205l"), so compare on an alphanumeric-only, lowercased form.
-function normalizeSku(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]/g, '')
-}
-
-function resolveMatch(
-  row: ExtractedVolumeRow,
-  canon: CanonTarget[],
-  prods: ProdTarget[],
-  canonById: Map<number, CanonTarget>,
-): {
-  canonicalItemId: number | null
-  productId: number | null
-  matchName: string | null
-  matchStatus: 'suggested' | 'confirmed' | 'unmatched'
-  matchScore: number | null
-} {
-  // 1. Exact vendor SKU carried over from the price file.
-  const rowSku = row.sku?.trim() ? normalizeSku(row.sku) : ''
-  if (rowSku) {
-    const skuHit = prods.find((p) => p.sku && normalizeSku(p.sku) === rowSku)
-    if (skuHit) {
-      if (skuHit.canonicalItemId !== null) {
-        const c = canonById.get(skuHit.canonicalItemId)
-        return {
-          canonicalItemId: skuHit.canonicalItemId,
-          productId: null,
-          matchName: c?.name ?? skuHit.name,
-          matchStatus: 'confirmed',
-          matchScore: 1,
-        }
-      }
-      return {
-        canonicalItemId: null,
-        productId: skuHit.id,
-        matchName: skuHit.name,
-        matchStatus: 'confirmed',
-        matchScore: 1,
-      }
-    }
-  }
-
-  // 2. Fuzzy name match, canonical items first.
-  const product = { name: row.itemName, category: null as string | null }
-  const canonHit = bestMatch(product, canon, 0.5)
-  if (canonHit) {
-    const hit = canonById.get(canonHit.canonicalItemId)
-    return {
-      canonicalItemId: canonHit.canonicalItemId,
-      productId: null,
-      matchName: hit?.name ?? null,
-      matchStatus: 'suggested',
-      matchScore: canonHit.score,
-    }
-  }
-  const prodHit = bestMatch(product, prods, 0.5)
-  if (prodHit) {
-    const hit = prods.find((p) => p.id === prodHit.canonicalItemId)
-    return {
-      canonicalItemId: null,
-      productId: prodHit.canonicalItemId,
-      matchName: hit?.name ?? null,
-      matchStatus: 'suggested',
-      matchScore: prodHit.score,
-    }
-  }
-  return {
-    canonicalItemId: null,
-    productId: null,
-    matchName: null,
-    matchStatus: 'unmatched',
-    matchScore: null,
-  }
 }
 
 export async function POST(req: NextRequest) {
@@ -301,9 +207,8 @@ export async function POST(req: NextRequest) {
       .where(eq(products.userId, userId)),
   ])
 
-  // Index canonical items by id so a SKU hit on a product can resolve up to its
-  // canonical item name without a second scan per row.
-  const canonById = new Map(canon.map((c) => [c.id, c]))
+  // Build lookup structures once, then auto-match every row in memory.
+  const matchIndex = buildMatchIndex(canon, prods)
 
   const [created] = await db
     .insert(volumeImports)
@@ -324,7 +229,10 @@ export async function POST(req: NextRequest) {
   if (rows.length > 0) {
     await db.insert(volumeImportRows).values(
       rows.map((r) => {
-        const match = resolveMatch(r, canon, prods, canonById)
+        const match = resolveMatch(
+          { itemName: r.itemName, sku: r.sku ?? null },
+          matchIndex,
+        )
         return {
           userId,
           volumeImportId,

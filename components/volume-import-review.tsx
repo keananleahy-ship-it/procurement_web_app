@@ -8,6 +8,7 @@ import {
   setVolumeRowMatch,
   commitVolumeImport,
   discardVolumeImport,
+  rematchVolumeImport,
 } from '@/app/actions/volumes'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -33,6 +34,7 @@ import {
   Search,
   Link2,
   AlertCircle,
+  Wand2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -303,6 +305,34 @@ export function VolumeImportReview({
     }
   }
 
+  // Re-run auto-matching against the current catalog (e.g. after new price
+  // imports added SKUs). Refreshes the page so the recomputed matches show.
+  async function handleRematch() {
+    setError(null)
+    startTransition(async () => {
+      try {
+        const res = await rematchVolumeImport(meta.id)
+        setRows((prev) =>
+          prev.map((r) => {
+            const next = res.rows.find((x) => x.id === r.id)
+            return next
+              ? {
+                  ...r,
+                  canonicalItemId: next.canonicalItemId,
+                  productId: next.productId,
+                  matchName: next.matchName,
+                  matchStatus: next.matchStatus,
+                }
+              : r
+          }),
+        )
+        router.refresh()
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Re-match failed')
+      }
+    })
+  }
+
   const unmatchedCount = rows.filter(
     (r) => r.include && r.canonicalItemId === null && r.productId === null,
   ).length
@@ -319,6 +349,19 @@ export function VolumeImportReview({
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={handleRematch}
+            disabled={committing || isPending}
+            title="Re-run auto-matching against the current catalog"
+          >
+            {isPending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Wand2 className="size-4" />
+            )}
+            Re-match
+          </Button>
           <Button
             variant="outline"
             onClick={handleDiscard}
