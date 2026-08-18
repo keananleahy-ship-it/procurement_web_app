@@ -17,6 +17,7 @@ import {
   ListChecks,
   Upload,
   Users,
+  BarChart3,
 } from 'lucide-react'
 import { type Role, ROLE_LABELS } from '@/lib/roles-shared'
 
@@ -26,6 +27,7 @@ const nav = [
   { href: '/matching', label: 'Match Verification', icon: ListChecks },
   { href: '/canonical', label: 'Canonical Items', icon: Layers },
   { href: '/imports', label: 'Data Imports', icon: Upload },
+  { href: '/volumes', label: 'Purchase Volumes', icon: BarChart3 },
   { href: '/prices', label: 'Price Entries', icon: Tags },
   { href: '/products', label: 'Products', icon: Package },
   { href: '/vendors', label: 'Vendors', icon: Store },

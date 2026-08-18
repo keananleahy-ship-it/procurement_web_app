@@ -292,3 +292,170 @@ export async function extractPriceRows(
     32_000,
   )
 }
+
+// --- Volume extraction -----------------------------------------------------
+// A separate, simpler extraction for purchase-history spreadsheets. Each row is
+// an item the buyer purchased, with how much (quantity) and the average unit
+// cost paid. Unlike price lists there is no vendor/freight/pack modelling here:
+// we only need the item name, an annualized quantity in a base unit, and the
+// average cost per that base unit so the comparison engine can use it as a
+// savings baseline.
+const extractedVolumeRowSchema = z.object({
+  itemName: z
+    .string()
+    .describe('The product / item name as printed in the document'),
+  sku: z.string().nullable().describe('Item SKU / part number, if present'),
+  annualQuantity: z
+    .number()
+    .nullable()
+    .describe(
+      'How many units were purchased over the period, as a plain number. If the sheet lists a monthly or per-order quantity, still record the number as printed — do not annualize it yourself.',
+    ),
+  baseUnit: z
+    .string()
+    .nullable()
+    .describe(
+      'The unit the quantity is counted in, e.g. "each", "gallon", "litre", "kg", "case". Copy it from a quantity/UOM column when present.',
+    ),
+  avgUnitCost: z
+    .number()
+    .nullable()
+    .describe(
+      'The average price actually PAID per single base unit (e.g. $/gallon, $/each), as a plain number with no currency symbol. If only an extended/total cost is given, divide it by the quantity to get the per-unit cost. Null if no cost column exists.',
+    ),
+  period: z
+    .string()
+    .nullable()
+    .describe(
+      'The time period this row covers if the row itself names one, e.g. "2024", "TTM", "Jan-Dec 2025". Null when the sheet has no per-row period.',
+    ),
+})
+
+const volumeExtractionSchema = z.object({
+  rows: z
+    .array(extractedVolumeRowSchema)
+    .describe('Every purchased item row found in the document.'),
+})
+
+export type ExtractedVolumeRow = z.infer<typeof extractedVolumeRowSchema>
+export type VolumeExtractionResult = z.infer<typeof volumeExtractionSchema>
+
+const VOLUME_SYSTEM_PROMPT = `You are a procurement data extraction assistant. You are given a purchasing-history report (a spreadsheet exported to text, or a PDF) for a single buyer location. Each data row is an item that was purchased. Extract every purchased item.
+
+Rules:
+- Only extract real purchased-item rows. Ignore headers, subtotals, grand totals, notes, page numbers, and blank rows.
+- itemName is the product description exactly as printed.
+- annualQuantity is how many units were bought. Record the number as printed; do NOT annualize, scale, or convert it. Strip thousands separators and units so it is a plain number.
+- baseUnit is the unit the quantity counts (each, gallon, litre, kg, case, etc). Copy it from a UOM/unit column or infer it from the quantity cell. Null if truly unknown.
+- avgUnitCost is the average price PAID per single base unit:
+  - If the sheet has an average/unit price column, use it directly.
+  - If the sheet only has an extended/total spend column, divide that total by annualQuantity to get the per-unit cost.
+  - Never include currency symbols or thousands separators. Null if there is no cost information at all.
+- period: only set it when a row itself names its own time span. If the whole report is one period, leave period null (the app applies a single period to the upload).
+- If a value is not present, return null for it.`
+
+async function runVolumeExtraction(
+  content: UserContent[],
+  maxOutputTokens: number,
+): Promise<VolumeExtractionResult> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 90_000)
+  try {
+    const { output } = await generateText({
+      model: openai('gpt-4.1-mini'),
+      system: VOLUME_SYSTEM_PROMPT,
+      output: Output.object({ schema: volumeExtractionSchema }),
+      messages: [{ role: 'user', content }],
+      maxOutputTokens,
+      maxRetries: 4,
+      abortSignal: controller.signal,
+    })
+    return output
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function extractVolumeTextChunked(
+  text: string,
+): Promise<VolumeExtractionResult> {
+  const allLines = text.split('\n')
+  const headerIdx = allLines.findIndex(
+    (l) => l.trim() !== '' && !l.trim().startsWith('#'),
+  )
+  const header = headerIdx >= 0 ? allLines[headerIdx] : ''
+  const dataLines = allLines
+    .slice(headerIdx + 1)
+    .filter((l) => l.trim() !== '' && !l.trim().startsWith('#'))
+
+  if (dataLines.length <= ROWS_PER_CHUNK) {
+    return runVolumeExtraction(
+      [
+        {
+          type: 'text',
+          text: `Extract all purchased items from this purchasing-history report:\n\n${text}`,
+        },
+      ],
+      CHUNK_MAX_TOKENS,
+    )
+  }
+
+  const chunks: string[] = []
+  for (let i = 0; i < dataLines.length; i += ROWS_PER_CHUNK) {
+    const batch = dataLines.slice(i, i + ROWS_PER_CHUNK)
+    chunks.push([header, ...batch].join('\n'))
+  }
+
+  const settled = await mapWithConcurrency(chunks, CONCURRENCY, (chunk) =>
+    runVolumeExtraction(
+      [
+        {
+          type: 'text',
+          text: `Extract all purchased items from this section of a purchasing-history report. The first line is the column header.\n\n${chunk}`,
+        },
+      ],
+      CHUNK_MAX_TOKENS,
+    ),
+  )
+
+  const merged: VolumeExtractionResult = { rows: [] }
+  let anySuccess = false
+  for (const result of settled) {
+    if (result.status !== 'fulfilled') {
+      console.error('[v0] volume chunk extraction failed:', result.reason)
+      continue
+    }
+    anySuccess = true
+    merged.rows.push(...result.value.rows)
+  }
+
+  if (!anySuccess) {
+    throw new Error('No output generated.')
+  }
+
+  return merged
+}
+
+export async function extractVolumeRows(
+  input: ExtractInput,
+): Promise<VolumeExtractionResult> {
+  if (input.kind === 'text') {
+    return extractVolumeTextChunked(input.text)
+  }
+
+  return runVolumeExtraction(
+    [
+      {
+        type: 'text',
+        text: 'Extract all purchased items from this attached purchasing-history report.',
+      },
+      {
+        type: 'file',
+        data: input.data,
+        mediaType: 'application/pdf',
+        filename: input.filename,
+      },
+    ],
+    32_000,
+  )
+}
