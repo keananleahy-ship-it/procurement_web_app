@@ -389,3 +389,88 @@ export async function commitVolumeImport(
   revalidatePath('/')
   return { committed, skipped, unmatched }
 }
+
+// Re-push an already-committed import's current confirmed matches into
+// purchase_volumes. After a commit, improving matches (e.g. via Re-match once
+// the catalog gains SKUs) only updates the staging rows — the committed
+// volumes that feed comparisons go stale, so newly-matched items never reach
+// the savings engine. This re-runs the same write commitVolumeImport performs,
+// without changing the import's status, so the comparison data catches up.
+export async function resyncCommittedVolumeImport(
+  volumeImportId: number,
+): Promise<CommitVolumeResult> {
+  const { id: userId } = await requireEditor()
+
+  const [imp] = await db
+    .select()
+    .from(volumeImports)
+    .where(eq(volumeImports.id, volumeImportId))
+  if (!imp) throw new Error('Volume import not found')
+  if (imp.status !== 'committed') {
+    throw new Error('Only a committed volume import can be re-synced')
+  }
+  if (!imp.locationId) {
+    throw new Error('This volume import has no location and cannot be synced')
+  }
+  const locationId = imp.locationId
+
+  const rows = await db
+    .select()
+    .from(volumeImportRows)
+    .where(eq(volumeImportRows.volumeImportId, volumeImportId))
+
+  let committed = 0
+  let skipped = 0
+  let unmatched = 0
+
+  for (const r of rows) {
+    if (!r.include) {
+      skipped++
+      continue
+    }
+    const hasMatch = r.canonicalItemId !== null || r.productId !== null
+    const isConfirmed =
+      r.matchStatus === 'confirmed' || r.matchStatus === 'suggested'
+    if (!hasMatch || !isConfirmed) {
+      unmatched++
+      continue
+    }
+    if (r.annualVolume === null || Number(r.annualVolume) <= 0) {
+      skipped++
+      continue
+    }
+
+    const period = r.period?.trim() || imp.defaultPeriod || null
+
+    await replaceExistingImportedVolume({
+      userId,
+      canonicalItemId: r.canonicalItemId,
+      productId: r.productId,
+      locationId,
+      period,
+    })
+
+    await db.insert(purchaseVolumes).values({
+      userId,
+      canonicalItemId: r.canonicalItemId,
+      productId: r.productId,
+      locationId,
+      annualVolume: r.annualVolume,
+      baseUnit: r.baseUnit,
+      baselineUnitCost: r.baselineUnitCost,
+      period,
+      source: 'import',
+    })
+    committed++
+  }
+
+  await db
+    .update(volumeImports)
+    .set({ rowCount: committed })
+    .where(eq(volumeImports.id, volumeImportId))
+
+  revalidatePath('/volumes')
+  revalidatePath('/compare')
+  revalidatePath('/')
+  return { committed, skipped, unmatched }
+}
