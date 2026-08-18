@@ -42,6 +42,8 @@ import {
 import { EmptyState } from '@/components/empty-state'
 import { formatDate } from '@/lib/format'
 import { useCanEdit } from '@/components/role-provider'
+import { resyncCommittedVolumeImport } from '@/app/actions/volumes'
+import { RefreshCw } from 'lucide-react'
 
 type Option = { id: number; name: string }
 type VolumeImportRecord = {
@@ -78,6 +80,32 @@ export function VolumesView({
   const [error, setError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const canEdit = useCanEdit()
+  const [syncingId, setSyncingId] = useState<number | null>(null)
+  const [syncMsg, setSyncMsg] = useState<{ id: number; text: string } | null>(
+    null,
+  )
+
+  async function handleResync(id: number) {
+    setSyncingId(id)
+    setSyncMsg(null)
+    try {
+      const res = await resyncCommittedVolumeImport(id)
+      setSyncMsg({
+        id,
+        text: `Synced ${res.committed} matched ${
+          res.committed === 1 ? 'item' : 'items'
+        } to comparisons.`,
+      })
+      router.refresh()
+    } catch (e) {
+      setSyncMsg({
+        id,
+        text: e instanceof Error ? e.message : 'Re-sync failed.',
+      })
+    } finally {
+      setSyncingId(null)
+    }
+  }
 
   async function handleUpload(e: React.FormEvent) {
     e.preventDefault()
@@ -304,7 +332,28 @@ export function VolumesView({
                           }
                         />
                       )}
+                      {canEdit && imp.status === 'committed' && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleResync(imp.id)}
+                          disabled={syncingId === imp.id}
+                          title="Re-push this import's current matches into your comparisons (use after re-matching)"
+                        >
+                          {syncingId === imp.id ? (
+                            <Loader2 className="size-4 animate-spin" />
+                          ) : (
+                            <RefreshCw className="size-4" />
+                          )}
+                          Re-sync
+                        </Button>
+                      )}
                     </div>
+                    {syncMsg?.id === imp.id && (
+                      <p className="mt-1 text-right text-xs text-muted-foreground">
+                        {syncMsg.text}
+                      </p>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
