@@ -9,7 +9,7 @@ import {
   vendorPrices,
 } from '@/lib/db/schema'
 import { requireUser, requireEditor } from '@/lib/roles'
-import { desc, eq, inArray } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
 import { del } from '@vercel/blob'
 import { revalidatePath } from 'next/cache'
 
@@ -126,11 +126,24 @@ async function resolveProductId(
   category: string | null,
   packSize: string,
   baseUnit: string | null,
+  sku: string | null,
   cache: Map<string, number>,
 ) {
   const key = name.trim().toLowerCase()
+  const cleanSku = sku?.trim() || null
   const existing = cache.get(key)
-  if (existing) return existing
+  if (existing) {
+    // The product already exists (e.g. from an earlier import). Backfill its
+    // SKU when it doesn't have one yet so the vendor SKU from the price file is
+    // retained on the item record; never overwrite an existing SKU.
+    if (cleanSku) {
+      await db
+        .update(products)
+        .set({ sku: cleanSku })
+        .where(and(eq(products.id, existing), isNull(products.sku)))
+    }
+    return existing
+  }
   const [created] = await db
     .insert(products)
     .values({
@@ -138,6 +151,7 @@ async function resolveProductId(
       name: name.trim(),
       unit,
       category,
+      sku: cleanSku,
       packSize: packSize && Number(packSize) > 0 ? packSize : '1',
       baseUnit: baseUnit?.trim() || unit,
     })
@@ -199,6 +213,7 @@ export async function commitImport(importId: number): Promise<CommitResult> {
       r.category,
       r.packSize,
       r.baseUnit,
+      r.sku,
       productCache,
     )
 
