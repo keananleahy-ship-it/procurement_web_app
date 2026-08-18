@@ -337,12 +337,27 @@ async function getAllRows(): Promise<PriceRow[]> {
   })
 }
 
+// Per-location purchase data for one comparison group: how much is bought
+// there, and (when the upload carried a cost) the average unit cost actually
+// paid, expressed per base unit along with the base unit it was quoted in so
+// the caller can confirm it lines up with the group's comparison unit.
+type LocationVolume = {
+  annualVolume: number
+  // Volume-weighted average of the paid cost per base unit, or null when no
+  // uploaded row for this item+location carried a cost.
+  baselineUnitCost: number | null
+  // The base unit the baseline cost/quantity was recorded in (for unit-safety).
+  baseUnit: string | null
+}
+
 // Loads annual purchase volume keyed both by canonical item and by product,
 // each broken down per location. Comparison groups look these up to weight
-// their per-unit savings into real annualized dollars.
+// their per-unit savings into real annualized dollars, and — when a paid unit
+// cost is on file — to use that cost as the savings baseline instead of the
+// vendor-to-vendor price spread.
 type VolumeMaps = {
-  byCanonical: Map<number, Map<number | null, number>>
-  byProduct: Map<number, Map<number | null, number>>
+  byCanonical: Map<number, Map<number | null, LocationVolume>>
+  byProduct: Map<number, Map<number | null, LocationVolume>>
   locationNames: Map<number | null, string>
   total: number
 }
@@ -356,13 +371,15 @@ async function loadVolumeMaps(): Promise<VolumeMaps> {
       productId: purchaseVolumes.productId,
       locationId: purchaseVolumes.locationId,
       annualVolume: purchaseVolumes.annualVolume,
+      baselineUnitCost: purchaseVolumes.baselineUnitCost,
+      baseUnit: purchaseVolumes.baseUnit,
       locationName: locations.name,
     })
     .from(purchaseVolumes)
     .leftJoin(locations, eq(locations.id, purchaseVolumes.locationId))
 
-  const byCanonical = new Map<number, Map<number | null, number>>()
-  const byProduct = new Map<number, Map<number | null, number>>()
+  const byCanonical = new Map<number, Map<number | null, LocationVolume>>()
+  const byProduct = new Map<number, Map<number | null, LocationVolume>>()
   const locationNames = new Map<number | null, string>()
   let total = 0
 
@@ -374,8 +391,36 @@ async function loadVolumeMaps(): Promise<VolumeMaps> {
     const target = r.canonicalItemId !== null ? byCanonical : byProduct
     const id = r.canonicalItemId ?? r.productId
     if (id === null) continue
-    const perLoc = target.get(id) ?? new Map<number | null, number>()
-    perLoc.set(r.locationId, (perLoc.get(r.locationId) ?? 0) + vol)
+    const perLoc = target.get(id) ?? new Map<number | null, LocationVolume>()
+    const prev = perLoc.get(r.locationId) ?? {
+      annualVolume: 0,
+      baselineUnitCost: null,
+      baseUnit: r.baseUnit ?? null,
+    }
+
+    // Combine any repeat rows for the same item+location into a single
+    // volume-weighted average paid cost, so multiple periods/lines don't skew
+    // the baseline toward whichever happened to be inserted last.
+    const cost =
+      r.baselineUnitCost !== null && r.baselineUnitCost !== undefined
+        ? Number(r.baselineUnitCost)
+        : null
+    let baselineUnitCost = prev.baselineUnitCost
+    if (cost !== null && Number.isFinite(cost) && cost > 0) {
+      if (prev.baselineUnitCost === null) {
+        baselineUnitCost = cost
+      } else {
+        const priorVol = prev.annualVolume
+        baselineUnitCost =
+          (prev.baselineUnitCost * priorVol + cost * vol) / (priorVol + vol)
+      }
+    }
+
+    perLoc.set(r.locationId, {
+      annualVolume: prev.annualVolume + vol,
+      baselineUnitCost,
+      baseUnit: prev.baseUnit ?? r.baseUnit ?? null,
+    })
     target.set(id, perLoc)
   }
 
@@ -519,19 +564,46 @@ export async function getProductComparisons(): Promise<ProductComparison[]> {
     const perLoc = isCanonical
       ? volumes.byCanonical.get(Number(key.slice(1)))
       : volumes.byProduct.get(offers[0].productId)
+
+    // Per-unit savings for a location. When an uploaded row gave us the average
+    // cost actually PAID (baselineUnitCost) and it is unit-compatible with this
+    // group's comparison unit, savings are measured against reality: what you
+    // pay today minus the best available quote. Otherwise we fall back to the
+    // vendor-to-vendor price-sheet spread (worst - best). Clamp at 0 so a site
+    // already beating every quote doesn't show negative "savings".
+    const bestPerBaseUnit = best ? best.comparablePricePerBaseUnit : null
+    function savingsPerUnitFor(v: LocationVolume): number {
+      if (
+        bestPerBaseUnit !== null &&
+        v.baselineUnitCost !== null &&
+        // Only trust the paid cost when its unit matches the group's unit (or
+        // no unit was recorded); a mismatched unit would compare apples to
+        // oranges, so we defer to the spread instead.
+        (!v.baseUnit ||
+          !groupUnit ||
+          normalizeUom(v.baseUnit) === groupUnit)
+      ) {
+        return Math.max(0, v.baselineUnitCost - bestPerBaseUnit)
+      }
+      return potentialSavings
+    }
+
     const volumeByLocation: VolumeByLocation[] = perLoc
-      ? [...perLoc.entries()].map(([locationId, annualVolume]) => ({
+      ? [...perLoc.entries()].map(([locationId, lv]) => ({
           locationId,
           locationName: volumes.locationNames.get(locationId) ?? 'Unassigned',
-          annualVolume,
-          realizableSavings: potentialSavings * annualVolume,
+          annualVolume: lv.annualVolume,
+          realizableSavings: savingsPerUnitFor(lv) * lv.annualVolume,
         }))
       : []
     const annualVolume = volumeByLocation.reduce(
       (sum, v) => sum + v.annualVolume,
       0,
     )
-    const realizableSavings = potentialSavings * annualVolume
+    const realizableSavings = volumeByLocation.reduce(
+      (sum, v) => sum + v.realizableSavings,
+      0,
+    )
 
     comparisons.push({
       key,
