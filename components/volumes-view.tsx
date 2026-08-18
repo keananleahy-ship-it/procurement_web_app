@@ -298,6 +298,7 @@ export function VolumesView({
                         <Button
                           variant="outline"
                           size="sm"
+                          nativeButton={false}
                           render={
                             <Link href={`/volumes/${imp.id}`}>Review</Link>
                           }
