@@ -357,10 +357,14 @@ function aggregateVolumeRows(
     const vol = Number(r.annualVolume)
     if (!Number.isFinite(vol) || vol <= 0) continue
     const period = r.period?.trim() || defaultPeriod || null
-    const itemKey =
-      r.canonicalItemId !== null
-        ? `c:${r.canonicalItemId}`
-        : `p:${r.productId}`
+    // Key by BOTH canonical and product so that when a canonical-matched line
+    // also carries a specific product (set by the product backfill), each
+    // distinct product keeps its own summary row instead of collapsing to a
+    // single canonical blend. This preserves per-product volume for the savings
+    // engine's present-state pricing, matches replaceExistingImportedVolume's
+    // (canonical, product, period) key, and is a no-op for legacy rows where
+    // productId is null.
+    const itemKey = `c:${r.canonicalItemId ?? ''}:p:${r.productId ?? ''}`
     const key = `${itemKey}|${period ?? ''}`
 
     let g = groups.get(key)
