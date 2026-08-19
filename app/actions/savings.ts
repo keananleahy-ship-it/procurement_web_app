@@ -527,6 +527,57 @@ export async function getAwSavingsAnalyses(
         }
       }
     }
+    // Same container rates, but broken out by the offer's FOB-origin location
+    // (null = a network-wide offer). Used only for the target-container lookup
+    // when sourcing is restricted to a buying site (within-site mode).
+    type FamLocOffer = {
+      cheapestPerUnit: number
+      cheapestLabel: string
+      offerCount: number
+    }
+    const familyByLoc = new Map<
+      PackFamilyId,
+      Map<number | null, FamLocOffer>
+    >()
+    for (const o of comparableOffers) {
+      const fam = packFamily(o.packSize, o.baseUnit)
+      const byLoc = familyByLoc.get(fam) ?? new Map<number | null, FamLocOffer>()
+      const cur = byLoc.get(o.locationId)
+      const label = offerLabel(o.vendorName, o.productName)
+      if (!cur) {
+        byLoc.set(o.locationId, {
+          cheapestPerUnit: o.comparablePricePerBaseUnit,
+          cheapestLabel: label,
+          offerCount: 1,
+        })
+      } else {
+        cur.offerCount++
+        if (o.comparablePricePerBaseUnit < cur.cheapestPerUnit) {
+          cur.cheapestPerUnit = o.comparablePricePerBaseUnit
+          cur.cheapestLabel = label
+        }
+      }
+      familyByLoc.set(fam, byLoc)
+    }
+    // Cheapest offer in a container as SEEN BY a specific buying site: the whole
+    // network in cross-site mode, or only that site's FOB origin plus any
+    // network-wide offer in within-site mode.
+    const familyOfferForSite = (
+      fam: PackFamilyId,
+      locationId: number | null,
+    ): FamLocOffer | undefined => {
+      if (equivalentSourcing === 'cross-site') return familyMap.get(fam)
+      const byLoc = familyByLoc.get(fam)
+      if (!byLoc) return undefined
+      const atSite = locationId !== null ? byLoc.get(locationId) : undefined
+      const network = byLoc.get(null)
+      if (atSite && network)
+        return atSite.cheapestPerUnit <= network.cheapestPerUnit
+          ? atSite
+          : network
+      return atSite ?? network
+    }
+
     const familyEntries = [...familyMap.entries()].sort(
       (a, b) => a[1].cheapestPerUnit - b[1].cheapestPerUnit,
     )
@@ -619,29 +670,51 @@ export async function getAwSavingsAnalyses(
       .map(([family, agg]) => {
         const famOffer = familyMap.get(family)
         const famPaid = agg.paidDen > 0 ? agg.paidNum / agg.paidDen : null
-        // Baseline = best comparable rate in THIS container (isolates the pure
-        // container premium); fall back to what they actually paid here when the
-        // container has no comparable offer on file.
+        // Present rate = best comparable rate in THIS container network-wide
+        // (isolates the pure container premium and keeps the baseline stable
+        // across sourcing modes, matching the By Equivalent lens); fall back to
+        // paid when the container has no comparable offer on file.
         const currentBestPerUnit = famOffer ? famOffer.cheapestPerUnit : famPaid
-        // Recommend the cheapest OTHER container that beats the current rate.
-        let target: {
+        // Recommend the cheapest OTHER container that beats the present rate AND
+        // is reachable by the site under the active sourcing mode. Evaluated per
+        // site so within-site correctly drops sites with no local cheaper
+        // container; opportunity is the sum of each site's premium.
+        type TargetPick = {
           family: PackFamilyId
           perUnit: number
           label: string
           offerCount: number
-        } | null = null
-        if (currentBestPerUnit !== null) {
-          for (const [f2, v2] of familyMap) {
+        }
+        const targetForSite = (locationId: number | null): TargetPick | null => {
+          if (currentBestPerUnit === null) return null
+          let best: TargetPick | null = null
+          for (const f2 of familyByLoc.keys()) {
             if (f2 === family) continue
-            if (v2.cheapestPerUnit >= currentBestPerUnit) continue
-            if (!target || v2.cheapestPerUnit < target.perUnit) {
-              target = {
+            const cand = familyOfferForSite(f2, locationId)
+            if (!cand || cand.cheapestPerUnit >= currentBestPerUnit) continue
+            if (!best || cand.cheapestPerUnit < best.perUnit) {
+              best = {
                 family: f2,
-                perUnit: v2.cheapestPerUnit,
-                label: v2.cheapestLabel,
-                offerCount: v2.offerCount,
+                perUnit: cand.cheapestPerUnit,
+                label: cand.cheapestLabel,
+                offerCount: cand.offerCount,
               }
             }
+          }
+          return best
+        }
+        let opportunity = 0
+        // Representative target for the row header: the one driving the
+        // largest-volume site that actually has a switch.
+        let target: TargetPick | null = null
+        let repVolume = -1
+        for (const [locationId, vol] of agg.locations) {
+          const t = targetForSite(locationId)
+          if (!t) continue
+          opportunity += Math.max(0, currentBestPerUnit! - t.perUnit) * vol
+          if (vol > repVolume) {
+            repVolume = vol
+            target = t
           }
         }
         const savingsPerUnit =
@@ -661,7 +734,7 @@ export async function getAwSavingsAnalyses(
           targetLabel: target ? target.label : null,
           targetOfferCount: target ? target.offerCount : 0,
           savingsPerUnit,
-          opportunity: savingsPerUnit * agg.annualVolume,
+          opportunity,
           products: [...agg.products.entries()]
             .map(([productId, p]) => ({
               productId,

@@ -227,12 +227,12 @@ function SourcingToggle({
     {
       id: 'cross-site',
       label: 'Cross-site',
-      hint: 'source the equivalent from any location',
+      hint: 'source alternatives from any location',
     },
     {
       id: 'within-site',
       label: 'Within site',
-      hint: 'only equivalents available at the buying site',
+      hint: 'only alternatives available at the buying site',
     },
   ]
   const active = options.find((o) => o.id === sourcing) ?? options[0]
@@ -241,15 +241,15 @@ function SourcingToggle({
       <div className="flex items-center gap-2 text-muted-foreground">
         <GitCompareArrows className="size-4" />
         <span className="text-xs font-semibold uppercase tracking-wide">
-          Equivalent sourcing
+          Sourcing scope
         </span>
         <span className="text-[0.625rem] text-muted-foreground/70">
-          {active.hint}
+          {active.hint} · applies to By Equivalent &amp; By Packaging
         </span>
       </div>
       <div
         role="radiogroup"
-        aria-label="By Equivalent sourcing scope"
+        aria-label="Alternative sourcing scope"
         className="inline-flex shrink-0 rounded-full border border-border bg-muted p-0.5"
       >
         {options.map((o) => {
