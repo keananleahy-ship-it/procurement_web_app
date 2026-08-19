@@ -82,19 +82,37 @@ export type PackOption = {
   offerCount: number
   deltaFromCheapest: number
 }
-// One purchased pack family with the sites that buy it, so the packaging tile
-// can drill down to where the volume (and therefore the opportunity) resides.
+// A single site buying a given product (used inside product rows so the tile
+// can drill family -> product -> location).
+export type PackagingSiteRow = {
+  locationId: number | null
+  locationName: string
+  annualVolume: number
+}
+// One purchased pack family with the products AND sites that make it up, so the
+// packaging tile explains what is actually being bought (and where) behind each
+// finding — not just an anonymous volume total.
 export type PackagingBreakdownRow = {
   family: PackFamilyId
   familyLabel: string
   annualVolume: number
   blendedPaidUnitCost: number | null
   isCheapestFamily: boolean
-  locations: {
-    locationId: number | null
-    locationName: string
+  // concrete offer (vendor — product) achieving this family's cheapest per-unit
+  // price: the thing a buyer would switch TO. Null when the family has no
+  // comparable offer on file (purchased but never quoted).
+  cheapestLabel: string | null
+  cheapestPerUnit: number | null
+  // the distinct products purchased in this family, each with its own site
+  // split, so the finding names the SKUs involved rather than a bare number
+  products: {
+    productId: number
+    productName: string
     annualVolume: number
+    blendedPaidUnitCost: number | null
+    locations: PackagingSiteRow[]
   }[]
+  locations: PackagingSiteRow[]
 }
 export type PackagingOpportunity = {
   annualVolume: number
@@ -523,11 +541,18 @@ export async function getAwSavingsAnalyses(
         productFamily.set(o.productId, packFamily(o.packSize, o.baseUnit))
       }
     }
+    type ProdAgg = {
+      annualVolume: number
+      paidNum: number
+      paidDen: number
+      locations: Map<number | null, number>
+    }
     type FamAgg = {
       annualVolume: number
       paidNum: number
       paidDen: number
       locations: Map<number | null, number>
+      products: Map<number, ProdAgg>
     }
     const famAgg = new Map<PackFamilyId, FamAgg>()
     if (byProd) {
@@ -538,36 +563,71 @@ export async function getAwSavingsAnalyses(
           paidNum: 0,
           paidDen: 0,
           locations: new Map<number | null, number>(),
+          products: new Map<number, ProdAgg>(),
+        }
+        const prod = agg.products.get(productId) ?? {
+          annualVolume: 0,
+          paidNum: 0,
+          paidDen: 0,
+          locations: new Map<number | null, number>(),
         }
         for (const [locationId, lv] of locMap) {
           agg.annualVolume += lv.annualVolume
+          prod.annualVolume += lv.annualVolume
           if (lv.baselineUnitCost !== null && lv.baselineUnitCost > 0) {
-            agg.paidNum += lv.baselineUnitCost * lv.annualVolume
+            const spend = lv.baselineUnitCost * lv.annualVolume
+            agg.paidNum += spend
             agg.paidDen += lv.annualVolume
+            prod.paidNum += spend
+            prod.paidDen += lv.annualVolume
           }
           agg.locations.set(
             locationId,
             (agg.locations.get(locationId) ?? 0) + lv.annualVolume,
           )
+          prod.locations.set(
+            locationId,
+            (prod.locations.get(locationId) ?? 0) + lv.annualVolume,
+          )
         }
+        agg.products.set(productId, prod)
         famAgg.set(fam, agg)
       }
     }
+    const siteRows = (locs: Map<number | null, number>): PackagingSiteRow[] =>
+      [...locs.entries()]
+        .map(([locationId, annualVolume]) => ({
+          locationId,
+          locationName: volumes.locationNames.get(locationId) ?? 'Unassigned',
+          annualVolume,
+        }))
+        .sort((a, b) => b.annualVolume - a.annualVolume)
     const breakdown: PackagingBreakdownRow[] = [...famAgg.entries()]
-      .map(([family, agg]) => ({
-        family,
-        familyLabel: familyLabel(family),
-        annualVolume: agg.annualVolume,
-        blendedPaidUnitCost: agg.paidDen > 0 ? agg.paidNum / agg.paidDen : null,
-        isCheapestFamily: family === cheapestFamilyId,
-        locations: [...agg.locations.entries()]
-          .map(([locationId, annualVolume]) => ({
-            locationId,
-            locationName: volumes.locationNames.get(locationId) ?? 'Unassigned',
-            annualVolume,
-          }))
-          .sort((a, b) => b.annualVolume - a.annualVolume),
-      }))
+      .map(([family, agg]) => {
+        const famOffer = familyMap.get(family)
+        return {
+          family,
+          familyLabel: familyLabel(family),
+          annualVolume: agg.annualVolume,
+          blendedPaidUnitCost:
+            agg.paidDen > 0 ? agg.paidNum / agg.paidDen : null,
+          isCheapestFamily: family === cheapestFamilyId,
+          cheapestLabel: famOffer ? famOffer.cheapestLabel : null,
+          cheapestPerUnit: famOffer ? famOffer.cheapestPerUnit : null,
+          products: [...agg.products.entries()]
+            .map(([productId, p]) => ({
+              productId,
+              productName:
+                volumes.productNames.get(productId) ?? `Product ${productId}`,
+              annualVolume: p.annualVolume,
+              blendedPaidUnitCost:
+                p.paidDen > 0 ? p.paidNum / p.paidDen : null,
+              locations: siteRows(p.locations),
+            }))
+            .sort((a, b) => b.annualVolume - a.annualVolume),
+          locations: siteRows(agg.locations),
+        }
+      })
       .sort((a, b) => b.annualVolume - a.annualVolume)
 
     const byPackaging: PackagingOpportunity = {

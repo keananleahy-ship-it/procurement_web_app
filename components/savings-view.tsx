@@ -25,6 +25,7 @@ import {
   PiggyBank,
   Filter,
   Check,
+  Package,
 } from 'lucide-react'
 
 // Short unit label for per-unit prices ("gallon" -> "gal").
@@ -776,6 +777,12 @@ function PackagingLens({
                     }}
                   />
                 </div>
+                {o.cheapestLabel && (
+                  <p className="truncate text-[0.625rem] text-muted-foreground/70">
+                    best: {o.cheapestLabel} ({o.offerCount}{' '}
+                    {o.offerCount === 1 ? 'quote' : 'quotes'})
+                  </p>
+                )}
               </li>
             )
           })}
@@ -827,16 +834,50 @@ function PackagingLens({
                         )}
                       </p>
                     </div>
+                    {row.cheapestPerUnit !== null && (
+                      <span className="shrink-0 text-right text-[0.625rem] tabular-nums text-muted-foreground">
+                        best {formatCurrency(row.cheapestPerUnit)}/{unit}
+                      </span>
+                    )}
                   </div>
-                  {row.locations.length > 0 && (
-                    <ul className="mt-1 border-t border-border/40 pt-1">
-                      {row.locations.map((l) => (
-                        <SiteRow
-                          key={String(l.locationId)}
-                          name={l.locationName}
-                          volume={l.annualVolume}
-                          unit={unit}
-                        />
+                  {row.cheapestLabel && (
+                    <p className="mt-0.5 truncate text-[0.625rem] text-muted-foreground/70">
+                      switch to: {row.cheapestLabel}
+                    </p>
+                  )}
+                  {row.products.length > 0 && (
+                    <ul className="mt-1.5 flex flex-col gap-1.5 border-t border-border/40 pt-1.5">
+                      {row.products.map((p) => (
+                        <li key={p.productId} className="flex flex-col">
+                          <div className="flex items-center justify-between gap-2 text-[0.6875rem]">
+                            <span className="flex items-center gap-1 truncate">
+                              <Package className="size-2.5 shrink-0 text-muted-foreground/50" />
+                              <span className="truncate font-medium text-foreground">
+                                {p.productName}
+                              </span>
+                            </span>
+                            <span className="shrink-0 tabular-nums text-muted-foreground">
+                              {formatNumber(Math.round(p.annualVolume))} {unit}
+                              {p.blendedPaidUnitCost !== null && (
+                                <span className="ml-1 text-muted-foreground/60">
+                                  @ {formatCurrency(p.blendedPaidUnitCost)}
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                          {p.locations.length > 0 && (
+                            <ul className="pl-3.5">
+                              {p.locations.map((l) => (
+                                <SiteRow
+                                  key={String(l.locationId)}
+                                  name={l.locationName}
+                                  volume={l.annualVolume}
+                                  unit={unit}
+                                />
+                              ))}
+                            </ul>
+                          )}
+                        </li>
                       ))}
                     </ul>
                   )}
