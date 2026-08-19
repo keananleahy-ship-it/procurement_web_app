@@ -366,6 +366,9 @@ export type VolumeMaps = {
   // canonical are keyed under byProduct only and omitted here.
   byCanonicalProduct: Map<number, Map<number, Map<number | null, LocationVolume>>>
   locationNames: Map<number | null, string>
+  // Product display names keyed by productId, so lenses can label a purchased
+  // product even when no current vendor offer exists to carry its name.
+  productNames: Map<number, string>
   total: number
 }
 
@@ -382,6 +385,7 @@ export async function loadVolumeMaps(): Promise<VolumeMaps> {
       // the canonical/product lenses. Self-healing: future imports that miss
       // the canonical stamp are recovered automatically at read time.
       productCanonicalId: products.canonicalItemId,
+      productName: products.name,
       productId: purchaseVolumes.productId,
       locationId: purchaseVolumes.locationId,
       annualVolume: purchaseVolumes.annualVolume,
@@ -400,6 +404,7 @@ export async function loadVolumeMaps(): Promise<VolumeMaps> {
     Map<number, Map<number | null, LocationVolume>>
   >()
   const locationNames = new Map<number | null, string>()
+  const productNames = new Map<number, string>()
   let total = 0
 
   // Helper: accumulate a volume/cost observation into a per-location map,
@@ -438,6 +443,9 @@ export async function loadVolumeMaps(): Promise<VolumeMaps> {
     if (!Number.isFinite(vol) || vol <= 0) continue
     total += vol
     locationNames.set(r.locationId, r.locationName ?? 'Unassigned')
+    if (r.productId !== null && r.productName) {
+      productNames.set(r.productId, r.productName)
+    }
     // Prefer the row's own canonical, but fall back to the canonical already
     // assigned to its product so already-mapped volume still lands in the
     // canonical/product lenses instead of being stranded under byProduct.
@@ -493,7 +501,14 @@ export async function loadVolumeMaps(): Promise<VolumeMaps> {
     }
   }
 
-  return { byCanonical, byProduct, byCanonicalProduct, locationNames, total }
+  return {
+    byCanonical,
+    byProduct,
+    byCanonicalProduct,
+    locationNames,
+    productNames,
+    total,
+  }
 }
 
 export async function getProductComparisons(): Promise<ProductComparison[]> {

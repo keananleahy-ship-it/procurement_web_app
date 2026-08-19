@@ -1,12 +1,13 @@
 'use client'
 
-import { useMemo, useState } from 'react'
-import type {
-  SavingsResult,
-  SavingsItem,
-  LocationProductLine,
-  EquivalentOpportunity,
-  PackagingOpportunity,
+import { useMemo, useState, useTransition } from 'react'
+import {
+  getAwSavingsAnalyses,
+  type SavingsResult,
+  type SavingsItem,
+  type LocationProductLine,
+  type EquivalentOpportunity,
+  type PackagingOpportunity,
 } from '@/app/actions/savings'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -22,6 +23,8 @@ import {
   ArrowRight,
   ChevronDown,
   PiggyBank,
+  Filter,
+  Check,
 } from 'lucide-react'
 
 // Short unit label for per-unit prices ("gallon" -> "gal").
@@ -52,29 +55,142 @@ const LENS = {
 } as const
 
 export function SavingsView({ result }: { result: SavingsResult }) {
-  const { items, totals } = result
+  // `result` is the server-rendered baseline (no vendors excluded). Toggling a
+  // vendor recomputes on the server via the same action and swaps in the new
+  // numbers; volume is never filtered, only the pricing targets each lens sees.
+  const [data, setData] = useState<SavingsResult>(result)
+  const [excluded, setExcluded] = useState<Set<number>>(
+    () => new Set(result.excludedVendorIds),
+  )
+  const [pending, startTransition] = useTransition()
 
-  if (items.length === 0) {
-    return (
-      <div className="p-6">
-        <EmptyState
-          icon={PiggyBank}
-          title="No AW hydraulic opportunities yet"
-          description="Once AW hydraulic products have vendor prices and purchase volumes on file, savings opportunities will appear here."
-        />
-      </div>
-    )
+  const recompute = (next: Set<number>) => {
+    setExcluded(next)
+    const ids = [...next]
+    startTransition(async () => {
+      const r = await getAwSavingsAnalyses({ excludedVendorIds: ids })
+      setData(r)
+    })
   }
+
+  const toggleVendor = (id: number) => {
+    const next = new Set(excluded)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    recompute(next)
+  }
+
+  const { items, totals } = data
 
   return (
     <div className="flex flex-col gap-6 p-6">
-      <SummaryBar totals={totals} />
-      <div className="flex flex-col gap-4">
-        {items.map((item) => (
-          <ItemCard key={item.canonicalItemId} item={item} />
-        ))}
-      </div>
+      <VendorToggleBar
+        vendors={result.vendors}
+        excluded={excluded}
+        onToggle={toggleVendor}
+        onReset={() => recompute(new Set())}
+        pending={pending}
+      />
+      {items.length === 0 ? (
+        <EmptyState
+          icon={PiggyBank}
+          title="No AW hydraulic opportunities"
+          description="With the current vendor selection there are no priced opportunities. Turn vendors back on to widen the comparison."
+        />
+      ) : (
+        <>
+          <SummaryBar totals={totals} />
+          <div
+            className={cn(
+              'flex flex-col gap-4 transition-opacity',
+              pending && 'pointer-events-none opacity-60',
+            )}
+          >
+            {items.map((item) => (
+              <ItemCard key={item.canonicalItemId} item={item} />
+            ))}
+          </div>
+        </>
+      )}
     </div>
+  )
+}
+
+function VendorToggleBar({
+  vendors,
+  excluded,
+  onToggle,
+  onReset,
+  pending,
+}: {
+  vendors: SavingsResult['vendors']
+  excluded: Set<number>
+  onToggle: (id: number) => void
+  onReset: () => void
+  pending: boolean
+}) {
+  if (vendors.length === 0) return null
+  const activeCount = vendors.length - excluded.size
+  return (
+    <Card className="flex flex-col gap-3 p-4">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <Filter className="size-4" />
+          <span className="text-xs font-semibold uppercase tracking-wide">
+            Vendors in comparison
+          </span>
+          <span className="text-xs tabular-nums text-muted-foreground/70">
+            {activeCount} of {vendors.length}
+          </span>
+        </div>
+        {excluded.size > 0 && (
+          <button
+            type="button"
+            onClick={onReset}
+            className="text-xs font-medium text-primary transition-colors hover:underline"
+          >
+            Reset
+          </button>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {vendors.map((v) => {
+          const on = !excluded.has(v.id)
+          return (
+            <button
+              key={v.id}
+              type="button"
+              onClick={() => onToggle(v.id)}
+              disabled={pending}
+              aria-pressed={on}
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors disabled:opacity-70',
+                on
+                  ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/15'
+                  : 'border-border bg-muted text-muted-foreground line-through hover:bg-muted/70',
+              )}
+            >
+              <span
+                className={cn(
+                  'flex size-3.5 items-center justify-center rounded-full border',
+                  on
+                    ? 'border-primary bg-primary text-primary-foreground'
+                    : 'border-muted-foreground/40',
+                )}
+              >
+                {on && <Check className="size-2.5" />}
+              </span>
+              {v.name}
+            </button>
+          )
+        })}
+      </div>
+      <p className="text-[0.625rem] text-muted-foreground/70">
+        Switching a vendor off removes its quotes as a pricing target across all
+        three lenses and re-sizes every opportunity. Purchased volume is
+        unchanged.
+      </p>
+    </Card>
   )
 }
 
@@ -153,10 +269,7 @@ function ItemCard({ item }: { item: SavingsItem }) {
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-4">
-          <LensChip
-            label={LENS.location.label}
-            value={item.byLocationTotal}
-          />
+          <LensChip label={LENS.location.label} value={item.byLocationTotal} />
           <LensChip
             label={LENS.equivalent.label}
             value={item.byEquivalent?.opportunity ?? 0}
@@ -189,13 +302,7 @@ function ItemCard({ item }: { item: SavingsItem }) {
   )
 }
 
-function LensChip({
-  label,
-  value,
-}: {
-  label: string
-  value: number | null
-}) {
+function LensChip({ label, value }: { label: string; value: number | null }) {
   const hidden = value === null
   return (
     <div className="hidden text-right sm:block">
@@ -205,9 +312,7 @@ function LensChip({
       <p
         className={cn(
           'text-sm font-semibold tabular-nums',
-          hidden || value === 0
-            ? 'text-muted-foreground'
-            : 'text-primary',
+          hidden || value === 0 ? 'text-muted-foreground' : 'text-primary',
         )}
       >
         {hidden ? 'n/a' : formatCurrency(value)}
@@ -250,6 +355,64 @@ function LensHeader({
         <p className="text-[0.625rem] text-muted-foreground">/yr</p>
       </div>
     </div>
+  )
+}
+
+// Shared "View breakdown" toggle used by the drill-down lenses.
+function DrilldownToggle({
+  open,
+  onToggle,
+  count,
+}: {
+  open: boolean
+  onToggle: () => void
+  count: number
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      className="mt-2 flex w-full items-center justify-center gap-1 rounded-md border border-border/60 py-1.5 text-[0.6875rem] font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+    >
+      {open ? 'Hide' : 'View'} breakdown
+      <span className="text-muted-foreground/60">
+        ({count} {count === 1 ? 'product' : 'products'})
+      </span>
+      <ChevronDown
+        className={cn('size-3 transition-transform', open && 'rotate-180')}
+      />
+    </button>
+  )
+}
+
+// A per-site volume row shared by the two drill-downs.
+function SiteRow({
+  name,
+  volume,
+  unit,
+  opportunity,
+}: {
+  name: string
+  volume: number
+  unit: string
+  opportunity?: number
+}) {
+  return (
+    <li className="flex items-center justify-between gap-2 py-0.5 text-[0.6875rem] tabular-nums text-muted-foreground">
+      <span className="flex items-center gap-1 truncate">
+        <MapPin className="size-2.5 shrink-0 text-muted-foreground/50" />
+        <span className="truncate text-foreground">{name}</span>
+      </span>
+      <span className="shrink-0">
+        {formatNumber(Math.round(volume))} {unit}
+        {opportunity !== undefined && opportunity > 0 && (
+          <span className="ml-1.5 text-primary">
+            {formatCurrency(opportunity)}
+          </span>
+        )}
+      </span>
+    </li>
   )
 }
 
@@ -337,6 +500,7 @@ function EquivalentLens({
   data: EquivalentOpportunity | null
   unit: string
 }) {
+  const [open, setOpen] = useState(false)
   const confLabel: Record<EquivalentOpportunity['confidence'], string> = {
     high: 'current pricing',
     mixed: 'partly paid-cost',
@@ -391,6 +555,65 @@ function EquivalentLens({
               )}
             </span>
           </div>
+
+          {data.lines.length > 0 && (
+            <>
+              <DrilldownToggle
+                open={open}
+                onToggle={() => setOpen((o) => !o)}
+                count={data.lines.length}
+              />
+              {open && (
+                <ul className="flex flex-col gap-2">
+                  {data.lines.map((line) => (
+                    <li
+                      key={String(line.productId)}
+                      className="rounded-md border border-border/60 bg-background/40 px-3 py-2"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-medium text-foreground">
+                            {line.productName}
+                          </p>
+                          <p className="text-[0.625rem] tabular-nums text-muted-foreground/70">
+                            {formatCurrency(line.presentUnitCost)}/{unit}{' '}
+                            <ArrowRight className="inline size-2.5" />{' '}
+                            {formatCurrency(line.bestEquivalentUnitCost)}/{unit}
+                            {' · '}
+                            {formatNumber(Math.round(line.annualVolume))} {unit}
+                            /yr
+                          </p>
+                        </div>
+                        <span
+                          className={cn(
+                            'shrink-0 text-xs font-semibold tabular-nums',
+                            line.savings > 0
+                              ? 'text-primary'
+                              : 'text-muted-foreground',
+                          )}
+                        >
+                          {formatCurrency(line.savings)}
+                        </span>
+                      </div>
+                      {line.locations.length > 0 && (
+                        <ul className="mt-1 border-t border-border/40 pt-1">
+                          {line.locations.map((l) => (
+                            <SiteRow
+                              key={String(l.locationId)}
+                              name={l.locationName}
+                              volume={l.annualVolume}
+                              unit={unit}
+                              opportunity={l.opportunity}
+                            />
+                          ))}
+                        </ul>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>
@@ -404,6 +627,7 @@ function PackagingLens({
   data: PackagingOpportunity
   unit: string
 }) {
+  const [open, setOpen] = useState(false)
   const maxPer = useMemo(
     () => Math.max(...data.options.map((o) => o.cheapestPerUnit), 0.0001),
     [data.options],
@@ -469,6 +693,60 @@ function PackagingLens({
           'No paid baseline on file to size the switch.'
         )}
       </p>
+
+      {data.breakdown.length > 0 && (
+        <>
+          <DrilldownToggle
+            open={open}
+            onToggle={() => setOpen((o) => !o)}
+            count={data.breakdown.length}
+          />
+          {open && (
+            <ul className="flex flex-col gap-2">
+              {data.breakdown.map((row) => (
+                <li
+                  key={row.family}
+                  className="rounded-md border border-border/60 bg-background/40 px-3 py-2"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="flex items-center gap-1 text-xs font-medium text-foreground">
+                        {row.familyLabel}
+                        {row.isCheapestFamily && (
+                          <span className="text-[0.625rem] font-normal text-primary/80">
+                            cheapest
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-[0.625rem] tabular-nums text-muted-foreground/70">
+                        {formatNumber(Math.round(row.annualVolume))} {unit}/yr
+                        {row.blendedPaidUnitCost !== null && (
+                          <>
+                            {' · '}paid{' '}
+                            {formatCurrency(row.blendedPaidUnitCost)}/{unit}
+                          </>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                  {row.locations.length > 0 && (
+                    <ul className="mt-1 border-t border-border/40 pt-1">
+                      {row.locations.map((l) => (
+                        <SiteRow
+                          key={String(l.locationId)}
+                          name={l.locationName}
+                          volume={l.annualVolume}
+                          unit={unit}
+                        />
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
     </div>
   )
 }

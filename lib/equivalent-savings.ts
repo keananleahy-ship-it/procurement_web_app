@@ -52,6 +52,14 @@ export type EquivalentLine = {
   bestEquivalentUnitCost: number
   bestEquivalentProductName: string
   savings: number
+  // where this product's volume (and thus its savings) actually sits, so the
+  // UI can drill from a lens tile down to the specific sites driving it
+  locations: {
+    locationId: number | null
+    locationName: string
+    annualVolume: number
+    opportunity: number
+  }[]
 }
 
 export type EquivalentSavings = {
@@ -98,9 +106,15 @@ export function computeEquivalentSavings(
       currentByProduct.set(o.productId, o)
     }
   }
+  // Prefer the name carried on a current offer, but fall back to the purchased
+  // product's own name (from the volume maps) so products bought without any
+  // current quote still show a real label instead of "Product <id>".
   const productName = new Map<number, string>()
   for (const o of group.offers) {
     if (o.productId !== null) productName.set(o.productId, o.productName)
+  }
+  for (const [productId, name] of volumes.productNames) {
+    if (!productName.has(productId)) productName.set(productId, name)
   }
 
   const lines: EquivalentLine[] = []
@@ -114,13 +128,15 @@ export function computeEquivalentSavings(
     let paidNum = 0
     let paidDen = 0
     let baseUnit: string | null = null
-    for (const lv of perLoc.values()) {
+    const locVols: { locationId: number | null; annualVolume: number }[] = []
+    for (const [locationId, lv] of perLoc) {
       vol += lv.annualVolume
       if (lv.baselineUnitCost !== null && lv.baselineUnitCost > 0) {
         paidNum += lv.baselineUnitCost * lv.annualVolume
         paidDen += lv.annualVolume
       }
       baseUnit = baseUnit ?? lv.baseUnit
+      if (lv.annualVolume > 0) locVols.push({ locationId, annualVolume: lv.annualVolume })
     }
     if (vol <= 0) continue
 
@@ -172,6 +188,16 @@ export function computeEquivalentSavings(
       bestEquivalentUnitCost: bestAlt.comparablePricePerBaseUnit,
       bestEquivalentProductName: bestAlt.productName,
       savings,
+      // Distribute the line's savings across its sites in proportion to the
+      // volume each site bought (the per-unit spread is the same everywhere).
+      locations: locVols
+        .map((l) => ({
+          locationId: l.locationId,
+          locationName: volumes.locationNames.get(l.locationId) ?? 'Unassigned',
+          annualVolume: l.annualVolume,
+          opportunity: vol > 0 ? savings * (l.annualVolume / vol) : 0,
+        }))
+        .sort((a, b) => b.annualVolume - a.annualVolume),
     })
   }
 

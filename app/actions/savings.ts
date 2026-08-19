@@ -82,6 +82,20 @@ export type PackOption = {
   offerCount: number
   deltaFromCheapest: number
 }
+// One purchased pack family with the sites that buy it, so the packaging tile
+// can drill down to where the volume (and therefore the opportunity) resides.
+export type PackagingBreakdownRow = {
+  family: PackFamilyId
+  familyLabel: string
+  annualVolume: number
+  blendedPaidUnitCost: number | null
+  isCheapestFamily: boolean
+  locations: {
+    locationId: number | null
+    locationName: string
+    annualVolume: number
+  }[]
+}
 export type PackagingOpportunity = {
   annualVolume: number
   blendedPaidUnitCost: number | null
@@ -90,6 +104,8 @@ export type PackagingOpportunity = {
   cheapestPerUnit: number
   options: PackOption[]
   opportunity: number | null
+  // purchased volume grouped by pack family (with per-site split)
+  breakdown: PackagingBreakdownRow[]
 }
 
 export type SavingsItem = {
@@ -110,6 +126,8 @@ export type SavingsItem = {
   byPackaging: PackagingOpportunity
 }
 
+export type VendorRef = { id: number; name: string }
+
 export type SavingsResult = {
   items: SavingsItem[]
   totals: {
@@ -118,6 +136,10 @@ export type SavingsResult = {
     byPackaging: number
     annualVolume: number
   }
+  // every vendor quoting into these groups (unaffected by the current filter),
+  // plus which ones are currently excluded, so the UI can render the toggles
+  vendors: VendorRef[]
+  excludedVendorIds: number[]
 }
 
 const familyLabel = (id: PackFamilyId) =>
@@ -129,7 +151,9 @@ const offerLabel = (vendorName: string, productName: string) =>
 // Build the three savings lenses for AW hydraulic. Read-only: reuses the
 // comparison engine (offers, best/worst, per-location volume) and the paid
 // baselines from purchase volumes; no pricing math is redefined here.
-export async function getAwSavingsAnalyses(): Promise<SavingsResult> {
+export async function getAwSavingsAnalyses(
+  opts?: { excludedVendorIds?: number[] },
+): Promise<SavingsResult> {
   await requireUser()
 
   const [comparisons, volumes] = await Promise.all([
@@ -145,9 +169,36 @@ export async function getAwSavingsAnalyses(): Promise<SavingsResult> {
       c.subcategory === 'AW',
   )
 
+  // Vendor roster across all AW groups, independent of the active filter, so
+  // the toggle list stays stable even while some vendors are switched off.
+  const vendorMap = new Map<number, string>()
+  for (const c of awGroups) {
+    for (const o of c.offers) {
+      if (!vendorMap.has(o.vendorId)) vendorMap.set(o.vendorId, o.vendorName)
+    }
+  }
+  const vendors: VendorRef[] = [...vendorMap.entries()]
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+  const excludedVendorIds = (opts?.excludedVendorIds ?? []).filter((id) =>
+    vendorMap.has(id),
+  )
+  const excludedSet = new Set(excludedVendorIds)
+
   const items: SavingsItem[] = []
 
-  for (const c of awGroups) {
+  for (const rawGroup of awGroups) {
+    // Apply the vendor filter to the QUOTES only; purchased volume is never
+    // filtered, so toggling a vendor off changes the pricing targets each lens
+    // can reach without changing how much was actually bought.
+    const c =
+      excludedSet.size > 0
+        ? {
+            ...rawGroup,
+            offers: rawGroup.offers.filter((o) => !excludedSet.has(o.vendorId)),
+          }
+        : rawGroup
     const canonicalItemId = c.canonicalItemId as number
     const byProd = volumes.byCanonicalProduct.get(canonicalItemId)
     const perLoc = volumes.byCanonical.get(canonicalItemId)
@@ -348,10 +399,69 @@ export async function getAwSavingsAnalyses(): Promise<SavingsResult> {
         : 0,
     }))
     const cheapestPerUnit = cheapest ? cheapest[1].cheapestPerUnit : 0
+    const cheapestFamilyId: PackFamilyId = cheapest ? cheapest[0] : 'other'
+
+    // Drill-down: the volume actually purchased, grouped by pack family and the
+    // sites buying it. A product's family is inferred from any offer for it
+    // (using the unfiltered roster so a toggled-off vendor can't hide purchased
+    // volume), falling back to bulk when the product has no pack info on file.
+    const productFamily = new Map<number, PackFamilyId>()
+    for (const o of rawGroup.offers) {
+      if (o.productId !== null && !productFamily.has(o.productId)) {
+        productFamily.set(o.productId, packFamily(o.packSize, o.baseUnit))
+      }
+    }
+    type FamAgg = {
+      annualVolume: number
+      paidNum: number
+      paidDen: number
+      locations: Map<number | null, number>
+    }
+    const famAgg = new Map<PackFamilyId, FamAgg>()
+    if (byProd) {
+      for (const [productId, locMap] of byProd) {
+        const fam = productFamily.get(productId) ?? 'bulk'
+        const agg = famAgg.get(fam) ?? {
+          annualVolume: 0,
+          paidNum: 0,
+          paidDen: 0,
+          locations: new Map<number | null, number>(),
+        }
+        for (const [locationId, lv] of locMap) {
+          agg.annualVolume += lv.annualVolume
+          if (lv.baselineUnitCost !== null && lv.baselineUnitCost > 0) {
+            agg.paidNum += lv.baselineUnitCost * lv.annualVolume
+            agg.paidDen += lv.annualVolume
+          }
+          agg.locations.set(
+            locationId,
+            (agg.locations.get(locationId) ?? 0) + lv.annualVolume,
+          )
+        }
+        famAgg.set(fam, agg)
+      }
+    }
+    const breakdown: PackagingBreakdownRow[] = [...famAgg.entries()]
+      .map(([family, agg]) => ({
+        family,
+        familyLabel: familyLabel(family),
+        annualVolume: agg.annualVolume,
+        blendedPaidUnitCost: agg.paidDen > 0 ? agg.paidNum / agg.paidDen : null,
+        isCheapestFamily: family === cheapestFamilyId,
+        locations: [...agg.locations.entries()]
+          .map(([locationId, annualVolume]) => ({
+            locationId,
+            locationName: volumes.locationNames.get(locationId) ?? 'Unassigned',
+            annualVolume,
+          }))
+          .sort((a, b) => b.annualVolume - a.annualVolume),
+      }))
+      .sort((a, b) => b.annualVolume - a.annualVolume)
+
     const byPackaging: PackagingOpportunity = {
       annualVolume: c.annualVolume,
       blendedPaidUnitCost,
-      cheapestFamily: cheapest ? cheapest[0] : 'other',
+      cheapestFamily: cheapestFamilyId,
       cheapestFamilyLabel: cheapest ? familyLabel(cheapest[0]) : '—',
       cheapestPerUnit,
       options,
@@ -359,6 +469,7 @@ export async function getAwSavingsAnalyses(): Promise<SavingsResult> {
         blendedPaidUnitCost !== null && cheapest
           ? Math.max(0, blendedPaidUnitCost - cheapestPerUnit) * c.annualVolume
           : null,
+      breakdown,
     }
 
     items.push({
@@ -406,5 +517,7 @@ export async function getAwSavingsAnalyses(): Promise<SavingsResult> {
       ),
       annualVolume: items.reduce((s, i) => s + i.annualVolume, 0),
     },
+    vendors,
+    excludedVendorIds,
   }
 }
