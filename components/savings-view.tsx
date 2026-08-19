@@ -66,19 +66,25 @@ export function SavingsView({ result }: { result: SavingsResult }) {
   const [sourcing, setSourcing] = useState<'cross-site' | 'within-site'>(
     result.equivalentSourcing,
   )
+  const [basis, setBasis] = useState<'equivalent' | 'same-product'>(
+    result.packagingBasis,
+  )
   const [pending, startTransition] = useTransition()
 
   const recompute = (
     nextExcluded: Set<number>,
     nextSourcing: 'cross-site' | 'within-site' = sourcing,
+    nextBasis: 'equivalent' | 'same-product' = basis,
   ) => {
     setExcluded(nextExcluded)
     setSourcing(nextSourcing)
+    setBasis(nextBasis)
     const ids = [...nextExcluded]
     startTransition(async () => {
       const r = await getAwSavingsAnalyses({
         excludedVendorIds: ids,
         equivalentSourcing: nextSourcing,
+        packagingBasis: nextBasis,
       })
       setData(r)
     })
@@ -105,6 +111,11 @@ export function SavingsView({ result }: { result: SavingsResult }) {
       <SourcingToggle
         sourcing={sourcing}
         onChange={(mode) => recompute(excluded, mode)}
+        pending={pending}
+      />
+      <PackagingBasisToggle
+        basis={basis}
+        onChange={(next) => recompute(excluded, sourcing, next)}
         pending={pending}
       />
       {items.length === 0 ? (
@@ -254,6 +265,74 @@ function SourcingToggle({
       >
         {options.map((o) => {
           const on = o.id === sourcing
+          return (
+            <button
+              key={o.id}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              disabled={pending}
+              onClick={() => !on && onChange(o.id)}
+              className={cn(
+                'rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:opacity-70',
+                on
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {o.label}
+            </button>
+          )
+        })}
+      </div>
+    </Card>
+  )
+}
+
+function PackagingBasisToggle({
+  basis,
+  onChange,
+  pending,
+}: {
+  basis: 'equivalent' | 'same-product'
+  onChange: (basis: 'equivalent' | 'same-product') => void
+  pending: boolean
+}) {
+  const options: {
+    id: 'equivalent' | 'same-product'
+    label: string
+    hint: string
+  }[] = [
+    {
+      id: 'equivalent',
+      label: 'Any equivalent',
+      hint: 'a cheaper container from any like-for-like product',
+    },
+    {
+      id: 'same-product',
+      label: 'Same product',
+      hint: 'a cheaper container of the same branded product only',
+    },
+  ]
+  const active = options.find((o) => o.id === basis) ?? options[0]
+  return (
+    <Card className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <Boxes className="size-4" />
+        <span className="text-xs font-semibold uppercase tracking-wide">
+          Packaging basis
+        </span>
+        <span className="text-[0.625rem] text-muted-foreground/70">
+          {active.hint} · By Packaging only
+        </span>
+      </div>
+      <div
+        role="radiogroup"
+        aria-label="By Packaging comparison basis"
+        className="inline-flex shrink-0 rounded-full border border-border bg-muted p-0.5"
+      >
+        {options.map((o) => {
+          const on = o.id === basis
           return (
             <button
               key={o.id}
@@ -880,6 +959,25 @@ function PackagingLens({
                               )}
                             </span>
                           </div>
+                          {p.targetFamilyLabel &&
+                            p.targetPerUnit !== null &&
+                            p.currentBestPerUnit !== null && (
+                              <p className="flex items-center justify-between gap-2 pl-3.5 text-[0.625rem] tabular-nums text-primary/90">
+                                <span className="flex items-center gap-1 truncate">
+                                  <ArrowRight className="size-2.5 shrink-0" />
+                                  <span className="truncate">
+                                    {p.targetFamilyLabel}{' '}
+                                    {formatCurrency(p.currentBestPerUnit)} →{' '}
+                                    {formatCurrency(p.targetPerUnit)}/{unit}
+                                  </span>
+                                </span>
+                                {p.opportunity > 0 && (
+                                  <span className="shrink-0 font-semibold">
+                                    {formatCurrency(p.opportunity)}
+                                  </span>
+                                )}
+                              </p>
+                            )}
                           {p.locations.length > 0 && (
                             <ul className="pl-3.5">
                               {p.locations.map((l) => (
