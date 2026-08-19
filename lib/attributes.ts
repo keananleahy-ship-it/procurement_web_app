@@ -367,6 +367,37 @@ export function deriveCategory(name: string): string | null {
   return null
 }
 
+// The category label used for NSF H1 food-grade lubricants.
+export const FOOD_GRADE_CATEGORY = 'Food Grade Lubricant'
+
+// Food-grade (NSF H1) lubricants are a distinct commercial segment: they are
+// certified for incidental food contact and priced accordingly, so they must
+// never be pooled with — or price-compared against — standard industrial
+// product, even when the base type and viscosity grade line up. A food-grade
+// "Purity FG AW Hydraulic 46" is NOT interchangeable with a standard AW
+// hydraulic ISO 46. We trust the stored category when present (it is the
+// classifier's authoritative output) and fall back to the name so the check
+// also works before a record has been classified.
+export function isFoodGrade(input: {
+  category?: string | null
+  name?: string | null
+}): boolean {
+  if (input.category != null && input.category !== '') {
+    return input.category === FOOD_GRADE_CATEGORY
+  }
+  if (input.name) return deriveCategory(input.name) === FOOD_GRADE_CATEGORY
+  return false
+}
+
+// Two lubricants may only be matched/compared when they sit on the same side of
+// the food-grade divide: either both food-grade or both standard.
+export function sameFoodGradeSegment(
+  a: { category?: string | null; name?: string | null },
+  b: { category?: string | null; name?: string | null },
+): boolean {
+  return isFoodGrade(a) === isFoodGrade(b)
+}
+
 export function deriveViscosity(name: string): string | null {
   const upper = name.toUpperCase()
   // Coolant blend ratios like 50/50 are not a viscosity grade.

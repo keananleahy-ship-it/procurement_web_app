@@ -2,6 +2,8 @@
 // items. Uses the Sorensen-Dice coefficient over character bigrams (0..1),
 // with a small boost when categories agree. No external dependencies.
 
+import { sameFoodGradeSegment } from './attributes'
+
 function normalize(s: string): string {
   return s
     .toLowerCase()
@@ -59,6 +61,10 @@ export function bestMatch(
 ): ScoredCandidate | null {
   let best: ScoredCandidate | null = null
   for (const c of candidates) {
+    // Never cross the food-grade / standard divide, no matter how similar the
+    // names are (e.g. food-grade "Purity FG AW Hydraulic 46" vs a standard AW
+    // hydraulic ISO 46).
+    if (!sameFoodGradeSegment(product, c)) continue
     let score = diceCoefficient(product.name, c.name)
     if (
       product.category &&
