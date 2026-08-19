@@ -35,12 +35,40 @@ const FORM_TOKEN: Record<string, string> = {
   'R&O': 'ro',
 }
 
-// Pull the ISO grade number out of "ISO VG 46" / "46" / a name like "... 46 BULK".
+// Standard ISO VG grades, longest-first so 100/150 win over 10/15.
+const ISO_GRADES = [680, 460, 320, 220, 150, 100, 68, 46, 32, 22, 15, 10]
+
+// Pull the ISO grade number out of a viscosity field or a product name. Only
+// recognizes real ISO VG grades, which keeps pack sizes (205 L, 1040 L IBC,
+// 1/55, 20 L, "6000HR") from being mistaken for a grade. Reads a grade even
+// when it's glued to letters ("AW32", "HV46") or bare ("S2 46"), but never when
+// it's part of a larger number ("205") or immediately followed by L (a size).
 function isoNum(viscosity: string | null, name: string): number | null {
   const fromVisc = viscosity?.match(/(\d{1,3})/)?.[1]
-  if (fromVisc) return Number(fromVisc)
-  const fromName = name.toUpperCase().match(/\bISO\s*(?:VG)?\s*(\d{1,3})\b/)?.[1]
-  return fromName ? Number(fromName) : null
+  if (fromVisc && ISO_GRADES.includes(Number(fromVisc))) return Number(fromVisc)
+  const upper = name.toUpperCase()
+  for (const g of ISO_GRADES) {
+    // not preceded by a digit; not followed by a digit or an "L" size suffix.
+    if (new RegExp(`(?<!\\d)${g}(?![\\dL])`).test(upper)) return g
+  }
+  return null
+}
+
+// Sunoco Sunvis lines encode their series (= formulation) and ISO grade in the
+// part number: 800-series = AW, 600-series = Zinc-Free (ashless), 1000-series =
+// MV/HVI ("AW HVI"); the last two digits are the ISO grade. 900-series are
+// turbine oils and are deliberately left unresolved. Returns null for anything
+// that isn't a decodable Sunvis part.
+function sunvisInfo(name: string): { iso: number; form: string } | null {
+  const m = name.toUpperCase().match(/SUNVIS\s*(\d{3,4})/)
+  if (!m) return null
+  const digits = m[1]
+  const iso = Number(digits.slice(-2))
+  if (!iso) return null
+  if (digits.length === 4 && digits.startsWith('10')) return { iso, form: 'MV/HVI' }
+  if (digits.length === 3 && digits.startsWith('8')) return { iso, form: 'AW' }
+  if (digits.length === 3 && digits.startsWith('6')) return { iso, form: 'Zinc-Free' }
+  return null // 900-series turbine, or unknown series
 }
 
 const log: string[] = []
@@ -60,12 +88,17 @@ try {
     { label: 'X/C Aviation 5606', like: '%AVIATION%', category: 'Aviation Hydraulic Fluid' },
     { label: 'ACCUFLO (turbine/circulating)', like: '%ACCUFLO%', category: 'Turbine Oil' },
     { label: 'Honda PSF-2 (power steering)', like: '%PSF%', category: 'Power Steering Fluid' },
+    // R&O circulating oils have their own category (C#448/449/452); they are not
+    // anti-wear hydraulic fluids, so move them out of Hydraulic Fluid.
+    { label: 'P66 MULTIPURPOSE R&O', like: '%MULTIPURPOSE R%', category: 'Circulating / R&O Oil' },
+    { label: 'TURBOFLO R&O', like: '%TURBOFLO%', category: 'Circulating / R&O Oil' },
   ]
   for (const r of recats) {
     const res = await client.query(
       `update products set category=$1, "canonicalItemId"=null, "matchStatus"='unmatched'
        where "userId"=$2 and name ilike $3
-         and (category ilike '%hydraulic%' or "canonicalItemId" in (417,421,471,472,473,480))
+         and (category ilike '%hydraulic%'
+              or "canonicalItemId" in (415,416,418,419,420,468,495,498,417,421,471,472,473,480))
        returning id`,
       [r.category, U, r.like],
     )
@@ -106,7 +139,9 @@ try {
     { form: 'Zinc-Free', iso: 68, name: 'Zinc-Free (Ashless) Hydraulic Oil ISO 68' },
     { form: 'Zinc-Free HVI', iso: 32, name: 'Zinc-Free HVI Hydraulic Oil ISO 32' },
     { form: 'Zinc-Free HVI', iso: 46, name: 'Zinc-Free HVI Hydraulic Oil ISO 46' },
+    { form: 'Full Synthetic', iso: 32, name: 'Full Synthetic Hydraulic Oil ISO 32' },
     { form: 'Full Synthetic', iso: 46, name: 'Full Synthetic Hydraulic Oil ISO 46' },
+    { form: 'Full Synthetic', iso: 68, name: 'Full Synthetic Hydraulic Oil ISO 68' },
   ]
   for (const c of newCanon) {
     const specKey = `hydraulic oil|iso ${c.iso}|${FORM_TOKEN[c.form]}`
@@ -143,7 +178,7 @@ try {
   // Products in scope: hydraulic-category OR still matched to a hydraulic canonical.
   // Skip the ones we deliberately keep separate (distinct spec or no ISO grade).
   const KEEP_SEPARATE =
-    /VERSATRANS|AVIATION|ACCUFLO|MULTI-WAY|WAYLUBE|WAY OIL|SLIDEWAY|\bPSF\b|ENVIRON|ULT-?CLN|ALL[\s-]*SEASON|HYKEN|GLACIAL/i
+    /VERSATRANS|AVIATION|ACCUFLO|MULTI-WAY|WAYLUBE|WAY OIL|SLIDEWAY|\bPSF\b|ENVIRON|ULT-?CLN|ALL[\s-]*SEASON|HYKEN|GLACIAL|SER\s*III|XTRA\s*GOLD/i
   const pool2 = await client.query(
     `select id, brand, name, viscosity, "canonicalItemId", "matchStatus"
      from products where "userId"=$1
@@ -155,20 +190,25 @@ try {
   const unresolved: string[] = []
   for (const p of pool2.rows) {
     if (KEEP_SEPARATE.test(p.name)) continue
-    const iso = isoNum(p.viscosity, p.name)
+    // Sunvis parts carry series+grade in the number, not in words; decode them
+    // explicitly and also backfill the (currently null) viscosity so the row is
+    // complete. Everything else derives formulation from the name.
+    const sv = sunvisInfo(p.name)
+    const iso = sv?.iso ?? isoNum(p.viscosity, p.name)
     if (iso === null) {
       unresolved.push(`no-grade: ${p.brand ?? '?'} / ${p.name}`)
       continue
     }
-    const form = deriveSubcategory(p.name, 'Hydraulic Fluid') ?? 'AW'
+    const form = sv?.form ?? deriveSubcategory(p.name, 'Hydraulic Fluid') ?? 'AW'
     const canonId = lookup.get(`${form}|${iso}`)
     if (!canonId) {
       unresolved.push(`no-canonical(${form} ISO ${iso}): ${p.brand ?? '?'} / ${p.name}`)
       continue
     }
     await client.query(
-      `update products set "canonicalItemId"=$1, "matchStatus"='confirmed', subcategory=$2 where id=$3`,
-      [canonId, form, p.id],
+      `update products set "canonicalItemId"=$1, "matchStatus"='confirmed', subcategory=$2,
+         viscosity = coalesce(nullif(viscosity,''), $4) where id=$3`,
+      [canonId, form, p.id, `ISO VG ${iso}`],
     )
     matched++
   }
