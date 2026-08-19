@@ -125,13 +125,6 @@ const familyLabel = (id: PackFamilyId) =>
 const offerLabel = (vendorName: string, productName: string) =>
   `${vendorName} — ${productName}`
 
-// TEMP (demo): exclude these vendors as SAVINGS TARGETS — their quotes must not
-// be selected as the cheapest equivalent or cheapest packaging option, so no
-// opportunity is credited against buying from them. Their own purchases still
-// count as spend and volume (By Location is unaffected). Clear this set to
-// restore normal behavior.
-const EXCLUDED_TARGET_VENDOR_IDS = new Set<number>([6]) // 6 = Mesa
-
 // Build the three savings lenses for AW hydraulic. Read-only: reuses the
 // comparison engine (offers, best/worst, per-location volume) and the paid
 // baselines from purchase volumes; no pricing math is redefined here.
@@ -157,20 +150,6 @@ export async function getAwSavingsAnalyses(): Promise<SavingsResult> {
     const canonicalItemId = c.canonicalItemId as number
     const byProd = volumes.byCanonicalProduct.get(canonicalItemId)
     const perLoc = volumes.byCanonical.get(canonicalItemId)
-
-    // Group view with excluded vendors' quotes stripped, used only where an
-    // offer can become a savings TARGET (By Equivalent, By Packaging). By
-    // Location intentionally keeps the full group since it prices against paid
-    // baselines, not vendor quotes.
-    const targetGroup =
-      EXCLUDED_TARGET_VENDOR_IDS.size > 0
-        ? {
-            ...c,
-            offers: c.offers.filter(
-              (o) => !EXCLUDED_TARGET_VENDOR_IDS.has(o.vendorId),
-            ),
-          }
-        : c
 
     // ---- Lens 1: BY LOCATION (same exact product, cheaper at another site) --
     // For each specific product bought at more than one site, use the lowest
@@ -273,7 +252,7 @@ export async function getAwSavingsAnalyses(): Promise<SavingsResult> {
     const totalPaidSpend = spendVol > 0 ? spendNum : null
 
     // ---- Lens 2: BY EQUIVALENT (present-state) ------------------------------
-    const equiv = computeEquivalentSavings(targetGroup, volumes)
+    const equiv = computeEquivalentSavings(c, volumes)
     let byEquivalent: EquivalentOpportunity | null = null
     if (equiv && equiv.totalSavings > 0) {
       const top = equiv.lines[0]
@@ -299,7 +278,7 @@ export async function getAwSavingsAnalyses(): Promise<SavingsResult> {
     // Blended paid $/unit across all sites with a trustworthy baseline, used as
     // the packaging-switch baseline (unchanged behavior; not the reported bug).
     const blendedPaidUnitCost = spendVol > 0 ? spendNum / spendVol : null
-    const comparableOffers = targetGroup.offers.filter((o) => o.comparable)
+    const comparableOffers = c.offers.filter((o) => o.comparable)
     const familyMap = new Map<
       PackFamilyId,
       { cheapestPerUnit: number; cheapestLabel: string; offerCount: number }
