@@ -305,32 +305,126 @@ async function replaceExistingImportedVolume(opts: {
   await db.delete(purchaseVolumes).where(and(...conds))
 }
 
-export async function commitVolumeImport(
-  volumeImportId: number,
-): Promise<CommitVolumeResult> {
-  const { id: userId } = await requireEditor()
+// A single row's fields needed to roll it up to item level.
+type AggregatableRow = {
+  canonicalItemId: number | null
+  productId: number | null
+  annualVolume: string | null
+  baseUnit: string | null
+  baselineUnitCost: string | null
+  period: string | null
+}
 
-  const [imp] = await db
-    .select()
-    .from(volumeImports)
-    .where(eq(volumeImports.id, volumeImportId))
-  if (!imp) throw new Error('Volume import not found')
-  if (imp.status === 'committed') {
-    throw new Error('This volume import has already been committed')
+type AggregatedVolume = {
+  canonicalItemId: number | null
+  productId: number | null
+  annualVolume: string
+  baseUnit: string | null
+  baselineUnitCost: string | null
+  period: string | null
+  // How many detailed rows collapsed into this summary.
+  sourceRowCount: number
+}
+
+// Roll detailed rows up to one summary per matched item + period. This is the
+// core of turning line-item purchasing history into the SKU-level summary the
+// rest of the app expects: quantities are SUMMED and the average unit cost is
+// VOLUME-WEIGHTED across the detailed lines (so a big-volume, low-cost month
+// dominates the blended baseline correctly). Cost weighting only counts volume
+// that actually carries a cost, so rows with a blank cost don't drag the
+// average toward zero. The grouping key deliberately matches
+// replaceExistingImportedVolume's key (item + period, ignoring base unit) so a
+// single delete+insert per group can't clobber a sibling group.
+function aggregateVolumeRows(
+  rows: AggregatableRow[],
+  defaultPeriod: string | null,
+): AggregatedVolume[] {
+  const groups = new Map<
+    string,
+    {
+      canonicalItemId: number | null
+      productId: number | null
+      period: string | null
+      baseUnit: string | null
+      totalVolume: number
+      costWeightedNum: number
+      costWeightedDen: number
+      count: number
+    }
+  >()
+
+  for (const r of rows) {
+    const vol = Number(r.annualVolume)
+    if (!Number.isFinite(vol) || vol <= 0) continue
+    const period = r.period?.trim() || defaultPeriod || null
+    const itemKey =
+      r.canonicalItemId !== null
+        ? `c:${r.canonicalItemId}`
+        : `p:${r.productId}`
+    const key = `${itemKey}|${period ?? ''}`
+
+    let g = groups.get(key)
+    if (!g) {
+      g = {
+        canonicalItemId: r.canonicalItemId,
+        productId: r.productId,
+        period,
+        baseUnit: r.baseUnit,
+        totalVolume: 0,
+        costWeightedNum: 0,
+        costWeightedDen: 0,
+        count: 0,
+      }
+      groups.set(key, g)
+    }
+
+    g.totalVolume += vol
+    if (!g.baseUnit && r.baseUnit) g.baseUnit = r.baseUnit
+    const cost =
+      r.baselineUnitCost !== null && r.baselineUnitCost !== ''
+        ? Number(r.baselineUnitCost)
+        : null
+    if (cost !== null && Number.isFinite(cost)) {
+      g.costWeightedNum += vol * cost
+      g.costWeightedDen += vol
+    }
+    g.count++
   }
-  if (!imp.locationId) {
-    throw new Error('This volume import has no location and cannot be committed')
-  }
-  const locationId = imp.locationId
+
+  return [...groups.values()].map((g) => ({
+    canonicalItemId: g.canonicalItemId,
+    productId: g.productId,
+    annualVolume: g.totalVolume.toFixed(2),
+    baseUnit: g.baseUnit,
+    baselineUnitCost:
+      g.costWeightedDen > 0
+        ? (g.costWeightedNum / g.costWeightedDen).toFixed(4)
+        : null,
+    period: g.period,
+    sourceRowCount: g.count,
+  }))
+}
+
+// Shared writer for both the initial commit and a re-sync: filter the staging
+// rows down to the ones that can weight a comparison, roll them up to item
+// level, and write one purchase_volumes row per item + period. Returns the
+// standard tally, where `committed` is the number of summary volumes written.
+async function writeVolumesFromRows(opts: {
+  userId: string
+  volumeImportId: number
+  locationId: number
+  defaultPeriod: string | null
+}): Promise<CommitVolumeResult> {
+  const { userId, volumeImportId, locationId, defaultPeriod } = opts
 
   const rows = await db
     .select()
     .from(volumeImportRows)
     .where(eq(volumeImportRows.volumeImportId, volumeImportId))
 
-  let committed = 0
   let skipped = 0
   let unmatched = 0
+  const eligible: AggregatableRow[] = []
 
   for (const r of rows) {
     if (!r.include) {
@@ -350,44 +444,83 @@ export async function commitVolumeImport(
       skipped++
       continue
     }
-
-    const period = r.period?.trim() || imp.defaultPeriod || null
-
-    await replaceExistingImportedVolume({
-      userId,
+    eligible.push({
       canonicalItemId: r.canonicalItemId,
       productId: r.productId,
-      locationId,
-      period,
-    })
-
-    await db.insert(purchaseVolumes).values({
-      userId,
-      canonicalItemId: r.canonicalItemId,
-      productId: r.productId,
-      locationId,
       annualVolume: r.annualVolume,
       baseUnit: r.baseUnit,
       baselineUnitCost: r.baselineUnitCost,
-      period,
+      period: r.period,
+    })
+  }
+
+  // Roll the detailed lines up to one summary per item + period before writing,
+  // so several detailed entries for the same SKU sum into a single volume
+  // instead of each delete+insert overwriting the last.
+  const summaries = aggregateVolumeRows(eligible, defaultPeriod)
+
+  for (const s of summaries) {
+    await replaceExistingImportedVolume({
+      userId,
+      canonicalItemId: s.canonicalItemId,
+      productId: s.productId,
+      locationId,
+      period: s.period,
+    })
+    await db.insert(purchaseVolumes).values({
+      userId,
+      canonicalItemId: s.canonicalItemId,
+      productId: s.productId,
+      locationId,
+      annualVolume: s.annualVolume,
+      baseUnit: s.baseUnit,
+      baselineUnitCost: s.baselineUnitCost,
+      period: s.period,
       source: 'import',
     })
-    committed++
   }
+
+  return { committed: summaries.length, skipped, unmatched }
+}
+
+export async function commitVolumeImport(
+  volumeImportId: number,
+): Promise<CommitVolumeResult> {
+  const { id: userId } = await requireEditor()
+
+  const [imp] = await db
+    .select()
+    .from(volumeImports)
+    .where(eq(volumeImports.id, volumeImportId))
+  if (!imp) throw new Error('Volume import not found')
+  if (imp.status === 'committed') {
+    throw new Error('This volume import has already been committed')
+  }
+  if (!imp.locationId) {
+    throw new Error('This volume import has no location and cannot be committed')
+  }
+  const locationId = imp.locationId
+
+  const result = await writeVolumesFromRows({
+    userId,
+    volumeImportId,
+    locationId,
+    defaultPeriod: imp.defaultPeriod,
+  })
 
   await db
     .update(volumeImports)
     .set({
       status: 'committed',
       committedAt: new Date(),
-      rowCount: committed,
+      rowCount: result.committed,
     })
     .where(eq(volumeImports.id, volumeImportId))
 
   revalidatePath('/volumes')
   revalidatePath('/compare')
   revalidatePath('/')
-  return { committed, skipped, unmatched }
+  return result
 }
 
 // Re-push an already-committed import's current confirmed matches into
@@ -414,63 +547,138 @@ export async function resyncCommittedVolumeImport(
   }
   const locationId = imp.locationId
 
-  const rows = await db
-    .select()
-    .from(volumeImportRows)
-    .where(eq(volumeImportRows.volumeImportId, volumeImportId))
-
-  let committed = 0
-  let skipped = 0
-  let unmatched = 0
-
-  for (const r of rows) {
-    if (!r.include) {
-      skipped++
-      continue
-    }
-    const hasMatch = r.canonicalItemId !== null || r.productId !== null
-    const isConfirmed =
-      r.matchStatus === 'confirmed' || r.matchStatus === 'suggested'
-    if (!hasMatch || !isConfirmed) {
-      unmatched++
-      continue
-    }
-    if (r.annualVolume === null || Number(r.annualVolume) <= 0) {
-      skipped++
-      continue
-    }
-
-    const period = r.period?.trim() || imp.defaultPeriod || null
-
-    await replaceExistingImportedVolume({
-      userId,
-      canonicalItemId: r.canonicalItemId,
-      productId: r.productId,
-      locationId,
-      period,
-    })
-
-    await db.insert(purchaseVolumes).values({
-      userId,
-      canonicalItemId: r.canonicalItemId,
-      productId: r.productId,
-      locationId,
-      annualVolume: r.annualVolume,
-      baseUnit: r.baseUnit,
-      baselineUnitCost: r.baselineUnitCost,
-      period,
-      source: 'import',
-    })
-    committed++
-  }
+  const result = await writeVolumesFromRows({
+    userId,
+    volumeImportId,
+    locationId,
+    defaultPeriod: imp.defaultPeriod,
+  })
 
   await db
     .update(volumeImports)
-    .set({ rowCount: committed })
+    .set({ rowCount: result.committed })
     .where(eq(volumeImports.id, volumeImportId))
 
   revalidatePath('/volumes')
   revalidatePath('/compare')
   revalidatePath('/')
-  return { committed, skipped, unmatched }
+  return result
+}
+
+export type RollupResult = {
+  // Detailed rows removed by merging into a summary row.
+  merged: number
+  // Number of summary rows that absorbed at least one sibling.
+  groups: number
+  rows: (typeof volumeImportRows.$inferSelect)[]
+}
+
+// Collapse the detailed staging rows in place so the review table shows one
+// summary row per matched item + period. This is the visible counterpart to
+// the roll-up the writer applies at commit: several line-item entries for the
+// same SKU (e.g. monthly transactions) become a single row with the summed
+// quantity and the volume-weighted average unit cost, so the imported data
+// lines up with previously entered summary volumes before it is applied.
+//
+// Only include+matched rows carrying a positive quantity are eligible;
+// excluded, unmatched, or zero-quantity rows are left exactly as they are so a
+// reviewer never loses data they still need to fix. Applied to a pending import
+// only — a committed import's rows feed re-sync and are aggregated there.
+export async function rollupVolumeImport(
+  volumeImportId: number,
+): Promise<RollupResult> {
+  await requireEditor()
+
+  const [imp] = await db
+    .select()
+    .from(volumeImports)
+    .where(eq(volumeImports.id, volumeImportId))
+  if (!imp) throw new Error('Volume import not found')
+  if (imp.status === 'committed') {
+    throw new Error('A committed volume import cannot be rolled up')
+  }
+
+  const rows = await db
+    .select()
+    .from(volumeImportRows)
+    .where(eq(volumeImportRows.volumeImportId, volumeImportId))
+    .orderBy(volumeImportRows.id)
+
+  // Bucket eligible rows by item + period; everything else is untouched.
+  const groups = new Map<string, (typeof rows)[number][]>()
+  for (const r of rows) {
+    const hasMatch = r.canonicalItemId !== null || r.productId !== null
+    const eligible =
+      r.include &&
+      hasMatch &&
+      r.annualVolume !== null &&
+      Number(r.annualVolume) > 0
+    if (!eligible) continue
+    const period = r.period?.trim() || imp.defaultPeriod || null
+    const itemKey =
+      r.canonicalItemId !== null
+        ? `c:${r.canonicalItemId}`
+        : `p:${r.productId}`
+    const key = `${itemKey}|${period ?? ''}`
+    const bucket = groups.get(key)
+    if (bucket) bucket.push(r)
+    else groups.set(key, [r])
+  }
+
+  let merged = 0
+  let mergedGroups = 0
+
+  for (const bucket of groups.values()) {
+    if (bucket.length <= 1) continue
+
+    // Sum quantity and volume-weight the unit cost across the bucket.
+    let totalVolume = 0
+    let costWeightedNum = 0
+    let costWeightedDen = 0
+    let baseUnit: string | null = null
+    for (const r of bucket) {
+      const vol = Number(r.annualVolume)
+      totalVolume += vol
+      if (!baseUnit && r.baseUnit) baseUnit = r.baseUnit
+      const cost =
+        r.baselineUnitCost !== null && r.baselineUnitCost !== ''
+          ? Number(r.baselineUnitCost)
+          : null
+      if (cost !== null && Number.isFinite(cost)) {
+        costWeightedNum += vol * cost
+        costWeightedDen += vol
+      }
+    }
+
+    const keep = bucket[0]
+    const removeIds = bucket.slice(1).map((r) => r.id)
+
+    await db
+      .update(volumeImportRows)
+      .set({
+        annualVolume: totalVolume.toFixed(2),
+        baseUnit: baseUnit ?? keep.baseUnit,
+        baselineUnitCost:
+          costWeightedDen > 0
+            ? (costWeightedNum / costWeightedDen).toFixed(4)
+            : null,
+      })
+      .where(eq(volumeImportRows.id, keep.id))
+
+    await db
+      .delete(volumeImportRows)
+      .where(inArray(volumeImportRows.id, removeIds))
+
+    merged += removeIds.length
+    mergedGroups++
+  }
+
+  const updatedRows = await db
+    .select()
+    .from(volumeImportRows)
+    .where(eq(volumeImportRows.volumeImportId, volumeImportId))
+    .orderBy(volumeImportRows.id)
+
+  revalidatePath('/volumes')
+  return { merged, groups: mergedGroups, rows: updatedRows }
 }
