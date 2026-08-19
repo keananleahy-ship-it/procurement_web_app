@@ -62,13 +62,23 @@ export function SavingsView({ result }: { result: SavingsResult }) {
   const [excluded, setExcluded] = useState<Set<number>>(
     () => new Set(result.excludedVendorIds),
   )
+  const [sourcing, setSourcing] = useState<'cross-site' | 'within-site'>(
+    result.equivalentSourcing,
+  )
   const [pending, startTransition] = useTransition()
 
-  const recompute = (next: Set<number>) => {
-    setExcluded(next)
-    const ids = [...next]
+  const recompute = (
+    nextExcluded: Set<number>,
+    nextSourcing: 'cross-site' | 'within-site' = sourcing,
+  ) => {
+    setExcluded(nextExcluded)
+    setSourcing(nextSourcing)
+    const ids = [...nextExcluded]
     startTransition(async () => {
-      const r = await getAwSavingsAnalyses({ excludedVendorIds: ids })
+      const r = await getAwSavingsAnalyses({
+        excludedVendorIds: ids,
+        equivalentSourcing: nextSourcing,
+      })
       setData(r)
     })
   }
@@ -89,6 +99,11 @@ export function SavingsView({ result }: { result: SavingsResult }) {
         excluded={excluded}
         onToggle={toggleVendor}
         onReset={() => recompute(new Set())}
+        pending={pending}
+      />
+      <SourcingToggle
+        sourcing={sourcing}
+        onChange={(mode) => recompute(excluded, mode)}
         pending={pending}
       />
       {items.length === 0 ? (
@@ -190,6 +205,74 @@ function VendorToggleBar({
         three lenses and re-sizes every opportunity. Purchased volume is
         unchanged.
       </p>
+    </Card>
+  )
+}
+
+function SourcingToggle({
+  sourcing,
+  onChange,
+  pending,
+}: {
+  sourcing: 'cross-site' | 'within-site'
+  onChange: (mode: 'cross-site' | 'within-site') => void
+  pending: boolean
+}) {
+  const options: {
+    id: 'cross-site' | 'within-site'
+    label: string
+    hint: string
+  }[] = [
+    {
+      id: 'cross-site',
+      label: 'Cross-site',
+      hint: 'source the equivalent from any location',
+    },
+    {
+      id: 'within-site',
+      label: 'Within site',
+      hint: 'only equivalents available at the buying site',
+    },
+  ]
+  const active = options.find((o) => o.id === sourcing) ?? options[0]
+  return (
+    <Card className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <GitCompareArrows className="size-4" />
+        <span className="text-xs font-semibold uppercase tracking-wide">
+          Equivalent sourcing
+        </span>
+        <span className="text-[0.625rem] text-muted-foreground/70">
+          {active.hint}
+        </span>
+      </div>
+      <div
+        role="radiogroup"
+        aria-label="By Equivalent sourcing scope"
+        className="inline-flex shrink-0 rounded-full border border-border bg-muted p-0.5"
+      >
+        {options.map((o) => {
+          const on = o.id === sourcing
+          return (
+            <button
+              key={o.id}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              disabled={pending}
+              onClick={() => !on && onChange(o.id)}
+              className={cn(
+                'rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:opacity-70',
+                on
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {o.label}
+            </button>
+          )
+        })}
+      </div>
     </Card>
   )
 }
@@ -392,17 +475,32 @@ function SiteRow({
   volume,
   unit,
   opportunity,
+  source,
 }: {
   name: string
   volume: number
   unit: string
   opportunity?: number
+  // where the equivalent this site would switch to is sourced from; when it
+  // matches the site itself (within-site) we show "on-site" instead
+  source?: string | null
 }) {
+  const sourceLabel =
+    source === undefined
+      ? null
+      : source === null || source === name
+        ? 'on-site'
+        : `from ${source}`
   return (
     <li className="flex items-center justify-between gap-2 py-0.5 text-[0.6875rem] tabular-nums text-muted-foreground">
       <span className="flex items-center gap-1 truncate">
         <MapPin className="size-2.5 shrink-0 text-muted-foreground/50" />
         <span className="truncate text-foreground">{name}</span>
+        {sourceLabel && (
+          <span className="shrink-0 rounded-sm bg-muted px-1 text-[0.5625rem] font-medium normal-case text-muted-foreground/80">
+            {sourceLabel}
+          </span>
+        )}
       </span>
       <span className="shrink-0">
         {formatNumber(Math.round(volume))} {unit}
@@ -604,6 +702,7 @@ function EquivalentLens({
                               volume={l.annualVolume}
                               unit={unit}
                               opportunity={l.opportunity}
+                              source={l.sourceLocationName}
                             />
                           ))}
                         </ul>

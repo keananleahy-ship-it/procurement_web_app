@@ -59,6 +59,12 @@ export type EquivalentLine = {
     locationName: string
     annualVolume: number
     opportunity: number
+    // the like-for-like target this specific site is compared against, and the
+    // location that target is sourced from — lets the drill-down show whether
+    // the opportunity comes from a within-site or a cross-site swap
+    equivalentUnitCost: number
+    equivalentProductName: string
+    sourceLocationName: string | null
   }[]
 }
 
@@ -82,12 +88,17 @@ export type EquivalentSavings = {
 export function computeEquivalentSavings(
   group: ProductComparison,
   volumes: VolumeMaps,
+  // 'cross-site' (default): a site's like-for-like target can be sourced from
+  // ANY location. 'within-site': the target must be available at that site's
+  // own location (its FOB origin), or be a network-wide offer.
+  sourcing: 'cross-site' | 'within-site' = 'cross-site',
 ): EquivalentSavings | null {
   if (!group.isCanonical || group.canonicalItemId === null) return null
   const byProd = volumes.byCanonicalProduct.get(group.canonicalItemId)
   if (!byProd || byProd.size === 0) return null
 
-  // Best credible current price per pack family within this group.
+  // Best credible current price per pack family within this group (network-wide,
+  // ignoring location — used to decide whether a like-for-like swap exists).
   const credible = credibleOfferPrices(group.offers)
   const bestByFamily = new Map<PackFamilyId, PriceRow>()
   for (const o of credible) {
@@ -96,6 +107,31 @@ export function computeEquivalentSavings(
     if (!cur || o.comparablePricePerBaseUnit < cur.comparablePricePerBaseUnit) {
       bestByFamily.set(fam, o)
     }
+  }
+
+  // Cheapest credible like-packaged offer for a given family as seen by a
+  // specific buying site. In within-site mode only offers whose FOB origin is
+  // that site (or a network-wide offer) qualify; cross-site sees everything.
+  const bestFamilyForSite = (
+    fam: PackFamilyId,
+    locationId: number | null,
+  ): PriceRow | undefined => {
+    let best: PriceRow | undefined
+    for (const o of credible) {
+      if (packFamily(o.packSize, o.baseUnit) !== fam) continue
+      if (
+        sourcing === 'within-site' &&
+        o.locationId !== null &&
+        o.locationId !== locationId
+      )
+        continue
+      if (
+        !best ||
+        o.comparablePricePerBaseUnit < best.comparablePricePerBaseUnit
+      )
+        best = o
+    }
+    return best
   }
   // Current quote per product (cheapest credible offer for that product).
   const currentByProduct = new Map<number, PriceRow>()
@@ -165,19 +201,47 @@ export function computeEquivalentSavings(
       continue
     }
 
-    // Best credible alternative in the SAME pack family. If none exists for
-    // that family, this line has no valid like-for-like swap, so no savings.
-    const bestAlt = bestByFamily.get(packFam)
-    if (!bestAlt) {
+    // If no like-for-like swap exists ANYWHERE for this family, the line has no
+    // valid equivalent regardless of sourcing mode, so no savings.
+    if (!bestByFamily.get(packFam)) {
       unpricedVolume += vol
       continue
     }
     pricedVolume += vol
-    const savings = Math.max(
-      0,
-      (presentUnitCost - bestAlt.comparablePricePerBaseUnit) * vol,
-    )
+
+    // Evaluate each buying site against the cheapest like-packaged equivalent
+    // available TO THAT SITE (network-wide in cross-site mode; same-location in
+    // within-site mode). A site with no qualifying local option simply shows no
+    // opportunity rather than dropping out.
+    const srcName = (o: PriceRow): string | null =>
+      o.locationId !== null
+        ? (volumes.locationNames.get(o.locationId) ?? null)
+        : null
+    const locationsOut = locVols
+      .map((l) => {
+        const target = bestFamilyForSite(packFam, l.locationId)
+        const targetUnit = target
+          ? target.comparablePricePerBaseUnit
+          : presentUnitCost
+        return {
+          locationId: l.locationId,
+          locationName: volumes.locationNames.get(l.locationId) ?? 'Unassigned',
+          annualVolume: l.annualVolume,
+          opportunity: Math.max(0, (presentUnitCost - targetUnit) * l.annualVolume),
+          equivalentUnitCost: targetUnit,
+          equivalentProductName: target ? target.productName : '—',
+          sourceLocationName: target ? srcName(target) : null,
+        }
+      })
+      .sort((a, b) => b.annualVolume - a.annualVolume)
+
+    const savings = locationsOut.reduce((s, l) => s + l.opportunity, 0)
     totalSavings += savings
+    // Line-level target: the one driving the largest-volume site that actually
+    // has a swap (matches the global best in cross-site mode).
+    const rep =
+      locationsOut.find((l) => l.equivalentProductName !== '—') ??
+      locationsOut[0]
     lines.push({
       productId,
       productName: productName.get(productId) ?? `Product ${productId}`,
@@ -185,19 +249,10 @@ export function computeEquivalentSavings(
       annualVolume: vol,
       presentUnitCost,
       presentBasis,
-      bestEquivalentUnitCost: bestAlt.comparablePricePerBaseUnit,
-      bestEquivalentProductName: bestAlt.productName,
+      bestEquivalentUnitCost: rep?.equivalentUnitCost ?? presentUnitCost,
+      bestEquivalentProductName: rep?.equivalentProductName ?? '—',
       savings,
-      // Distribute the line's savings across its sites in proportion to the
-      // volume each site bought (the per-unit spread is the same everywhere).
-      locations: locVols
-        .map((l) => ({
-          locationId: l.locationId,
-          locationName: volumes.locationNames.get(l.locationId) ?? 'Unassigned',
-          annualVolume: l.annualVolume,
-          opportunity: vol > 0 ? savings * (l.annualVolume / vol) : 0,
-        }))
-        .sort((a, b) => b.annualVolume - a.annualVolume),
+      locations: locationsOut,
     })
   }
 

@@ -140,6 +140,9 @@ export type SavingsResult = {
   // plus which ones are currently excluded, so the UI can render the toggles
   vendors: VendorRef[]
   excludedVendorIds: number[]
+  // active By Equivalent sourcing mode, echoed back so the UI toggle can
+  // reflect the state the numbers were computed under
+  equivalentSourcing: 'cross-site' | 'within-site'
 }
 
 const familyLabel = (id: PackFamilyId) =>
@@ -175,9 +178,14 @@ const productLineKey = (name: string): string =>
 // comparison engine (offers, best/worst, per-location volume) and the paid
 // baselines from purchase volumes; no pricing math is redefined here.
 export async function getAwSavingsAnalyses(
-  opts?: { excludedVendorIds?: number[] },
+  opts?: {
+    excludedVendorIds?: number[]
+    equivalentSourcing?: 'cross-site' | 'within-site'
+  },
 ): Promise<SavingsResult> {
   await requireUser()
+
+  const equivalentSourcing = opts?.equivalentSourcing ?? 'cross-site'
 
   const [comparisons, volumes] = await Promise.all([
     getProductComparisons(),
@@ -439,7 +447,7 @@ export async function getAwSavingsAnalyses(
     const totalPaidSpend = spendVol > 0 ? spendNum : null
 
     // ---- Lens 2: BY EQUIVALENT (present-state) ------------------------------
-    const equiv = computeEquivalentSavings(c, volumes)
+    const equiv = computeEquivalentSavings(c, volumes, equivalentSourcing)
     let byEquivalent: EquivalentOpportunity | null = null
     if (equiv && equiv.totalSavings > 0) {
       const top = equiv.lines[0]
@@ -623,5 +631,6 @@ export async function getAwSavingsAnalyses(
     },
     vendors,
     excludedVendorIds,
+    equivalentSourcing,
   }
 }
