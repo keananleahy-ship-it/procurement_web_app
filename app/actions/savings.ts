@@ -422,6 +422,20 @@ export async function getAwSavingsAnalyses(
       (s, r) => s + r.opportunity,
       0,
     )
+    if (canonicalItemId === 416) {
+      console.log(
+        '[v0] 416 byLocationTotal=',
+        byLocationTotal,
+        'lines=',
+        JSON.stringify(
+          byLocationLines.map((l) => ({
+            n: l.productName,
+            opp: l.opportunity,
+            sites: l.sites.map((s) => `${s.locationName}:${s.opportunity}`),
+          })),
+        ),
+      )
+    }
     // Legacy per-location aggregate (kept for existing callers): roll the
     // per-product cross-site opportunity up to each dearer site.
     const locAgg = new Map<number | null, LocationOpportunity>()
