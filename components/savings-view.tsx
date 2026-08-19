@@ -51,7 +51,7 @@ const LENS = {
   packaging: {
     label: 'By Packaging',
     icon: Boxes,
-    blurb: 'Shift to a lower-cost pack format',
+    blurb: 'Same product bought in a pricier container than a cheaper format',
   },
 } as const
 
@@ -789,14 +789,14 @@ function PackagingLens({
         </ul>
       )}
       <p className="mt-2 text-[0.625rem] text-muted-foreground/70 tabular-nums">
-        {data.blendedPaidUnitCost !== null ? (
+        {data.options.length > 1 ? (
           <>
-            Blended paid {formatCurrency(data.blendedPaidUnitCost)}/{unit} →{' '}
-            {data.cheapestFamilyLabel} {formatCurrency(data.cheapestPerUnit)}/
-            {unit}
+            Cheapest container: {data.cheapestFamilyLabel}{' '}
+            {formatCurrency(data.cheapestPerUnit)}/{unit}. Rates by container
+            above; expand to see which volume can move to it.
           </>
         ) : (
-          'No paid baseline on file to size the switch.'
+          'Only one container format on file — no packaging switch to size.'
         )}
       </p>
 
@@ -816,33 +816,48 @@ function PackagingLens({
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="flex items-center gap-1 text-xs font-medium text-foreground">
-                        {row.familyLabel}
-                        {row.isCheapestFamily && (
-                          <span className="text-[0.625rem] font-normal text-primary/80">
-                            cheapest
+                      {row.targetFamily ? (
+                        <p className="flex items-center gap-1 text-xs font-medium text-foreground">
+                          <span>{row.familyLabel}</span>
+                          <ArrowRight className="size-3 shrink-0 text-primary" />
+                          <span className="text-primary">
+                            {row.targetFamilyLabel}
                           </span>
-                        )}
-                      </p>
+                        </p>
+                      ) : (
+                        <p className="flex items-center gap-1 text-xs font-medium text-foreground">
+                          {row.familyLabel}
+                          <span className="text-[0.625rem] font-normal text-muted-foreground/70">
+                            lowest-cost container
+                          </span>
+                        </p>
+                      )}
                       <p className="text-[0.625rem] tabular-nums text-muted-foreground/70">
                         {formatNumber(Math.round(row.annualVolume))} {unit}/yr
-                        {row.blendedPaidUnitCost !== null && (
+                        {row.currentBestPerUnit !== null && (
                           <>
-                            {' · '}paid{' '}
-                            {formatCurrency(row.blendedPaidUnitCost)}/{unit}
+                            {' · '}
+                            {formatCurrency(row.currentBestPerUnit)}/{unit} here
+                          </>
+                        )}
+                        {row.targetPerUnit !== null && (
+                          <>
+                            {' → '}
+                            {formatCurrency(row.targetPerUnit)}/{unit}
                           </>
                         )}
                       </p>
                     </div>
-                    {row.cheapestPerUnit !== null && (
-                      <span className="shrink-0 text-right text-[0.625rem] tabular-nums text-muted-foreground">
-                        best {formatCurrency(row.cheapestPerUnit)}/{unit}
+                    {row.opportunity > 0 && (
+                      <span className="shrink-0 text-right text-xs font-semibold tabular-nums text-primary">
+                        {formatCurrency(row.opportunity)}
                       </span>
                     )}
                   </div>
-                  {row.cheapestLabel && (
+                  {row.targetLabel && (
                     <p className="mt-0.5 truncate text-[0.625rem] text-muted-foreground/70">
-                      switch to: {row.cheapestLabel}
+                      switch to: {row.targetLabel} ({row.targetOfferCount}{' '}
+                      {row.targetOfferCount === 1 ? 'quote' : 'quotes'})
                     </p>
                   )}
                   {row.products.length > 0 && (

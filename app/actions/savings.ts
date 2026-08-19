@@ -71,9 +71,11 @@ export type EquivalentOpportunity = {
   lines: EquivalentSavings['lines']
 }
 
-// Lens 3: the item is offered in several pack formats at very different $/unit.
-// Opportunity = gap between blended paid cost and the cheapest pack family,
-// times annual volume (null when there is no trustworthy paid baseline).
+// Lens 3: the SAME (like-for-like) product is bought in a pricier container than
+// an available cheaper container format — e.g. drums that could be bulk. For
+// each container a customer actually buys in, we recommend the cheapest cheaper
+// container available for the item and value the switchable volume at the
+// per-unit container premium. Opportunity = sum of those per-container premiums.
 export type PackOption = {
   family: PackFamilyId
   familyLabel: string
@@ -89,21 +91,32 @@ export type PackagingSiteRow = {
   locationName: string
   annualVolume: number
 }
-// One purchased pack family with the products AND sites that make it up, so the
-// packaging tile explains what is actually being bought (and where) behind each
-// finding — not just an anonymous volume total.
+// One container the customer actually buys the item in, with the cheaper
+// container we recommend switching that volume to (when one exists) and the
+// products/sites behind it, so every finding is "you buy X in drums, buy it in
+// bulk instead" rather than an anonymous volume total.
 export type PackagingBreakdownRow = {
   family: PackFamilyId
   familyLabel: string
   annualVolume: number
   blendedPaidUnitCost: number | null
+  // best comparable rate available IN THIS container — the baseline the switch
+  // is measured against, so the delta is a pure container premium (brand-level
+  // overpay within the container belongs to the other lenses). Falls back to
+  // blended paid when the container has no comparable offer on file.
+  currentBestPerUnit: number | null
+  // true when this container is already the item's cheapest format (no switch)
   isCheapestFamily: boolean
-  // concrete offer (vendor — product) achieving this family's cheapest per-unit
-  // price: the thing a buyer would switch TO. Null when the family has no
-  // comparable offer on file (purchased but never quoted).
-  cheapestLabel: string | null
-  cheapestPerUnit: number | null
-  // the distinct products purchased in this family, each with its own site
+  // recommended cheaper container for this volume; null when none is cheaper
+  targetFamily: PackFamilyId | null
+  targetFamilyLabel: string | null
+  targetPerUnit: number | null
+  targetLabel: string | null
+  targetOfferCount: number
+  // per-unit container premium and its annual value for this container's volume
+  savingsPerUnit: number
+  opportunity: number
+  // the distinct products purchased in this container, each with its own site
   // split, so the finding names the SKUs involved rather than a bare number
   products: {
     productId: number
@@ -122,7 +135,7 @@ export type PackagingOpportunity = {
   cheapestPerUnit: number
   options: PackOption[]
   opportunity: number | null
-  // purchased volume grouped by pack family (with per-site split)
+  // per-container switch findings (with per-product and per-site split)
   breakdown: PackagingBreakdownRow[]
 }
 
@@ -605,15 +618,50 @@ export async function getAwSavingsAnalyses(
     const breakdown: PackagingBreakdownRow[] = [...famAgg.entries()]
       .map(([family, agg]) => {
         const famOffer = familyMap.get(family)
+        const famPaid = agg.paidDen > 0 ? agg.paidNum / agg.paidDen : null
+        // Baseline = best comparable rate in THIS container (isolates the pure
+        // container premium); fall back to what they actually paid here when the
+        // container has no comparable offer on file.
+        const currentBestPerUnit = famOffer ? famOffer.cheapestPerUnit : famPaid
+        // Recommend the cheapest OTHER container that beats the current rate.
+        let target: {
+          family: PackFamilyId
+          perUnit: number
+          label: string
+          offerCount: number
+        } | null = null
+        if (currentBestPerUnit !== null) {
+          for (const [f2, v2] of familyMap) {
+            if (f2 === family) continue
+            if (v2.cheapestPerUnit >= currentBestPerUnit) continue
+            if (!target || v2.cheapestPerUnit < target.perUnit) {
+              target = {
+                family: f2,
+                perUnit: v2.cheapestPerUnit,
+                label: v2.cheapestLabel,
+                offerCount: v2.offerCount,
+              }
+            }
+          }
+        }
+        const savingsPerUnit =
+          currentBestPerUnit !== null && target
+            ? Math.max(0, currentBestPerUnit - target.perUnit)
+            : 0
         return {
           family,
           familyLabel: familyLabel(family),
           annualVolume: agg.annualVolume,
-          blendedPaidUnitCost:
-            agg.paidDen > 0 ? agg.paidNum / agg.paidDen : null,
+          blendedPaidUnitCost: famPaid,
+          currentBestPerUnit,
           isCheapestFamily: family === cheapestFamilyId,
-          cheapestLabel: famOffer ? famOffer.cheapestLabel : null,
-          cheapestPerUnit: famOffer ? famOffer.cheapestPerUnit : null,
+          targetFamily: target ? target.family : null,
+          targetFamilyLabel: target ? familyLabel(target.family) : null,
+          targetPerUnit: target ? target.perUnit : null,
+          targetLabel: target ? target.label : null,
+          targetOfferCount: target ? target.offerCount : 0,
+          savingsPerUnit,
+          opportunity: savingsPerUnit * agg.annualVolume,
           products: [...agg.products.entries()]
             .map(([productId, p]) => ({
               productId,
@@ -628,7 +676,8 @@ export async function getAwSavingsAnalyses(
           locations: siteRows(agg.locations),
         }
       })
-      .sort((a, b) => b.annualVolume - a.annualVolume)
+      // biggest container-switch opportunity first; ties fall back to volume
+      .sort((a, b) => b.opportunity - a.opportunity || b.annualVolume - a.annualVolume)
 
     const byPackaging: PackagingOpportunity = {
       annualVolume: c.annualVolume,
@@ -637,10 +686,8 @@ export async function getAwSavingsAnalyses(
       cheapestFamilyLabel: cheapest ? familyLabel(cheapest[0]) : '—',
       cheapestPerUnit,
       options,
-      opportunity:
-        blendedPaidUnitCost !== null && cheapest
-          ? Math.max(0, blendedPaidUnitCost - cheapestPerUnit) * c.annualVolume
-          : null,
+      // total container premium across every container the item is bought in
+      opportunity: breakdown.reduce((s, r) => s + r.opportunity, 0),
       breakdown,
     }
 
