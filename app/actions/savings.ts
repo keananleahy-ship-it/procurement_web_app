@@ -117,12 +117,21 @@ export type PackagingBreakdownRow = {
   savingsPerUnit: number
   opportunity: number
   // the distinct products purchased in this container, each with its own site
-  // split, so the finding names the SKUs involved rather than a bare number
+  // split, so the finding names the SKUs involved rather than a bare number.
+  // In same-product basis each product carries its OWN container switch (same
+  // branded line, cheaper pack), since the switch is product-specific there.
   products: {
     productId: number
     productName: string
     annualVolume: number
     blendedPaidUnitCost: number | null
+    // present rate and recommended cheaper container FOR THIS product line;
+    // null target when no cheaper same-line container is reachable
+    currentBestPerUnit: number | null
+    targetFamilyLabel: string | null
+    targetPerUnit: number | null
+    targetLabel: string | null
+    opportunity: number
     locations: PackagingSiteRow[]
   }[]
   locations: PackagingSiteRow[]
@@ -174,6 +183,10 @@ export type SavingsResult = {
   // active By Equivalent sourcing mode, echoed back so the UI toggle can
   // reflect the state the numbers were computed under
   equivalentSourcing: 'cross-site' | 'within-site'
+  // active By Packaging comparison basis: 'equivalent' allows a container
+  // switch to any like-for-like product; 'same-product' restricts it to the
+  // same branded product line (a pure packaging move, no brand change)
+  packagingBasis: 'equivalent' | 'same-product'
 }
 
 const familyLabel = (id: PackFamilyId) =>
@@ -212,11 +225,13 @@ export async function getAwSavingsAnalyses(
   opts?: {
     excludedVendorIds?: number[]
     equivalentSourcing?: 'cross-site' | 'within-site'
+    packagingBasis?: 'equivalent' | 'same-product'
   },
 ): Promise<SavingsResult> {
   await requireUser()
 
   const equivalentSourcing = opts?.equivalentSourcing ?? 'cross-site'
+  const packagingBasis = opts?.packagingBasis ?? 'equivalent'
 
   const [comparisons, volumes] = await Promise.all([
     getProductComparisons(),
@@ -578,6 +593,120 @@ export async function getAwSavingsAnalyses(
       return atSite ?? network
     }
 
+    // ---- Same-product basis ------------------------------------------------
+    // The same container rates, but keyed by product-LINE (brand + product
+    // family + spec, independent of packaging) so a container switch can be
+    // restricted to the SAME branded product — a pure packaging move with no
+    // brand change. Uses productLineKey, the same identity By Location uses.
+    const lineFamilyByLoc = new Map<
+      string,
+      Map<PackFamilyId, Map<number | null, FamLocOffer>>
+    >()
+    for (const o of comparableOffers) {
+      const plk = productLineKey(o.productName)
+      if (!plk) continue
+      const fam = packFamily(o.packSize, o.baseUnit)
+      const famMap =
+        lineFamilyByLoc.get(plk) ??
+        new Map<PackFamilyId, Map<number | null, FamLocOffer>>()
+      const byLoc = famMap.get(fam) ?? new Map<number | null, FamLocOffer>()
+      const cur = byLoc.get(o.locationId)
+      const label = offerLabel(o.vendorName, o.productName)
+      if (!cur) {
+        byLoc.set(o.locationId, {
+          cheapestPerUnit: o.comparablePricePerBaseUnit,
+          cheapestLabel: label,
+          offerCount: 1,
+        })
+      } else {
+        cur.offerCount++
+        if (o.comparablePricePerBaseUnit < cur.cheapestPerUnit) {
+          cur.cheapestPerUnit = o.comparablePricePerBaseUnit
+          cur.cheapestLabel = label
+        }
+      }
+      famMap.set(fam, byLoc)
+      lineFamilyByLoc.set(plk, famMap)
+    }
+    // Cheapest same-line offer in a container as seen by a site, honoring the
+    // sourcing toggle exactly like familyOfferForSite.
+    const lineOfferForSite = (
+      plk: string,
+      fam: PackFamilyId,
+      locationId: number | null,
+    ): FamLocOffer | undefined => {
+      const byLoc = lineFamilyByLoc.get(plk)?.get(fam)
+      if (!byLoc) return undefined
+      const network = byLoc.get(null)
+      if (equivalentSourcing === 'cross-site') {
+        // cheapest across every location this line is quoted in
+        let best: FamLocOffer | undefined
+        for (const v of byLoc.values()) {
+          if (!best || v.cheapestPerUnit < best.cheapestPerUnit) best = v
+        }
+        return best
+      }
+      const atSite = locationId !== null ? byLoc.get(locationId) : undefined
+      if (atSite && network)
+        return atSite.cheapestPerUnit <= network.cheapestPerUnit
+          ? atSite
+          : network
+      return atSite ?? network
+    }
+    // Mode-aware current-container rate for a product line at a site.
+    const currentRateForSite = (
+      plk: string,
+      fam: PackFamilyId,
+      locationId: number | null,
+    ): FamLocOffer | undefined =>
+      packagingBasis === 'same-product'
+        ? lineOfferForSite(plk, fam, locationId)
+        : familyOfferForSite(fam, locationId)
+    // Mode-aware cheapest cheaper-container target for a product line at a site.
+    const targetContainerForSite = (
+      plk: string,
+      fromFam: PackFamilyId,
+      locationId: number | null,
+      currentPerUnit: number,
+    ): { family: PackFamilyId; perUnit: number; label: string; offerCount: number } | null => {
+      const candidateFamilies: Iterable<PackFamilyId> =
+        packagingBasis === 'same-product'
+          ? (lineFamilyByLoc.get(plk)?.keys() ?? new Set<PackFamilyId>())
+          : familyByLoc.keys()
+      let best:
+        | { family: PackFamilyId; perUnit: number; label: string; offerCount: number }
+        | null = null
+      for (const f2 of candidateFamilies) {
+        if (f2 === fromFam) continue
+        const cand = currentRateForSite(plk, f2, locationId)
+        if (!cand || cand.cheapestPerUnit >= currentPerUnit) continue
+        if (!best || cand.cheapestPerUnit < best.perUnit) {
+          best = {
+            family: f2,
+            perUnit: cand.cheapestPerUnit,
+            label: cand.cheapestLabel,
+            offerCount: cand.offerCount,
+          }
+        }
+      }
+      return best
+    }
+    // Network-wide present rate in a container (stable across sites, like the
+    // By Equivalent baseline): any-product cheapest in equivalent basis, or the
+    // same product line's cheapest in same-product basis.
+    const presentRate = (plk: string, fam: PackFamilyId): number | null => {
+      if (packagingBasis === 'same-product') {
+        const byLoc = lineFamilyByLoc.get(plk)?.get(fam)
+        if (!byLoc) return null
+        let best: number | null = null
+        for (const v of byLoc.values())
+          if (best === null || v.cheapestPerUnit < best)
+            best = v.cheapestPerUnit
+        return best
+      }
+      return familyMap.get(fam)?.cheapestPerUnit ?? null
+    }
+
     const familyEntries = [...familyMap.entries()].sort(
       (a, b) => a[1].cheapestPerUnit - b[1].cheapestPerUnit,
     )
@@ -670,56 +799,96 @@ export async function getAwSavingsAnalyses(
       .map(([family, agg]) => {
         const famOffer = familyMap.get(family)
         const famPaid = agg.paidDen > 0 ? agg.paidNum / agg.paidDen : null
-        // Present rate = best comparable rate in THIS container network-wide
-        // (isolates the pure container premium and keeps the baseline stable
-        // across sourcing modes, matching the By Equivalent lens); fall back to
-        // paid when the container has no comparable offer on file.
-        const currentBestPerUnit = famOffer ? famOffer.cheapestPerUnit : famPaid
-        // Recommend the cheapest OTHER container that beats the present rate AND
-        // is reachable by the site under the active sourcing mode. Evaluated per
-        // site so within-site correctly drops sites with no local cheaper
-        // container; opportunity is the sum of each site's premium.
         type TargetPick = {
           family: PackFamilyId
           perUnit: number
           label: string
           offerCount: number
         }
-        const targetForSite = (locationId: number | null): TargetPick | null => {
-          if (currentBestPerUnit === null) return null
-          let best: TargetPick | null = null
-          for (const f2 of familyByLoc.keys()) {
-            if (f2 === family) continue
-            const cand = familyOfferForSite(f2, locationId)
-            if (!cand || cand.cheapestPerUnit >= currentBestPerUnit) continue
-            if (!best || cand.cheapestPerUnit < best.perUnit) {
-              best = {
-                family: f2,
-                perUnit: cand.cheapestPerUnit,
-                label: cand.cheapestLabel,
-                offerCount: cand.offerCount,
+        // Opportunity is computed per PRODUCT so the same-product basis can hold
+        // each product line to its own container switch. The present rate is
+        // network-wide (a stable baseline, like the By Equivalent lens); the
+        // cheaper-container target is site-aware so within-site correctly drops
+        // sites that can't source the cheaper pack locally.
+        let opportunity = 0
+        // family header representative = largest-volume product with a switch.
+        // Collected into an array (not closure-mutated lets) so the roll-up is
+        // computed cleanly after the per-product map.
+        const reps: { volume: number; target: TargetPick; present: number }[] =
+          []
+        const products = [...agg.products.entries()]
+          .map(([productId, p]) => {
+            const productName =
+              volumes.productNames.get(productId) ?? `Product ${productId}`
+            const plk = productLineKey(productName)
+            const prodPaid = p.paidDen > 0 ? p.paidNum / p.paidDen : null
+            const present =
+              presentRate(plk, family) ??
+              (packagingBasis === 'same-product' ? prodPaid : famPaid)
+            let prodOpp = 0
+            let prodTarget: TargetPick | null = null
+            let prodRepVol = -1
+            if (present !== null) {
+              for (const [locationId, vol] of p.locations) {
+                const t = targetContainerForSite(
+                  plk,
+                  family,
+                  locationId,
+                  present,
+                )
+                if (!t) continue
+                prodOpp += Math.max(0, present - t.perUnit) * vol
+                if (vol > prodRepVol) {
+                  prodRepVol = vol
+                  prodTarget = t
+                }
               }
             }
-          }
-          return best
-        }
-        let opportunity = 0
-        // Representative target for the row header: the one driving the
-        // largest-volume site that actually has a switch.
-        let target: TargetPick | null = null
-        let repVolume = -1
-        for (const [locationId, vol] of agg.locations) {
-          const t = targetForSite(locationId)
-          if (!t) continue
-          opportunity += Math.max(0, currentBestPerUnit! - t.perUnit) * vol
-          if (vol > repVolume) {
-            repVolume = vol
-            target = t
-          }
-        }
+            opportunity += prodOpp
+            if (prodTarget && present !== null) {
+              reps.push({
+                volume: p.annualVolume,
+                target: prodTarget,
+                present,
+              })
+            }
+            return {
+              productId,
+              productName,
+              annualVolume: p.annualVolume,
+              blendedPaidUnitCost: prodPaid,
+              currentBestPerUnit: present,
+              targetFamilyLabel: prodTarget
+                ? familyLabel(prodTarget.family)
+                : null,
+              targetPerUnit: prodTarget ? prodTarget.perUnit : null,
+              targetLabel: prodTarget ? prodTarget.label : null,
+              opportunity: prodOpp,
+              locations: siteRows(p.locations),
+            }
+          })
+          .sort(
+            (a, b) =>
+              b.opportunity - a.opportunity || b.annualVolume - a.annualVolume,
+          )
+
+        // Roll-up representative: the largest-volume product line that has a
+        // switch, driving the row header's target and present rate.
+        const rep =
+          reps.length > 0
+            ? reps.reduce((a, b) => (b.volume > a.volume ? b : a))
+            : null
+        // Header present rate: any-product family rate in equivalent basis; the
+        // representative product line's rate in same-product basis.
+        const currentBestPerUnit =
+          packagingBasis === 'same-product'
+            ? (rep?.present ?? (famOffer ? famOffer.cheapestPerUnit : famPaid))
+            : famOffer
+              ? famOffer.cheapestPerUnit
+              : famPaid
         const savingsPerUnit =
-          currentBestPerUnit !== null && target
-            ? Math.max(0, currentBestPerUnit - target.perUnit)
+          currentBestPerUnit !== null && rep
+            ? Math.max(0, currentBestPerUnit - rep.target.perUnit)
             : 0
         return {
           family,
@@ -728,24 +897,14 @@ export async function getAwSavingsAnalyses(
           blendedPaidUnitCost: famPaid,
           currentBestPerUnit,
           isCheapestFamily: family === cheapestFamilyId,
-          targetFamily: target ? target.family : null,
-          targetFamilyLabel: target ? familyLabel(target.family) : null,
-          targetPerUnit: target ? target.perUnit : null,
-          targetLabel: target ? target.label : null,
-          targetOfferCount: target ? target.offerCount : 0,
+          targetFamily: rep ? rep.target.family : null,
+          targetFamilyLabel: rep ? familyLabel(rep.target.family) : null,
+          targetPerUnit: rep ? rep.target.perUnit : null,
+          targetLabel: rep ? rep.target.label : null,
+          targetOfferCount: rep ? rep.target.offerCount : 0,
           savingsPerUnit,
           opportunity,
-          products: [...agg.products.entries()]
-            .map(([productId, p]) => ({
-              productId,
-              productName:
-                volumes.productNames.get(productId) ?? `Product ${productId}`,
-              annualVolume: p.annualVolume,
-              blendedPaidUnitCost:
-                p.paidDen > 0 ? p.paidNum / p.paidDen : null,
-              locations: siteRows(p.locations),
-            }))
-            .sort((a, b) => b.annualVolume - a.annualVolume),
+          products,
           locations: siteRows(agg.locations),
         }
       })
@@ -812,5 +971,6 @@ export async function getAwSavingsAnalyses(
     vendors,
     excludedVendorIds,
     equivalentSourcing,
+    packagingBasis,
   }
 }
