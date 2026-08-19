@@ -1,6 +1,7 @@
 'use server'
 
 import { getProductComparisons, loadVolumeMaps } from '@/app/actions/comparisons'
+import type { PriceRow } from '@/app/actions/comparisons'
 import {
   computeEquivalentSavings,
   type EquivalentSavings,
@@ -152,10 +153,45 @@ export async function getAwSavingsAnalyses(): Promise<SavingsResult> {
     const perLoc = volumes.byCanonical.get(canonicalItemId)
 
     // ---- Lens 1: BY LOCATION (same exact product, cheaper at another site) --
-    // For each specific product bought at more than one site, use the lowest
-    // in-network paid price as the target and total each dearer site's gap.
-    // This compares like-for-like (same product/package), not against a catalog
-    // quote or a different product.
+    // Both sides are valued at CURRENT pricing (not the historical average paid
+    // price). For each specific product bought at more than one site, each
+    // site's current unit cost is its live quote — a location-specific quote
+    // when one exists, otherwise the product's network-wide current quote — and
+    // the target is the cheapest current price among the participating sites.
+    // This compares like-for-like (same product/package). Where a product has a
+    // single current price network-wide, every site is equal and no location
+    // opportunity is credited.
+    const currentOffersByProduct = new Map<number, PriceRow[]>()
+    for (const o of c.offers) {
+      if (!o.comparable) continue
+      const arr = currentOffersByProduct.get(o.productId) ?? []
+      arr.push(o)
+      currentOffersByProduct.set(o.productId, arr)
+    }
+    // Current unit cost (per base unit) for a product at a given site: prefer a
+    // location-specific live quote, else the product's network-wide (unassigned
+    // location) quote, else the cheapest live quote anywhere for that product.
+    const currentCostAt = (
+      productId: number,
+      locationId: number | null,
+    ): number | null => {
+      const offers = currentOffersByProduct.get(productId)
+      if (!offers || offers.length === 0) return null
+      const locSpecific = offers.filter((o) => o.locationId === locationId)
+      const network = offers.filter((o) => o.locationId === null)
+      const pick =
+        locSpecific.length > 0
+          ? locSpecific
+          : network.length > 0
+            ? network
+            : offers
+      const best = pick.reduce(
+        (m, o) => Math.min(m, o.comparablePricePerBaseUnit),
+        Number.POSITIVE_INFINITY,
+      )
+      return Number.isFinite(best) && best > 0 ? best : null
+    }
+
     const byLocationLines: LocationProductLine[] = []
     if (byProd) {
       for (const [productId, locMap] of byProd) {
@@ -163,10 +199,7 @@ export async function getAwSavingsAnalyses(): Promise<SavingsResult> {
           .map(([locationId, lv]) => ({
             locationId,
             lv,
-            cost:
-              lv.baselineUnitCost !== null && lv.baselineUnitCost > 0
-                ? lv.baselineUnitCost
-                : null,
+            cost: currentCostAt(productId, locationId),
           }))
           .filter((r) => r.cost !== null && r.lv.annualVolume > 0)
         if (priced.length < 2) continue // needs 2+ sites to be a location play
@@ -222,7 +255,7 @@ export async function getAwSavingsAnalyses(): Promise<SavingsResult> {
           annualVolume: 0,
           paidUnitCost: 0,
           bestQuote: line.bestUnitCost,
-          bestQuoteLabel: `${line.bestSiteName} (best in-network)`,
+          bestQuoteLabel: `${line.bestSiteName} (current best)`,
           savingsPerUnit: 0,
           opportunity: 0,
         }
