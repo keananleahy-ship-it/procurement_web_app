@@ -18,12 +18,14 @@ import {
   Upload,
   Users,
   BarChart3,
+  PiggyBank,
 } from 'lucide-react'
 import { type Role, ROLE_LABELS } from '@/lib/roles-shared'
 
 const nav = [
   { href: '/', label: 'Overview', icon: LayoutDashboard },
   { href: '/compare', label: 'Compare Products', icon: GitCompareArrows },
+  { href: '/savings', label: 'Savings Opportunities', icon: PiggyBank },
   { href: '/matching', label: 'Match Verification', icon: ListChecks },
   { href: '/canonical', label: 'Canonical Items', icon: Layers },
   { href: '/imports', label: 'Data Imports', icon: Upload },
