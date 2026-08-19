@@ -375,6 +375,13 @@ export async function loadVolumeMaps(): Promise<VolumeMaps> {
   const rows = await db
     .select({
       canonicalItemId: purchaseVolumes.canonicalItemId,
+      // The canonical assigned to the purchased product itself. When a volume
+      // row was imported before its product was classified, its own
+      // canonicalItemId is null even though the product now carries one; we
+      // coalesce to this so that already-mapped volume is never dropped from
+      // the canonical/product lenses. Self-healing: future imports that miss
+      // the canonical stamp are recovered automatically at read time.
+      productCanonicalId: products.canonicalItemId,
       productId: purchaseVolumes.productId,
       locationId: purchaseVolumes.locationId,
       annualVolume: purchaseVolumes.annualVolume,
@@ -384,6 +391,7 @@ export async function loadVolumeMaps(): Promise<VolumeMaps> {
     })
     .from(purchaseVolumes)
     .leftJoin(locations, eq(locations.id, purchaseVolumes.locationId))
+    .leftJoin(products, eq(products.id, purchaseVolumes.productId))
 
   const byCanonical = new Map<number, Map<number | null, LocationVolume>>()
   const byProduct = new Map<number, Map<number | null, LocationVolume>>()
@@ -430,8 +438,12 @@ export async function loadVolumeMaps(): Promise<VolumeMaps> {
     if (!Number.isFinite(vol) || vol <= 0) continue
     total += vol
     locationNames.set(r.locationId, r.locationName ?? 'Unassigned')
-    const target = r.canonicalItemId !== null ? byCanonical : byProduct
-    const id = r.canonicalItemId ?? r.productId
+    // Prefer the row's own canonical, but fall back to the canonical already
+    // assigned to its product so already-mapped volume still lands in the
+    // canonical/product lenses instead of being stranded under byProduct.
+    const effectiveCanonicalId = r.canonicalItemId ?? r.productCanonicalId
+    const target = effectiveCanonicalId !== null ? byCanonical : byProduct
+    const id = effectiveCanonicalId ?? r.productId
     if (id === null) continue
     const perLoc = target.get(id) ?? new Map<number | null, LocationVolume>()
     const prev = perLoc.get(r.locationId) ?? {
@@ -469,15 +481,15 @@ export async function loadVolumeMaps(): Promise<VolumeMaps> {
     // savings lenses can price the exact product bought. Only rows that carry
     // both a canonical and a product participate; canonical-only legacy rows
     // (productId null) are handled by the savings engine's paid-cost fallback.
-    if (r.canonicalItemId !== null && r.productId !== null) {
+    if (effectiveCanonicalId !== null && r.productId !== null) {
       const byProd =
-        byCanonicalProduct.get(r.canonicalItemId) ??
+        byCanonicalProduct.get(effectiveCanonicalId) ??
         new Map<number, Map<number | null, LocationVolume>>()
       const prodLoc =
         byProd.get(r.productId) ?? new Map<number | null, LocationVolume>()
       accumulate(prodLoc, r.locationId, vol, cost, r.baseUnit ?? null)
       byProd.set(r.productId, prodLoc)
-      byCanonicalProduct.set(r.canonicalItemId, byProd)
+      byCanonicalProduct.set(effectiveCanonicalId, byProd)
     }
   }
 
