@@ -321,30 +321,6 @@ export async function getAwSavingsAnalyses(
       }
     }
 
-    if (canonicalItemId === 416) {
-      console.log('[v0] === canonical 416 line debug ===')
-      console.log('[v0] offer line keys:', [...offersByLine.keys()])
-      console.log('[v0] volume line keys:', [...lineAggs.keys()])
-      for (const [k, offs] of offersByLine) {
-        console.log(
-          `[v0] offers[${k}]:`,
-          offs.map(
-            (o) =>
-              `pid=${o.productId} loc=${o.locationId} cost=${o.comparablePricePerBaseUnit}`,
-          ),
-        )
-      }
-      for (const [k, ag] of lineAggs) {
-        console.log(
-          `[v0] vol[${k}]:`,
-          [...ag.sites.entries()].map(
-            ([loc, s]) =>
-              `loc=${loc} vol=${s.annualVolume} pids=${[...s.productIds]}`,
-          ),
-        )
-      }
-    }
-
     const byLocationLines: LocationProductLine[] = []
     for (const [key, agg] of lineAggs) {
       const lineOffers = offersByLine.get(key)
@@ -422,20 +398,6 @@ export async function getAwSavingsAnalyses(
       (s, r) => s + r.opportunity,
       0,
     )
-    if (canonicalItemId === 416) {
-      console.log(
-        '[v0] 416 byLocationTotal=',
-        byLocationTotal,
-        'lines=',
-        JSON.stringify(
-          byLocationLines.map((l) => ({
-            n: l.productName,
-            opp: l.opportunity,
-            sites: l.sites.map((s) => `${s.locationName}:${s.opportunity}`),
-          })),
-        ),
-      )
-    }
     // Legacy per-location aggregate (kept for existing callers): roll the
     // per-product cross-site opportunity up to each dearer site.
     const locAgg = new Map<number | null, LocationOpportunity>()
