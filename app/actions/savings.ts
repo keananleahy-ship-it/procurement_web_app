@@ -1,12 +1,11 @@
 'use server'
 
+import { getProductComparisons, loadVolumeMaps } from '@/app/actions/comparisons'
 import {
-  getProductComparisons,
-  loadVolumeMaps,
-  type LocationVolume,
-} from '@/app/actions/comparisons'
+  computeEquivalentSavings,
+  type EquivalentSavings,
+} from '@/lib/equivalent-savings'
 import { requireUser } from '@/lib/roles'
-import { normalizeUom } from '@/lib/uom'
 import { packFamily, PACK_FAMILIES, type PackFamilyId } from '@/lib/pack-family'
 
 // The three savings lenses all operate on ONE canonical (equivalent) item at a
@@ -15,11 +14,32 @@ import { packFamily, PACK_FAMILIES, type PackFamilyId } from '@/lib/pack-family'
 // packaging switch would capture — so the UI shows the three side by side and
 // never sums them into a single number.
 
-// Lens 1: the same equivalent item is paid for at different prices across
-// sites. Target = best available vendor quote for the item (per the approved
-// design), so each site's gap is what it could save by buying at the network's
-// best quoted price.
+// Lens 1: BY LOCATION — the SAME exact product/package is bought at more than
+// one site at different prices. Target = the lowest price any site currently
+// pays for that same product; each other site's gap x its volume is what buying
+// at the network's best in-network price for that identical item would save.
+// This is a pure procurement-consolidation signal: no product or package
+// substitution is implied.
+export type LocationProductLine = {
+  productId: number
+  productName: string
+  packFamilyLabel: string
+  // the site paying the lowest price for this exact product
+  bestSiteName: string
+  bestUnitCost: number
+  // per-site detail for the sites paying more than the best site
+  sites: {
+    locationId: number | null
+    locationName: string
+    annualVolume: number
+    unitCost: number
+    savingsPerUnit: number
+    opportunity: number
+  }[]
+  opportunity: number
+}
 export type LocationOpportunity = {
+  // aggregate kept for existing callers: total cross-site opportunity here
   locationId: number | null
   locationName: string
   annualVolume: number
@@ -30,9 +50,11 @@ export type LocationOpportunity = {
   opportunity: number
 }
 
-// Lens 2: within the canonical, spend sits on pricier equivalent products when
-// a cheaper comparable exists. Opportunity = per-unit spread (worst-best) times
-// the item's annual volume.
+// Lens 2: BY EQUIVALENT — present-state. For each specific product actually
+// bought, value it at its current quote (or historical paid cost when it has no
+// current quote) and compare against the cheapest credible current price of a
+// like-packaged equivalent, x the volume actually bought. Never pins the whole
+// group's volume to a single worst quote. Computed by computeEquivalentSavings.
 export type EquivalentOpportunity = {
   annualVolume: number
   bestLabel: string
@@ -41,6 +63,11 @@ export type EquivalentOpportunity = {
   worstPerUnit: number
   spreadPerUnit: number
   opportunity: number
+  // present-state metadata
+  confidence: EquivalentSavings['confidence']
+  pricedVolume: number
+  unpricedVolume: number
+  lines: EquivalentSavings['lines']
 }
 
 // Lens 3: the item is offered in several pack formats at very different $/unit.
@@ -74,6 +101,9 @@ export type SavingsItem = {
   // none), so a card can show the dollars in play, not just the opportunity.
   totalPaidSpend: number | null
   byLocation: LocationOpportunity[]
+  // per-product cross-site detail backing byLocation (same exact product bought
+  // cheaper at another site). Empty when nothing is bought at >1 site.
+  byLocationLines: LocationProductLine[]
   byLocationTotal: number
   byEquivalent: EquivalentOpportunity | null
   byPackaging: PackagingOpportunity
@@ -118,69 +148,136 @@ export async function getAwSavingsAnalyses(): Promise<SavingsResult> {
 
   for (const c of awGroups) {
     const canonicalItemId = c.canonicalItemId as number
-    const groupUnit = normalizeUom(c.baseUnit)
-    const best = c.best
+    const byProd = volumes.byCanonicalProduct.get(canonicalItemId)
     const perLoc = volumes.byCanonical.get(canonicalItemId)
 
-    // A paid baseline is only trustworthy when its unit matches the group's
-    // comparison unit (or no unit was recorded) — otherwise we'd compare apples
-    // to oranges, so we skip it exactly as the comparison engine does.
-    const baselineIsUnitSafe = (lv: LocationVolume) =>
-      lv.baselineUnitCost !== null &&
-      (!lv.baseUnit || !groupUnit || normalizeUom(lv.baseUnit) === groupUnit)
-
-    // ---- Lens 1: by location ------------------------------------------------
-    const byLocation: LocationOpportunity[] = []
-    if (best && perLoc) {
-      const bestQuote = best.comparablePricePerBaseUnit
-      const bestQuoteLabel = offerLabel(best.vendorName, best.productName)
-      for (const [locationId, lv] of perLoc) {
-        if (!baselineIsUnitSafe(lv)) continue
-        const paidUnitCost = lv.baselineUnitCost as number
-        const savingsPerUnit = Math.max(0, paidUnitCost - bestQuote)
-        byLocation.push({
-          locationId,
-          locationName: volumes.locationNames.get(locationId) ?? 'Unassigned',
-          annualVolume: lv.annualVolume,
-          paidUnitCost,
-          bestQuote,
-          bestQuoteLabel,
-          savingsPerUnit,
-          opportunity: savingsPerUnit * lv.annualVolume,
+    // ---- Lens 1: BY LOCATION (same exact product, cheaper at another site) --
+    // For each specific product bought at more than one site, use the lowest
+    // in-network paid price as the target and total each dearer site's gap.
+    // This compares like-for-like (same product/package), not against a catalog
+    // quote or a different product.
+    const byLocationLines: LocationProductLine[] = []
+    if (byProd) {
+      for (const [productId, locMap] of byProd) {
+        const priced = [...locMap.entries()]
+          .map(([locationId, lv]) => ({
+            locationId,
+            lv,
+            cost:
+              lv.baselineUnitCost !== null && lv.baselineUnitCost > 0
+                ? lv.baselineUnitCost
+                : null,
+          }))
+          .filter((r) => r.cost !== null && r.lv.annualVolume > 0)
+        if (priced.length < 2) continue // needs 2+ sites to be a location play
+        const bestSite = priced.reduce((m, r) =>
+          (r.cost as number) < (m.cost as number) ? r : m,
+        )
+        const bestUnitCost = bestSite.cost as number
+        const anyOffer = c.offers.find((o) => o.productId === productId)
+        const fam = anyOffer
+          ? packFamily(anyOffer.packSize, anyOffer.baseUnit)
+          : 'bulk'
+        const sites = priced
+          .filter((r) => (r.cost as number) > bestUnitCost)
+          .map((r) => {
+            const savingsPerUnit = (r.cost as number) - bestUnitCost
+            return {
+              locationId: r.locationId,
+              locationName:
+                volumes.locationNames.get(r.locationId) ?? 'Unassigned',
+              annualVolume: r.lv.annualVolume,
+              unitCost: r.cost as number,
+              savingsPerUnit,
+              opportunity: savingsPerUnit * r.lv.annualVolume,
+            }
+          })
+          .sort((a, b) => b.opportunity - a.opportunity)
+        if (sites.length === 0) continue
+        byLocationLines.push({
+          productId,
+          productName: anyOffer?.productName ?? `Product ${productId}`,
+          packFamilyLabel: familyLabel(fam),
+          bestSiteName:
+            volumes.locationNames.get(bestSite.locationId) ?? 'Unassigned',
+          bestUnitCost,
+          sites,
+          opportunity: sites.reduce((s, x) => s + x.opportunity, 0),
         })
       }
-      byLocation.sort((a, b) => b.opportunity - a.opportunity)
+      byLocationLines.sort((a, b) => b.opportunity - a.opportunity)
     }
-    const byLocationTotal = byLocation.reduce((s, r) => s + r.opportunity, 0)
-
-    // Blended paid cost + total paid spend across unit-safe sites.
-    let spendNum = 0
-    let spendVol = 0
-    if (perLoc) {
-      for (const lv of perLoc.values()) {
-        if (!baselineIsUnitSafe(lv)) continue
-        spendNum += (lv.baselineUnitCost as number) * lv.annualVolume
-        spendVol += lv.annualVolume
+    const byLocationTotal = byLocationLines.reduce(
+      (s, r) => s + r.opportunity,
+      0,
+    )
+    // Legacy per-location aggregate (kept for existing callers): roll the
+    // per-product cross-site opportunity up to each dearer site.
+    const locAgg = new Map<number | null, LocationOpportunity>()
+    for (const line of byLocationLines) {
+      for (const s of line.sites) {
+        const cur = locAgg.get(s.locationId) ?? {
+          locationId: s.locationId,
+          locationName: s.locationName,
+          annualVolume: 0,
+          paidUnitCost: 0,
+          bestQuote: line.bestUnitCost,
+          bestQuoteLabel: `${line.bestSiteName} (best in-network)`,
+          savingsPerUnit: 0,
+          opportunity: 0,
+        }
+        cur.annualVolume += s.annualVolume
+        cur.opportunity += s.opportunity
+        locAgg.set(s.locationId, cur)
       }
     }
-    const blendedPaidUnitCost = spendVol > 0 ? spendNum / spendVol : null
+    const byLocation = [...locAgg.values()].sort(
+      (a, b) => b.opportunity - a.opportunity,
+    )
+
+    // Total paid spend across sites with a trustworthy baseline (from the
+    // per-product breakdown), so a card can show the dollars in play.
+    let spendNum = 0
+    let spendVol = 0
+    if (byProd) {
+      for (const locMap of byProd.values()) {
+        for (const lv of locMap.values()) {
+          if (lv.baselineUnitCost !== null && lv.baselineUnitCost > 0) {
+            spendNum += lv.baselineUnitCost * lv.annualVolume
+            spendVol += lv.annualVolume
+          }
+        }
+      }
+    }
     const totalPaidSpend = spendVol > 0 ? spendNum : null
 
-    // ---- Lens 2: by equivalent product -------------------------------------
+    // ---- Lens 2: BY EQUIVALENT (present-state) ------------------------------
+    const equiv = computeEquivalentSavings(c, volumes)
     let byEquivalent: EquivalentOpportunity | null = null
-    if (best && c.worst && c.potentialSavings > 0) {
+    if (equiv && equiv.totalSavings > 0) {
+      const top = equiv.lines[0]
       byEquivalent = {
-        annualVolume: c.annualVolume,
-        bestLabel: offerLabel(best.vendorName, best.productName),
-        bestPerUnit: best.comparablePricePerBaseUnit,
-        worstLabel: offerLabel(c.worst.vendorName, c.worst.productName),
-        worstPerUnit: c.worst.comparablePricePerBaseUnit,
-        spreadPerUnit: c.potentialSavings,
-        opportunity: c.potentialSavings * c.annualVolume,
+        annualVolume: equiv.pricedVolume,
+        // "best" = cheapest like-for-like target on the biggest line
+        bestLabel: top?.bestEquivalentProductName ?? '—',
+        bestPerUnit: top?.bestEquivalentUnitCost ?? 0,
+        // "worst" = the present price of the priciest bought product
+        worstLabel: top?.productName ?? '—',
+        worstPerUnit: top?.presentUnitCost ?? 0,
+        spreadPerUnit:
+          top && top.annualVolume > 0 ? top.savings / top.annualVolume : 0,
+        opportunity: equiv.totalSavings,
+        confidence: equiv.confidence,
+        pricedVolume: equiv.pricedVolume,
+        unpricedVolume: equiv.unpricedVolume,
+        lines: equiv.lines,
       }
     }
 
     // ---- Lens 3: by packaging ----------------------------------------------
+    // Blended paid $/unit across all sites with a trustworthy baseline, used as
+    // the packaging-switch baseline (unchanged behavior; not the reported bug).
+    const blendedPaidUnitCost = spendVol > 0 ? spendNum / spendVol : null
     const comparableOffers = c.offers.filter((o) => o.comparable)
     const familyMap = new Map<
       PackFamilyId,
@@ -240,6 +337,7 @@ export async function getAwSavingsAnalyses(): Promise<SavingsResult> {
       annualVolume: c.annualVolume,
       totalPaidSpend,
       byLocation,
+      byLocationLines,
       byLocationTotal,
       byEquivalent,
       byPackaging,

@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react'
 import type {
   SavingsResult,
   SavingsItem,
-  LocationOpportunity,
+  LocationProductLine,
   EquivalentOpportunity,
   PackagingOpportunity,
 } from '@/app/actions/savings'
@@ -37,12 +37,12 @@ const LENS = {
   location: {
     label: 'By Location',
     icon: MapPin,
-    blurb: 'Same item, different prices per site',
+    blurb: 'Same exact product bought cheaper at another site',
   },
   equivalent: {
     label: 'By Equivalent',
     icon: GitCompareArrows,
-    blurb: 'Switch spend to a cheaper comparable',
+    blurb: 'Present price vs cheapest like-packaged equivalent',
   },
   packaging: {
     label: 'By Packaging',
@@ -177,7 +177,7 @@ function ItemCard({ item }: { item: SavingsItem }) {
       {open && (
         <div className="grid gap-px border-t border-border bg-border md:grid-cols-3">
           <LocationLens
-            rows={item.byLocation}
+            lines={item.byLocationLines}
             total={item.byLocationTotal}
             unit={unit}
           />
@@ -254,60 +254,76 @@ function LensHeader({
 }
 
 function LocationLens({
-  rows,
+  lines,
   total,
   unit,
 }: {
-  rows: LocationOpportunity[]
+  lines: LocationProductLine[]
   total: number
   unit: string
 }) {
   return (
     <div className="bg-card p-4">
       <LensHeader lens="location" opportunity={total} />
-      {rows.length === 0 ? (
-        <LensEmpty text="No per-site paid cost on file to compare against the best quote." />
+      {lines.length === 0 ? (
+        <LensEmpty text="Nothing is bought at more than one site, so there is no cross-site consolidation opportunity." />
       ) : (
-        <ul className="flex flex-col gap-2">
-          {rows.map((r) => (
+        <ul className="flex flex-col gap-2.5">
+          {lines.map((line) => (
             <li
-              key={String(r.locationId)}
+              key={line.productId}
               className="rounded-md border border-border/60 bg-background/40 px-3 py-2"
             >
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-sm font-medium text-foreground">
-                  {r.locationName}
-                </span>
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-foreground">
+                    {line.productName}
+                  </p>
+                  <p className="text-[0.625rem] text-muted-foreground/70">
+                    {line.packFamilyLabel} · best in-network{' '}
+                    {formatCurrency(line.bestUnitCost)}/{unit} at{' '}
+                    {line.bestSiteName}
+                  </p>
+                </div>
                 <span
                   className={cn(
                     'shrink-0 text-sm font-semibold tabular-nums',
-                    r.opportunity > 0
+                    line.opportunity > 0
                       ? 'text-primary'
                       : 'text-muted-foreground',
                   )}
                 >
-                  {formatCurrency(r.opportunity)}
+                  {formatCurrency(line.opportunity)}
                 </span>
               </div>
-              <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
-                <span>
-                  pays {formatCurrency(r.paidUnitCost)}/{unit}
-                </span>
-                <ArrowRight className="size-3" />
-                <span className="text-foreground">
-                  {formatCurrency(r.bestQuote)}/{unit}
-                </span>
-                <span className="text-muted-foreground/70">
-                  · {formatNumber(Math.round(r.annualVolume))} {unit}/yr
-                </span>
-              </div>
+              <ul className="mt-1.5 flex flex-col gap-1">
+                {line.sites.map((s) => (
+                  <li
+                    key={String(s.locationId)}
+                    className="flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums"
+                  >
+                    <span className="truncate text-foreground">
+                      {s.locationName}
+                    </span>
+                    <span>pays {formatCurrency(s.unitCost)}</span>
+                    <ArrowRight className="size-3 shrink-0" />
+                    <span className="text-foreground">
+                      {formatCurrency(line.bestUnitCost)}/{unit}
+                    </span>
+                    <span className="text-muted-foreground/70">
+                      · {formatNumber(Math.round(s.annualVolume))} {unit}/yr
+                    </span>
+                  </li>
+                ))}
+              </ul>
             </li>
           ))}
         </ul>
       )}
-      {rows.length > 0 && (
+      {lines.length > 0 && (
         <p className="mt-2 text-[0.625rem] text-muted-foreground/70">
-          Target: best available quote — {rows[0].bestQuoteLabel}
+          Same product/package, priced to the lowest site already paying for it
+          — no substitution.
         </p>
       )}
     </div>
@@ -321,20 +337,25 @@ function EquivalentLens({
   data: EquivalentOpportunity | null
   unit: string
 }) {
+  const confLabel: Record<EquivalentOpportunity['confidence'], string> = {
+    high: 'current pricing',
+    mixed: 'partly paid-cost',
+    low: 'mostly paid-cost',
+  }
   return (
     <div className="bg-card p-4">
       <LensHeader lens="equivalent" opportunity={data?.opportunity ?? null} />
       {!data ? (
-        <LensEmpty text="Only one comparable offer — no cheaper equivalent to switch to." />
+        <LensEmpty text="No cheaper like-packaged equivalent to switch to." />
       ) : (
         <div className="flex flex-col gap-2">
           <div className="rounded-md border border-border/60 bg-background/40 px-3 py-2">
             <p className="text-[0.625rem] font-medium uppercase tracking-wide text-muted-foreground/70">
-              Currently pricier
+              Currently buying
             </p>
             <p className="truncate text-sm text-foreground">{data.worstLabel}</p>
             <p className="text-xs text-muted-foreground tabular-nums">
-              {formatCurrency(data.worstPerUnit)}/{unit}
+              {formatCurrency(data.worstPerUnit)}/{unit} now
             </p>
           </div>
           <div className="flex items-center justify-center">
@@ -342,17 +363,34 @@ function EquivalentLens({
           </div>
           <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2">
             <p className="text-[0.625rem] font-medium uppercase tracking-wide text-primary/80">
-              Best comparable
+              Cheapest like-for-like
             </p>
             <p className="truncate text-sm text-foreground">{data.bestLabel}</p>
             <p className="text-xs text-muted-foreground tabular-nums">
-              {formatCurrency(data.bestPerUnit)}/{unit}
+              {formatCurrency(data.bestPerUnit)}/{unit} current
             </p>
           </div>
-          <p className="mt-1 text-[0.625rem] text-muted-foreground/70 tabular-nums">
-            Spread {formatCurrency(data.spreadPerUnit)}/{unit} ×{' '}
-            {formatNumber(Math.round(data.annualVolume))} {unit}/yr
-          </p>
+          <div className="mt-1 flex items-center justify-between gap-2">
+            <Badge
+              variant="outline"
+              className={cn(
+                'text-[0.625rem]',
+                data.confidence === 'high'
+                  ? 'border-primary/40 text-primary'
+                  : data.confidence === 'low'
+                    ? 'border-warning/40 text-warning'
+                    : 'border-border text-muted-foreground',
+              )}
+            >
+              {confLabel[data.confidence]}
+            </Badge>
+            <span className="text-[0.625rem] text-muted-foreground/70 tabular-nums">
+              {formatNumber(Math.round(data.pricedVolume))} {unit}/yr priced
+              {data.unpricedVolume > 0 && (
+                <> · {formatNumber(Math.round(data.unpricedVolume))} unpriced</>
+              )}
+            </span>
+          </div>
         </div>
       )}
     </div>
