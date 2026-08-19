@@ -208,11 +208,20 @@ const APPLICATION_PATTERNS: { label: string; test: RegExp }[] = [
   },
 ]
 
-// Formulation / base oil ("subcategory"). Ordered, first match wins. Synthetic
-// Blend MUST be checked before Full Synthetic because a blend is often written
-// as "SYN BLEND" / "SYN BLD" and would otherwise match the bare "SYN" in the
-// Full Synthetic rule (this was the "SYN BLD -> Full Synthetic" mislabel bug).
-// Left null when the name gives no formulation signal.
+// Formulation ("subcategory") is a single hierarchy level whose *vocabulary is
+// category-dependent*. For most categories (engine/gear/transmission oils) the
+// meaningful axis is base-oil type — Conventional / Synthetic Blend / Full
+// Synthetic — captured by FORMULATION_PATTERNS below. For hydraulic fluids the
+// base-oil type is not the distinguishing characteristic; the additive / spec
+// chemistry is (AW, MV/HVI, zinc-free/ashless, R&O), so hydraulics use their
+// own HYDRAULIC_FORMULATION_PATTERNS instead. deriveSubcategory() picks the
+// right vocabulary from the item's category.
+
+// Base-oil formulation (default vocabulary). Ordered, first match wins.
+// Synthetic Blend MUST be checked before Full Synthetic because a blend is
+// often written as "SYN BLEND" / "SYN BLD" and would otherwise match the bare
+// "SYN" in the Full Synthetic rule (this was the "SYN BLD -> Full Synthetic"
+// mislabel bug). Left null when the name gives no formulation signal.
 const FORMULATION_PATTERNS: { label: string; test: RegExp }[] = [
   {
     label: 'Synthetic Blend',
@@ -227,6 +236,53 @@ const FORMULATION_PATTERNS: { label: string; test: RegExp }[] = [
   {
     label: 'Conventional',
     test: /CONVENTIONAL|\bMINERAL\b|\bCONV\b|PARAFFINIC|GROUP\s*[I1]\b/,
+  },
+]
+
+// Hydraulic-fluid formulation vocabulary, keyed off additive / spec chemistry
+// rather than base oil. Ordered, FIRST MATCH WINS, most specific first:
+//   1. Zinc-Free HVI  — ashless AND high-VI (needs both signals), so it must be
+//      checked before both plain Zinc-Free and MV/HVI.
+//   2. Zinc-Free      — ashless / no-zinc AW (P66 NZ, Shell Tellus S3).
+//   3. Full Synthetic — genuine synthetic industrial hydraulics (SYNCON,
+//      SYNDUSTRIAL, HYDREX EXTREME); checked before MV/HVI so a synthetic line
+//      isn't grabbed by a stray multigrade token.
+//   4. MV/HVI         — high viscosity index / multigrade (HVI, MV, VX, HE,
+//      All-Season, Arctic, Hyken/Glacial).
+//   5. R&O            — rust & oxidation / non-AW circulating (turbine-type).
+//   6. AW             — anti-wear (the workhorse HM default), matched last so
+//      the more specific formulations win.
+// Left null when the name gives no usable signal (reviewer assigns).
+const HYDRAULIC_FORMULATION_PATTERNS: { label: string; test: RegExp }[] = [
+  {
+    label: 'Zinc-Free HVI',
+    // Ashless + high-VI. Either the NZ line's HE/high-VI variant, or Tellus S3
+    // "V" (the HVI grade of the ashless S3 line).
+    test: /\bNZ\b[\s-]*HE\b|\bHE\b[\s-]*NZ\b|\bS3\s*V\b/,
+  },
+  {
+    label: 'Zinc-Free',
+    // Ashless / zinc-free anti-wear. NZ (P66 zinc-free line), Tellus S3,
+    // explicit ashless / zinc-free wording.
+    test: /\bNZ\b|\bS3\b|ASHLESS|ZINC[\s-]*FREE|ZINC-?LESS/,
+  },
+  {
+    label: 'Full Synthetic',
+    test: /SYNCON|SYNDUSTRIAL|\bEXTREME\b|FULL(Y)?\s*SYN(THETIC)?|100%\s*SYN(THETIC)?|\bPAO\b|\bESTER\b/,
+  },
+  {
+    label: 'MV/HVI',
+    // High viscosity index / multigrade hydraulic. HE (high-efficiency, high
+    // VI) is included per the product line's positioning.
+    test: /\bHVI\b|\bMV\b|MULTI-?\s*GRADE|MULTI-?\s*VIS|\bVX\b|\bHE\b|ALL[\s-]*SEASON|\bARCTIC\b|HYKEN|GLACIAL/,
+  },
+  {
+    label: 'R&O',
+    test: /R\s*&\s*O|\bR\s+O\b|RUST.*OXID|CIRCULAT/,
+  },
+  {
+    label: 'AW',
+    test: /\bAW\b|\bAW\d|ANTI-?\s*WEAR|\bHM\b/,
   },
 ]
 
@@ -269,6 +325,22 @@ export const APPLICATION_LABELS: string[] = APPLICATION_PATTERNS.map(
 export const FORMULATION_LABELS: string[] = FORMULATION_PATTERNS.map(
   (p) => p.label,
 )
+// Hydraulic-fluid formulation vocabulary (additive/spec chemistry).
+export const HYDRAULIC_FORMULATION_LABELS: string[] =
+  HYDRAULIC_FORMULATION_PATTERNS.map((p) => p.label)
+// Categories whose formulation level uses the hydraulic (additive-chemistry)
+// vocabulary instead of the base-oil vocabulary.
+const HYDRAULIC_FORMULATION_CATEGORIES = new Set(['Hydraulic Fluid'])
+
+// The formulation vocabulary that applies to a given category. Exposed so the
+// UI/LLM can offer exactly the values valid for the item's category.
+export function formulationLabelsForCategory(
+  category?: string | null,
+): string[] {
+  return category && HYDRAULIC_FORMULATION_CATEGORIES.has(category)
+    ? HYDRAULIC_FORMULATION_LABELS
+    : FORMULATION_LABELS
+}
 export const KNOWN_BRAND_LABELS: string[] = BRAND_PATTERNS.map((p) => p.label)
 
 export function derivePackageType(name: string, packSize?: number): string | null {
@@ -293,6 +365,37 @@ export function deriveCategory(name: string): string | null {
     if (c.test.test(upper)) return c.label
   }
   return null
+}
+
+// The category label used for NSF H1 food-grade lubricants.
+export const FOOD_GRADE_CATEGORY = 'Food Grade Lubricant'
+
+// Food-grade (NSF H1) lubricants are a distinct commercial segment: they are
+// certified for incidental food contact and priced accordingly, so they must
+// never be pooled with — or price-compared against — standard industrial
+// product, even when the base type and viscosity grade line up. A food-grade
+// "Purity FG AW Hydraulic 46" is NOT interchangeable with a standard AW
+// hydraulic ISO 46. We trust the stored category when present (it is the
+// classifier's authoritative output) and fall back to the name so the check
+// also works before a record has been classified.
+export function isFoodGrade(input: {
+  category?: string | null
+  name?: string | null
+}): boolean {
+  if (input.category != null && input.category !== '') {
+    return input.category === FOOD_GRADE_CATEGORY
+  }
+  if (input.name) return deriveCategory(input.name) === FOOD_GRADE_CATEGORY
+  return false
+}
+
+// Two lubricants may only be matched/compared when they sit on the same side of
+// the food-grade divide: either both food-grade or both standard.
+export function sameFoodGradeSegment(
+  a: { category?: string | null; name?: string | null },
+  b: { category?: string | null; name?: string | null },
+): boolean {
+  return isFoodGrade(a) === isFoodGrade(b)
 }
 
 export function deriveViscosity(name: string): string | null {
@@ -370,12 +473,21 @@ export function deriveApplication(
   return null
 }
 
-// Formulation / base oil (stored in the `subcategory` column). Returns Full
-// Synthetic / Synthetic Blend / Conventional, or null when the name gives no
-// formulation signal.
-export function deriveSubcategory(name: string): string | null {
+// Formulation (stored in the `subcategory` column). The vocabulary depends on
+// the item's category: hydraulic fluids resolve to their additive-chemistry
+// values (AW / MV-HVI / Zinc-Free / Zinc-Free HVI / R&O / Full Synthetic),
+// everything else to base-oil values (Full Synthetic / Synthetic Blend /
+// Conventional). Returns null when the name gives no formulation signal.
+export function deriveSubcategory(
+  name: string,
+  category?: string | null,
+): string | null {
   const upper = name.toUpperCase()
-  for (const f of FORMULATION_PATTERNS) {
+  const patterns =
+    category && HYDRAULIC_FORMULATION_CATEGORIES.has(category)
+      ? HYDRAULIC_FORMULATION_PATTERNS
+      : FORMULATION_PATTERNS
+  for (const f of patterns) {
     if (f.test.test(upper)) return f.label
   }
   return null
@@ -407,7 +519,7 @@ export function deriveAttributes(
     brand: deriveBrand(name),
     category,
     application: deriveApplication(name, category),
-    subcategory: deriveSubcategory(name),
+    subcategory: deriveSubcategory(name, category),
     viscosity: deriveViscosity(name),
     packageType: derivePackageType(name, packSize),
   }

@@ -341,7 +341,7 @@ async function getAllRows(): Promise<PriceRow[]> {
 // there, and (when the upload carried a cost) the average unit cost actually
 // paid, expressed per base unit along with the base unit it was quoted in so
 // the caller can confirm it lines up with the group's comparison unit.
-type LocationVolume = {
+export type LocationVolume = {
   annualVolume: number
   // Volume-weighted average of the paid cost per base unit, or null when no
   // uploaded row for this item+location carried a cost.
@@ -355,7 +355,7 @@ type LocationVolume = {
 // their per-unit savings into real annualized dollars, and — when a paid unit
 // cost is on file — to use that cost as the savings baseline instead of the
 // vendor-to-vendor price spread.
-type VolumeMaps = {
+export type VolumeMaps = {
   byCanonical: Map<number, Map<number | null, LocationVolume>>
   byProduct: Map<number, Map<number | null, LocationVolume>>
   locationNames: Map<number | null, string>
@@ -364,7 +364,7 @@ type VolumeMaps = {
 
 // Note: like getAllRows, this is a shared workspace and is NOT filtered by
 // userId — every signed-in user sees the same comparison and volume data.
-async function loadVolumeMaps(): Promise<VolumeMaps> {
+export async function loadVolumeMaps(): Promise<VolumeMaps> {
   const rows = await db
     .select({
       canonicalItemId: purchaseVolumes.canonicalItemId,

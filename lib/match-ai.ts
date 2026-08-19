@@ -1,6 +1,7 @@
 import { generateText, Output } from 'ai'
 import { createOpenAI } from '@ai-sdk/openai'
 import * as z from 'zod'
+import { isFoodGrade } from './attributes'
 
 // Use the account's own OpenAI key directly rather than the AI Gateway. The
 // gateway's zero-config tier is aggressively rate-limited (429s) regardless of
@@ -78,6 +79,7 @@ const SYSTEM_PROMPT = `You are a procurement catalog reconciliation assistant. Y
 
 Rules:
 - Only choose a canonicalItemId from the provided list. If no canonical item is a credible match, return canonicalItemId null with a low confidence and explain why.
+- FOOD-GRADE IS A SEPARATE SEGMENT. Food-grade / NSF H1 lubricants (names containing "FOOD GRADE", "FOOD MACHINERY", "PURITY FG"/"FG", "WHITE OIL", "H1", or "NSF"; category "Food Grade Lubricant") are certified for incidental food contact and are NOT interchangeable with standard industrial product. NEVER match a food-grade product to a standard (non-food-grade) canonical item, or a standard product to a food-grade canonical item, even when the base type and grade number are identical. A food-grade "Purity FG AW Hydraulic Fluid 46" must NOT match a standard "AW Hydraulic Oil ISO 46"; return null instead. Only match food-grade to food-grade.
 - GRADE NUMBERS MUST MATCH EXACTLY. A numeric grade/viscosity designation is part of the item's identity, not a cosmetic variant. Two products are NOT the same canonical item unless their grade numbers are identical. This includes: ISO viscosity grade (ISO VG 22 ≠ 32 ≠ 46 ≠ 68 ≠ 100), SAE oil grades (SAE 30 ≠ 40; 15W-40 ≠ 10W-30; 80W-90 ≠ 85W-140), NLGI grease grades (NLGI 1 ≠ 2), AGMA grades, and any other numeric spec (bolt M8 ≠ M10, viscosity 320 ≠ 460). When the base product line matches but the grade number differs, return canonicalItemId null (or a different same-grade canonical), NOT the wrong-grade item. E.g. "P66 MEGAFLOW AW HYDRAULIC OIL 22" must NOT match a canonical "AW Hydraulic Oil ISO 46". Brand/series words being similar never outweigh a grade-number difference.
 - confidence reflects how sure you are it is the same item: 0.9+ near-certain, 0.7-0.9 likely, 0.5-0.7 plausible, <0.5 doubtful.
 - Return exactly one entry per product id provided. Keep each reason concise.
@@ -169,6 +171,10 @@ export async function aiMatchProducts(
   // Run batches sequentially. Concurrent calls burst into provider rate limits
   // (especially on the free AI tier); going one at a time lets the SDK's
   // built-in exponential backoff absorb transient limits between batches.
+  // Lookups for the food-grade segment guard applied to the model's output.
+  const productById = new Map(productsToMatch.map((p) => [p.id, p]))
+  const canonById = new Map(canonicalOptions.map((c) => [c.id, c]))
+
   const batches = buildMatchBatches(productsToMatch)
   const results: AiMatch[] = []
   for (const batch of batches) {
@@ -179,6 +185,22 @@ export async function aiMatchProducts(
       // Isolate failures: a single bad batch shouldn't abort the whole run.
       // Its products simply stay unmatched and can be retried later.
       console.log('[v0] aiMatchProducts batch failed:', err)
+    }
+  }
+
+  // Deterministic backstop for the food-grade divide: even with the prompt
+  // rule, drop any proposed pairing that crosses the food-grade / standard
+  // segment so it can never reach a reviewer as a suggestion.
+  for (const m of results) {
+    if (m.canonicalItemId == null) continue
+    const product = productById.get(m.productId)
+    const canon = canonById.get(m.canonicalItemId)
+    if (!product || !canon) continue
+    if (isFoodGrade(product) !== isFoodGrade(canon)) {
+      m.canonicalItemId = null
+      m.confidence = 0
+      m.reason =
+        'Blocked: food-grade lubricants are not comparable to standard product.'
     }
   }
 

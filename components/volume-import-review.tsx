@@ -9,6 +9,7 @@ import {
   commitVolumeImport,
   discardVolumeImport,
   rematchVolumeImport,
+  rollupVolumeImport,
 } from '@/app/actions/volumes'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -35,6 +36,7 @@ import {
   Link2,
   AlertCircle,
   Wand2,
+  Combine,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -226,6 +228,7 @@ export function VolumeImportReview({
   const [isPending, startTransition] = useTransition()
   const [committing, setCommitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   function isReady(r: VolumeStagingRow) {
     const hasMatch = r.canonicalItemId !== null || r.productId !== null
@@ -333,6 +336,68 @@ export function VolumeImportReview({
     })
   }
 
+  // Roll the detailed rows up to one summary per matched item + period: sum the
+  // quantities and volume-weight the unit cost. Refreshes so the collapsed
+  // rows show, and reports how many detailed lines merged away.
+  async function handleRollup() {
+    setError(null)
+    setNotice(null)
+    startTransition(async () => {
+      try {
+        const res = await rollupVolumeImport(meta.id)
+        setRows(
+          res.rows.map((r) => ({
+            id: r.id,
+            itemName: r.itemName,
+            sku: r.sku,
+            annualVolume: r.annualVolume,
+            baseUnit: r.baseUnit,
+            baselineUnitCost: r.baselineUnitCost,
+            period: r.period,
+            canonicalItemId: r.canonicalItemId,
+            productId: r.productId,
+            matchName: r.matchName,
+            matchStatus: r.matchStatus,
+            include: r.include,
+          })),
+        )
+        setNotice(
+          res.merged === 0
+            ? 'Nothing to roll up — each matched item already has a single row per period.'
+            : `Rolled up ${res.merged} detailed ${
+                res.merged === 1 ? 'row' : 'rows'
+              } into ${res.groups} item ${
+                res.groups === 1 ? 'summary' : 'summaries'
+              }.`,
+        )
+        router.refresh()
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Roll-up failed')
+      }
+    })
+  }
+
+  // How many matched rows share an item + period with another row (i.e. would
+  // collapse on roll-up). Drives whether the roll-up button is worth offering.
+  const rollupCandidates = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const r of rows) {
+      const hasMatch = r.canonicalItemId !== null || r.productId !== null
+      if (!r.include || !hasMatch) continue
+      if (r.annualVolume === null || Number(r.annualVolume) <= 0) continue
+      const period = r.period?.trim() || meta.defaultPeriod || ''
+      const itemKey =
+        r.canonicalItemId !== null
+          ? `c:${r.canonicalItemId}`
+          : `p:${r.productId}`
+      const key = `${itemKey}|${period}`
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    let dupes = 0
+    for (const n of counts.values()) if (n > 1) dupes += n - 1
+    return dupes
+  }, [rows, meta.defaultPeriod])
+
   const unmatchedCount = rows.filter(
     (r) => r.include && r.canonicalItemId === null && r.productId === null,
   ).length
@@ -361,6 +426,20 @@ export function VolumeImportReview({
               <Wand2 className="size-4" />
             )}
             Re-match
+          </Button>
+          <Button
+            variant="outline"
+            onClick={handleRollup}
+            disabled={committing || isPending || rollupCandidates === 0}
+            title="Combine detailed rows into one summary per item + period (sum quantity, volume-weight unit cost)"
+          >
+            {isPending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Combine className="size-4" />
+            )}
+            Roll up to SKU
+            {rollupCandidates > 0 ? ` (${rollupCandidates})` : ''}
           </Button>
           <Button
             variant="outline"
@@ -400,6 +479,13 @@ export function VolumeImportReview({
         <p className="text-sm text-destructive" role="alert">
           {error}
         </p>
+      )}
+
+      {notice && (
+        <div className="flex items-start gap-2 rounded-lg border border-success/40 bg-success/10 p-4">
+          <Combine className="mt-0.5 size-4 shrink-0 text-success" />
+          <p className="text-sm text-pretty text-muted-foreground">{notice}</p>
+        </div>
       )}
 
       <div className="overflow-x-auto rounded-lg border border-border bg-card">
