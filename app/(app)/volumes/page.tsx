@@ -14,6 +14,7 @@ export default async function VolumesPage() {
     fileName: imp.fileName,
     fileType: imp.fileType,
     blobPathname: imp.blobPathname,
+    locationId: imp.locationId ?? null,
     locationName: imp.locationName ?? null,
     defaultPeriod: imp.defaultPeriod,
     status: imp.status,

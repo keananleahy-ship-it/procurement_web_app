@@ -42,8 +42,135 @@ import {
 import { EmptyState } from '@/components/empty-state'
 import { formatDate } from '@/lib/format'
 import { useCanEdit } from '@/components/role-provider'
-import { resyncCommittedVolumeImport } from '@/app/actions/volumes'
-import { RefreshCw } from 'lucide-react'
+import {
+  resyncCommittedVolumeImport,
+  reassignVolumeImportLocation,
+} from '@/app/actions/volumes'
+import { RefreshCw, MapPin, Check } from 'lucide-react'
+
+// Lets an editor correct the location a whole upload is attributed to. For a
+// committed import this physically moves the volumes it wrote to the new
+// location, so the change is confirmed in a dialog that spells that out.
+function LocationCell({
+  imp,
+  locations,
+}: {
+  imp: VolumeImportRecord
+  locations: Option[]
+}) {
+  const router = useRouter()
+  const canEdit = useCanEdit()
+  const [open, setOpen] = useState(false)
+  const [value, setValue] = useState(imp.locationId ? String(imp.locationId) : '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  if (!canEdit || imp.status === 'discarded') {
+    return (
+      <span className="text-foreground">{imp.locationName ?? '—'}</span>
+    )
+  }
+
+  async function handleSave() {
+    if (!value) {
+      setError('Choose a location.')
+      return
+    }
+    setSaving(true)
+    setError(null)
+    try {
+      await reassignVolumeImportLocation(imp.id, Number(value))
+      setOpen(false)
+      router.refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not reassign location.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o)
+        if (o) {
+          setValue(imp.locationId ? String(imp.locationId) : '')
+          setError(null)
+        }
+      }}
+    >
+      <DialogTrigger
+        render={
+          <button
+            type="button"
+            className="group inline-flex items-center gap-1.5 rounded-md text-left text-foreground transition-colors hover:text-primary"
+            title="Reassign this upload to a different location"
+          />
+        }
+      >
+        <span>{imp.locationName ?? 'Set location'}</span>
+        <MapPin className="size-3.5 text-muted-foreground transition-colors group-hover:text-primary" />
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Reassign location</DialogTitle>
+          <DialogDescription>
+            {imp.status === 'committed'
+              ? 'This upload is committed. Changing its location moves the purchase volumes it applied — they stop weighting the old location and start weighting the new one.'
+              : 'Choose the location this uploaded purchasing data belongs to.'}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-2 py-4">
+          <Label>Location</Label>
+          <Select
+            value={value}
+            onValueChange={(v) => setValue(v ?? '')}
+            items={Object.fromEntries(
+              locations.map((l) => [String(l.id), l.name]),
+            )}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Select a location" />
+            </SelectTrigger>
+            <SelectContent>
+              {locations.map((l) => (
+                <SelectItem key={l.id} value={String(l.id)}>
+                  {l.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {error && (
+            <p className="text-sm text-destructive" role="alert">
+              {error}
+            </p>
+          )}
+        </div>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={() => setOpen(false)}
+            disabled={saving}
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={handleSave}
+            disabled={saving || value === String(imp.locationId ?? '')}
+          >
+            {saving ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Check className="size-4" />
+            )}
+            Save location
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
 
 type Option = { id: number; name: string }
 type VolumeImportRecord = {
@@ -51,6 +178,7 @@ type VolumeImportRecord = {
   fileName: string
   fileType: string
   blobPathname: string
+  locationId: number | null
   locationName: string | null
   defaultPeriod: string | null
   status: string
@@ -236,7 +364,7 @@ export function VolumesView({
                     {uploading ? (
                       <>
                         <Loader2 className="size-4 animate-spin" />
-                        Extracting…
+                        Extracting��
                       </>
                     ) : (
                       <>
@@ -287,8 +415,8 @@ export function VolumesView({
                       </span>
                     </span>
                   </TableCell>
-                  <TableCell className="text-foreground">
-                    {imp.locationName ?? '—'}
+                  <TableCell>
+                    <LocationCell imp={imp} locations={locations} />
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {imp.defaultPeriod ?? '—'}

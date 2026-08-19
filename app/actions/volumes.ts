@@ -405,18 +405,15 @@ function aggregateVolumeRows(
   }))
 }
 
-// Shared writer for both the initial commit and a re-sync: filter the staging
-// rows down to the ones that can weight a comparison, roll them up to item
-// level, and write one purchase_volumes row per item + period. Returns the
-// standard tally, where `committed` is the number of summary volumes written.
-async function writeVolumesFromRows(opts: {
-  userId: string
-  volumeImportId: number
-  locationId: number
-  defaultPeriod: string | null
-}): Promise<CommitVolumeResult> {
-  const { userId, volumeImportId, locationId, defaultPeriod } = opts
-
+// Filter a pending/committed import's staging rows down to the ones that can
+// weight a comparison (included, matched+confirmed, positive quantity), and
+// tally why the rest were dropped. Shared by the writer and the location
+// reassign so both agree exactly on which rows contribute volume.
+async function collectEligibleRows(volumeImportId: number): Promise<{
+  eligible: AggregatableRow[]
+  skipped: number
+  unmatched: number
+}> {
   const rows = await db
     .select()
     .from(volumeImportRows)
@@ -453,6 +450,24 @@ async function writeVolumesFromRows(opts: {
       period: r.period,
     })
   }
+
+  return { eligible, skipped, unmatched }
+}
+
+// Shared writer for both the initial commit and a re-sync: filter the staging
+// rows down to the ones that can weight a comparison, roll them up to item
+// level, and write one purchase_volumes row per item + period. Returns the
+// standard tally, where `committed` is the number of summary volumes written.
+async function writeVolumesFromRows(opts: {
+  userId: string
+  volumeImportId: number
+  locationId: number
+  defaultPeriod: string | null
+}): Promise<CommitVolumeResult> {
+  const { userId, volumeImportId, locationId, defaultPeriod } = opts
+
+  const { eligible, skipped, unmatched } =
+    await collectEligibleRows(volumeImportId)
 
   // Roll the detailed lines up to one summary per item + period before writing,
   // so several detailed entries for the same SKU sum into a single volume
@@ -681,4 +696,95 @@ export async function rollupVolumeImport(
 
   revalidatePath('/volumes')
   return { merged, groups: mergedGroups, rows: updatedRows }
+}
+
+export type ReassignLocationResult = {
+  status: string
+  locationName: string
+  // Number of committed volume summaries moved to the new location (0 for a
+  // pending import, which has nothing committed yet).
+  moved: number
+}
+
+// Correct the location a whole volume upload is attributed to. A volume import
+// belongs to exactly ONE location, and every purchase_volumes row it writes is
+// stamped with that location — so if the wrong location was picked at upload
+// time, the committed volumes are weighting the wrong site's comparisons.
+//
+// For a PENDING import we only need to flip the stored location; nothing is
+// committed yet. For a COMMITTED import we also relocate the data it already
+// wrote: recompute this import's rolled-up summaries, delete them from the OLD
+// location (source='import' only, so hand-entered/synced volumes are safe),
+// then re-write them under the NEW location. Because deletion is keyed to this
+// import's own item+period summaries, a co-located manual or other-import
+// volume for a different item is left untouched.
+export async function reassignVolumeImportLocation(
+  volumeImportId: number,
+  newLocationId: number,
+): Promise<ReassignLocationResult> {
+  const { id: userId } = await requireEditor()
+
+  const [imp] = await db
+    .select()
+    .from(volumeImports)
+    .where(eq(volumeImports.id, volumeImportId))
+  if (!imp) throw new Error('Volume import not found')
+  if (imp.status === 'discarded') {
+    throw new Error('A discarded volume import cannot be reassigned')
+  }
+
+  // The target must be one of this user's locations.
+  const [loc] = await db
+    .select({ id: locations.id, name: locations.name })
+    .from(locations)
+    .where(and(eq(locations.id, newLocationId), eq(locations.userId, userId)))
+    .limit(1)
+  if (!loc) throw new Error('Location not found')
+
+  const oldLocationId = imp.locationId
+  if (oldLocationId === newLocationId) {
+    return { status: imp.status, locationName: loc.name, moved: 0 }
+  }
+
+  // Pending import: no committed volumes to move, just re-stamp the location.
+  if (imp.status !== 'committed') {
+    await db
+      .update(volumeImports)
+      .set({ locationId: newLocationId })
+      .where(eq(volumeImports.id, volumeImportId))
+    revalidatePath('/volumes')
+    return { status: imp.status, locationName: loc.name, moved: 0 }
+  }
+
+  // Committed import: relocate the volumes it wrote. Compute the same rolled-up
+  // summaries the writer produced, and delete each from the old location.
+  const { eligible } = await collectEligibleRows(volumeImportId)
+  const summaries = aggregateVolumeRows(eligible, imp.defaultPeriod)
+  for (const s of summaries) {
+    await replaceExistingImportedVolume({
+      userId,
+      canonicalItemId: s.canonicalItemId,
+      productId: s.productId,
+      locationId: oldLocationId,
+      period: s.period,
+    })
+  }
+
+  // Re-stamp the import, then re-write its volumes under the new location.
+  await db
+    .update(volumeImports)
+    .set({ locationId: newLocationId })
+    .where(eq(volumeImports.id, volumeImportId))
+
+  const result = await writeVolumesFromRows({
+    userId,
+    volumeImportId,
+    locationId: newLocationId,
+    defaultPeriod: imp.defaultPeriod,
+  })
+
+  revalidatePath('/volumes')
+  revalidatePath('/compare')
+  revalidatePath('/')
+  return { status: imp.status, locationName: loc.name, moved: result.committed }
 }
