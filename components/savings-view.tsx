@@ -37,7 +37,7 @@ const LENS = {
   location: {
     label: 'By Location',
     icon: MapPin,
-    blurb: 'Same exact product bought cheaper at another site',
+    blurb: "Each site's current price vs the best price on offer anywhere",
   },
   equivalent: {
     label: 'By Equivalent',
@@ -266,7 +266,7 @@ function LocationLens({
     <div className="bg-card p-4">
       <LensHeader lens="location" opportunity={total} />
       {lines.length === 0 ? (
-        <LensEmpty text="Nothing is bought at more than one site, so there is no cross-site consolidation opportunity." />
+        <LensEmpty text="Every site is already quoted the best available price for what it buys, so there is no location pricing gap." />
       ) : (
         <ul className="flex flex-col gap-2.5">
           {lines.map((line) => (
@@ -280,7 +280,7 @@ function LocationLens({
                     {line.productName}
                   </p>
                   <p className="text-[0.625rem] text-muted-foreground/70">
-                    {line.packFamilyLabel} · best in-network{' '}
+                    {line.packFamilyLabel} · best on offer{' '}
                     {formatCurrency(line.bestUnitCost)}/{unit} at{' '}
                     {line.bestSiteName}
                   </p>
@@ -305,7 +305,7 @@ function LocationLens({
                     <span className="truncate text-foreground">
                       {s.locationName}
                     </span>
-                    <span>pays {formatCurrency(s.unitCost)}</span>
+                    <span>quoted {formatCurrency(s.unitCost)}</span>
                     <ArrowRight className="size-3 shrink-0" />
                     <span className="text-foreground">
                       {formatCurrency(line.bestUnitCost)}/{unit}
@@ -322,8 +322,8 @@ function LocationLens({
       )}
       {lines.length > 0 && (
         <p className="mt-2 text-[0.625rem] text-muted-foreground/70">
-          Same product/package, priced to the lowest site already paying for it
-          — no substitution.
+          Each site&apos;s current quote vs the best price on offer anywhere for
+          the same product/package, on historical volume — no substitution.
         </p>
       )}
     </div>

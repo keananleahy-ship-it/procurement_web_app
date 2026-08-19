@@ -152,39 +152,32 @@ export async function getAwSavingsAnalyses(): Promise<SavingsResult> {
     const byProd = volumes.byCanonicalProduct.get(canonicalItemId)
     const perLoc = volumes.byCanonical.get(canonicalItemId)
 
-    // ---- Lens 1: BY LOCATION (same exact product, cheaper at another site) --
-    // Both sides are valued at CURRENT pricing (not the historical average paid
-    // price). For each specific product bought at more than one site, each
-    // site's current unit cost is its live quote — a location-specific quote
-    // when one exists, otherwise the product's network-wide current quote — and
-    // the target is the cheapest current price among the participating sites.
-    // This compares like-for-like (same product/package). Where a product has a
-    // single current price network-wide, every site is equal and no location
-    // opportunity is credited.
-    const currentOffersByProduct = new Map<number, PriceRow[]>()
+    // ---- Lens 1: BY LOCATION (current price to each site vs best anywhere) --
+    // For each specific product, value each site at the CURRENT price it is
+    // quoted (using the location on the price-sheet import), then compare that
+    // to the single best current price on offer ANYWHERE for the same product,
+    // multiplied by the HISTORICAL volume that site bought. This surfaces the
+    // gap between what a site would pay at its current quote and the best rate
+    // available in the network for the identical product/package. A site can
+    // show savings on its own — no cross-site pairing is required.
+    const comparableOffersByProduct = new Map<number, PriceRow[]>()
     for (const o of c.offers) {
-      if (!o.comparable) continue
-      const arr = currentOffersByProduct.get(o.productId) ?? []
+      if (!o.comparable || !(o.comparablePricePerBaseUnit > 0)) continue
+      const arr = comparableOffersByProduct.get(o.productId) ?? []
       arr.push(o)
-      currentOffersByProduct.set(o.productId, arr)
+      comparableOffersByProduct.set(o.productId, arr)
     }
-    // Current unit cost (per base unit) for a product at a given site: prefer a
-    // location-specific live quote, else the product's network-wide (unassigned
-    // location) quote, else the cheapest live quote anywhere for that product.
-    const currentCostAt = (
-      productId: number,
+    // Current unit cost quoted to a specific site for a product: prefer the
+    // quote whose price-sheet location matches the site, else fall back to the
+    // product's network-wide (unassigned-location) quote.
+    const currentCostAtSite = (
+      offers: PriceRow[],
       locationId: number | null,
     ): number | null => {
-      const offers = currentOffersByProduct.get(productId)
-      if (!offers || offers.length === 0) return null
       const locSpecific = offers.filter((o) => o.locationId === locationId)
       const network = offers.filter((o) => o.locationId === null)
-      const pick =
-        locSpecific.length > 0
-          ? locSpecific
-          : network.length > 0
-            ? network
-            : offers
+      const pick = locSpecific.length > 0 ? locSpecific : network
+      if (pick.length === 0) return null
       const best = pick.reduce(
         (m, o) => Math.min(m, o.comparablePricePerBaseUnit),
         Number.POSITIVE_INFINITY,
@@ -195,24 +188,31 @@ export async function getAwSavingsAnalyses(): Promise<SavingsResult> {
     const byLocationLines: LocationProductLine[] = []
     if (byProd) {
       for (const [productId, locMap] of byProd) {
-        const priced = [...locMap.entries()]
+        const offers = comparableOffersByProduct.get(productId)
+        if (!offers || offers.length === 0) continue
+        // Best current price on offer anywhere for this exact product.
+        const bestOffer = offers.reduce((m, o) =>
+          o.comparablePricePerBaseUnit < m.comparablePricePerBaseUnit ? o : m,
+        )
+        const bestUnitCost = bestOffer.comparablePricePerBaseUnit
+        const fam = packFamily(bestOffer.packSize, bestOffer.baseUnit)
+        const bestSourceName =
+          bestOffer.locationId !== null
+            ? (volumes.locationNames.get(bestOffer.locationId) ??
+              bestOffer.vendorName)
+            : bestOffer.vendorName
+        const sites = [...locMap.entries()]
           .map(([locationId, lv]) => ({
             locationId,
             lv,
-            cost: currentCostAt(productId, locationId),
+            cost: currentCostAtSite(offers, locationId),
           }))
-          .filter((r) => r.cost !== null && r.lv.annualVolume > 0)
-        if (priced.length < 2) continue // needs 2+ sites to be a location play
-        const bestSite = priced.reduce((m, r) =>
-          (r.cost as number) < (m.cost as number) ? r : m,
-        )
-        const bestUnitCost = bestSite.cost as number
-        const anyOffer = c.offers.find((o) => o.productId === productId)
-        const fam = anyOffer
-          ? packFamily(anyOffer.packSize, anyOffer.baseUnit)
-          : 'bulk'
-        const sites = priced
-          .filter((r) => (r.cost as number) > bestUnitCost)
+          .filter(
+            (r) =>
+              r.cost !== null &&
+              r.lv.annualVolume > 0 &&
+              (r.cost as number) > bestUnitCost,
+          )
           .map((r) => {
             const savingsPerUnit = (r.cost as number) - bestUnitCost
             return {
@@ -229,10 +229,9 @@ export async function getAwSavingsAnalyses(): Promise<SavingsResult> {
         if (sites.length === 0) continue
         byLocationLines.push({
           productId,
-          productName: anyOffer?.productName ?? `Product ${productId}`,
+          productName: bestOffer.productName ?? `Product ${productId}`,
           packFamilyLabel: familyLabel(fam),
-          bestSiteName:
-            volumes.locationNames.get(bestSite.locationId) ?? 'Unassigned',
+          bestSiteName: bestSourceName,
           bestUnitCost,
           sites,
           opportunity: sites.reduce((s, x) => s + x.opportunity, 0),
@@ -255,7 +254,7 @@ export async function getAwSavingsAnalyses(): Promise<SavingsResult> {
           annualVolume: 0,
           paidUnitCost: 0,
           bestQuote: line.bestUnitCost,
-          bestQuoteLabel: `${line.bestSiteName} (current best)`,
+          bestQuoteLabel: `${line.bestSiteName} (best on offer)`,
           savingsPerUnit: 0,
           opportunity: 0,
         }
