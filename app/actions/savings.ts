@@ -148,6 +148,29 @@ const familyLabel = (id: PackFamilyId) =>
 const offerLabel = (vendorName: string, productName: string) =>
   `${vendorName} — ${productName}`
 
+// Packaging / size words stripped when deriving a product-LINE identity, so
+// pack variants of one branded product collapse together.
+const PACK_WORDS = new Set([
+  'bulk', 'drum', 'drums', 'pail', 'pails', 'tote', 'totes', 'ibc', 'ibcs',
+  'case', 'cases', 'decant', 'keg', 'kegs', 'box', 'boxes', 'pack', 'jug',
+  'jugs', 'can', 'cans', 'cs', 'ea', 'each',
+])
+// Reduce a product name to a stable product-LINE key: same brand + product
+// family + spec, independent of packaging and pack size. This lets By Location
+// treat, e.g., "P66 MEGAFLOW AW HYDRAULIC OIL 46" and its "... 46 BULK" drum
+// variant as one sourceable line, while keeping distinct lines (MEGAFLOW vs
+// POWERFLOW) apart. Tokens containing digits (viscosity, sizes) and single
+// characters (e.g. the 't' left by "T/275") are dropped. Callers scope this
+// within a single canonical item, so viscosity never needs to be in the key.
+const productLineKey = (name: string): string =>
+  name
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t && t.length > 1 && !PACK_WORDS.has(t) && !/\d/.test(t))
+    .join(' ')
+    .trim()
+
 // Build the three savings lenses for AW hydraulic. Read-only: reuses the
 // comparison engine (offers, best/worst, per-location volume) and the paid
 // baselines from purchase volumes; no pricing math is redefined here.
@@ -203,93 +226,198 @@ export async function getAwSavingsAnalyses(
     const byProd = volumes.byCanonicalProduct.get(canonicalItemId)
     const perLoc = volumes.byCanonical.get(canonicalItemId)
 
-    // ---- Lens 1: BY LOCATION (current price to each site vs best anywhere) --
-    // For each specific product, value each site at the CURRENT price it is
-    // quoted (using the location on the price-sheet import), then compare that
-    // to the single best current price on offer ANYWHERE for the same product,
-    // multiplied by the HISTORICAL volume that site bought. This surfaces the
-    // gap between what a site would pay at its current quote and the best rate
-    // available in the network for the identical product/package. A site can
+    // ---- Lens 1: BY LOCATION (current price a site pays vs best in the line) -
+    // Group offers and purchased volume by PRODUCT LINE (same brand + spec,
+    // packaging-agnostic), because the same product often exists under several
+    // product ids (e.g. a bulk row and a drum row). For each line: price every
+    // site at the current landed cost of the variant IT buys, and compare to
+    // the single cheapest landed offer anywhere in that line, times the site's
+    // historical volume. This surfaces a site paying a premium (often just a
+    // dearer package) for something the network sources cheaper. A site can
     // show savings on its own — no cross-site pairing is required.
-    const comparableOffersByProduct = new Map<number, PriceRow[]>()
-    for (const o of c.offers) {
-      if (!o.comparable || !(o.comparablePricePerBaseUnit > 0)) continue
-      const arr = comparableOffersByProduct.get(o.productId) ?? []
-      arr.push(o)
-      comparableOffersByProduct.set(o.productId, arr)
+
+    // The line a product belongs to, resolved from its name; falls back to the
+    // product id when a name yields no usable tokens so it stays its own line.
+    const lineOf = (productId: number, name: string | undefined): string => {
+      const k = productLineKey(name ?? '')
+      return k.length > 0 ? k : `pid:${productId}`
     }
-    // Current unit cost quoted to a specific site for a product: prefer the
-    // quote whose price-sheet location matches the site, else fall back to the
-    // product's network-wide (unassigned-location) quote.
-    const currentCostAtSite = (
-      offers: PriceRow[],
-      locationId: number | null,
-    ): number | null => {
-      const locSpecific = offers.filter((o) => o.locationId === locationId)
-      const network = offers.filter((o) => o.locationId === null)
-      const pick = locSpecific.length > 0 ? locSpecific : network
-      if (pick.length === 0) return null
-      const best = pick.reduce(
-        (m, o) => Math.min(m, o.comparablePricePerBaseUnit),
-        Number.POSITIVE_INFINITY,
+
+    // Offers grouped by line, plus the set of offers touching each product id
+    // (so a site can be priced by the exact variant it purchases).
+    const offersByLine = new Map<string, PriceRow[]>()
+    const offersByProductId = new Map<number, PriceRow[]>()
+    for (const o of c.offers) {
+      if (
+        o.productId === null ||
+        !o.comparable ||
+        !(o.comparablePricePerBaseUnit > 0)
       )
-      return Number.isFinite(best) && best > 0 ? best : null
+        continue
+      const key = lineOf(o.productId, o.productName)
+      const la = offersByLine.get(key) ?? []
+      la.push(o)
+      offersByLine.set(key, la)
+      const pa = offersByProductId.get(o.productId) ?? []
+      pa.push(o)
+      offersByProductId.set(o.productId, pa)
+    }
+
+    // Aggregate purchased volume by line -> site, tracking which product ids a
+    // site bought (to price it) and a volume-weighted paid baseline (fallback
+    // when the site's own variant has no current offer).
+    type LineSite = {
+      annualVolume: number
+      productIds: Set<number>
+      paidNum: number
+      paidDen: number
+    }
+    type LineAgg = {
+      displayName: string
+      displayVolume: number
+      sites: Map<number | null, LineSite>
+    }
+    const lineAggs = new Map<string, LineAgg>()
+    if (byProd) {
+      for (const [productId, locMap] of byProd) {
+        const name = volumes.productNames.get(productId)
+        const key = lineOf(productId, name)
+        const agg =
+          lineAggs.get(key) ??
+          ({
+            displayName: name ?? `Product ${productId}`,
+            displayVolume: -1,
+            sites: new Map<number | null, LineSite>(),
+          } satisfies LineAgg)
+        for (const [locationId, lv] of locMap) {
+          if (lv.annualVolume <= 0) continue
+          const site =
+            agg.sites.get(locationId) ??
+            ({
+              annualVolume: 0,
+              productIds: new Set<number>(),
+              paidNum: 0,
+              paidDen: 0,
+            } satisfies LineSite)
+          site.annualVolume += lv.annualVolume
+          site.productIds.add(productId)
+          if (lv.baselineUnitCost !== null && lv.baselineUnitCost > 0) {
+            site.paidNum += lv.baselineUnitCost * lv.annualVolume
+            site.paidDen += lv.annualVolume
+          }
+          agg.sites.set(locationId, site)
+        }
+        // Label the line after its highest-volume product so the row reads as
+        // the thing the buyer actually purchases.
+        const lineVol = [...locMap.values()].reduce(
+          (s, lv) => s + Math.max(0, lv.annualVolume),
+          0,
+        )
+        if (lineVol > agg.displayVolume) {
+          agg.displayName = name ?? `Product ${productId}`
+          agg.displayVolume = lineVol
+        }
+        lineAggs.set(key, agg)
+      }
+    }
+
+    if (canonicalItemId === 416) {
+      console.log('[v0] === canonical 416 line debug ===')
+      console.log('[v0] offer line keys:', [...offersByLine.keys()])
+      console.log('[v0] volume line keys:', [...lineAggs.keys()])
+      for (const [k, offs] of offersByLine) {
+        console.log(
+          `[v0] offers[${k}]:`,
+          offs.map(
+            (o) =>
+              `pid=${o.productId} loc=${o.locationId} cost=${o.comparablePricePerBaseUnit}`,
+          ),
+        )
+      }
+      for (const [k, ag] of lineAggs) {
+        console.log(
+          `[v0] vol[${k}]:`,
+          [...ag.sites.entries()].map(
+            ([loc, s]) =>
+              `loc=${loc} vol=${s.annualVolume} pids=${[...s.productIds]}`,
+          ),
+        )
+      }
     }
 
     const byLocationLines: LocationProductLine[] = []
-    if (byProd) {
-      for (const [productId, locMap] of byProd) {
-        const offers = comparableOffersByProduct.get(productId)
-        if (!offers || offers.length === 0) continue
-        // Best current price on offer anywhere for this exact product.
-        const bestOffer = offers.reduce((m, o) =>
-          o.comparablePricePerBaseUnit < m.comparablePricePerBaseUnit ? o : m,
-        )
-        const bestUnitCost = bestOffer.comparablePricePerBaseUnit
-        const fam = packFamily(bestOffer.packSize, bestOffer.baseUnit)
-        const bestSourceName =
-          bestOffer.locationId !== null
-            ? (volumes.locationNames.get(bestOffer.locationId) ??
-              bestOffer.vendorName)
-            : bestOffer.vendorName
-        const sites = [...locMap.entries()]
-          .map(([locationId, lv]) => ({
-            locationId,
-            lv,
-            cost: currentCostAtSite(offers, locationId),
-          }))
-          .filter(
-            (r) =>
-              r.cost !== null &&
-              r.lv.annualVolume > 0 &&
-              (r.cost as number) > bestUnitCost,
+    for (const [key, agg] of lineAggs) {
+      const lineOffers = offersByLine.get(key)
+      if (!lineOffers || lineOffers.length === 0) continue
+      // Cheapest landed offer anywhere in the line = the sourcing target.
+      const bestOffer = lineOffers.reduce((m, o) =>
+        o.comparablePricePerBaseUnit < m.comparablePricePerBaseUnit ? o : m,
+      )
+      const bestUnitCost = bestOffer.comparablePricePerBaseUnit
+      const fam = packFamily(bestOffer.packSize, bestOffer.baseUnit)
+      const bestSourceName =
+        bestOffer.locationId !== null
+          ? (volumes.locationNames.get(bestOffer.locationId) ??
+            bestOffer.vendorName)
+          : bestOffer.vendorName
+
+      const sites = [...agg.sites.entries()]
+        .map(([locationId, site]) => {
+          // Price the site by the variant(s) it actually buys; else any offer
+          // routed to that site; else the line's network-wide offers; else the
+          // baseline it historically paid.
+          const buyable = lineOffers.filter(
+            (o) =>
+              (o.productId !== null && site.productIds.has(o.productId)) ||
+              o.locationId === locationId ||
+              o.locationId === null,
           )
-          .map((r) => {
-            const savingsPerUnit = (r.cost as number) - bestUnitCost
-            return {
-              locationId: r.locationId,
-              locationName:
-                volumes.locationNames.get(r.locationId) ?? 'Unassigned',
-              annualVolume: r.lv.annualVolume,
-              unitCost: r.cost as number,
-              savingsPerUnit,
-              opportunity: savingsPerUnit * r.lv.annualVolume,
-            }
-          })
-          .sort((a, b) => b.opportunity - a.opportunity)
-        if (sites.length === 0) continue
-        byLocationLines.push({
-          productId,
-          productName: bestOffer.productName ?? `Product ${productId}`,
-          packFamilyLabel: familyLabel(fam),
-          bestSiteName: bestSourceName,
-          bestUnitCost,
-          sites,
-          opportunity: sites.reduce((s, x) => s + x.opportunity, 0),
+          let unitCost: number | null = null
+          if (buyable.length > 0) {
+            unitCost = buyable.reduce(
+              (m, o) => Math.min(m, o.comparablePricePerBaseUnit),
+              Number.POSITIVE_INFINITY,
+            )
+          } else if (site.paidDen > 0) {
+            unitCost = site.paidNum / site.paidDen
+          }
+          return { locationId, site, unitCost }
         })
-      }
-      byLocationLines.sort((a, b) => b.opportunity - a.opportunity)
+        .filter(
+          (r) =>
+            r.unitCost !== null &&
+            Number.isFinite(r.unitCost) &&
+            (r.unitCost as number) > bestUnitCost,
+        )
+        .map((r) => {
+          const savingsPerUnit = (r.unitCost as number) - bestUnitCost
+          return {
+            locationId: r.locationId,
+            locationName:
+              volumes.locationNames.get(r.locationId) ?? 'Unassigned',
+            annualVolume: r.site.annualVolume,
+            unitCost: r.unitCost as number,
+            savingsPerUnit,
+            opportunity: savingsPerUnit * r.site.annualVolume,
+          }
+        })
+        .sort((a, b) => b.opportunity - a.opportunity)
+      if (sites.length === 0) continue
+
+      const repProductId = [...agg.sites.values()][0]?.productIds
+        .values()
+        .next().value
+      byLocationLines.push({
+        productId: repProductId ?? bestOffer.productId ?? 0,
+        productName: agg.displayName,
+        packFamilyLabel: familyLabel(fam),
+        bestSiteName: bestSourceName,
+        bestUnitCost,
+        sites,
+        opportunity: sites.reduce((s, x) => s + x.opportunity, 0),
+      })
     }
+    byLocationLines.sort((a, b) => b.opportunity - a.opportunity)
     const byLocationTotal = byLocationLines.reduce(
       (s, r) => s + r.opportunity,
       0,
