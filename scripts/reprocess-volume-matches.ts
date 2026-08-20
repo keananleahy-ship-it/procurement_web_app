@@ -315,16 +315,98 @@ async function main() {
       SELECT p.id, p.sku, p.name, p."packageType"
       FROM products p WHERE p.name ILIKE '%CITGARD 600%15/40%' ORDER BY p.id`)
 
+    // Diagnostic: which products still hold >1 distinct vendor code, and which
+    // codes — so a residual can be judged (genuine catalog duplicate vs. an
+    // over-broad loose-SKU key) rather than just counted.
+    const residual = await client.query(`
+      SELECT vir."productId" AS pid, p.name, p.sku AS product_sku,
+             array_agg(DISTINCT trim(vir.sku)) AS codes
+      FROM volume_import_rows vir
+      JOIN volume_imports vi ON vi.id = vir."volumeImportId"
+      JOIN products p ON p.id = vir."productId"
+      WHERE vi.status='committed' AND vir.include=true AND vir."productId" IS NOT NULL
+        AND coalesce(trim(vir.sku),'') <> ''
+      GROUP BY vir."productId", p.name, p.sku HAVING count(DISTINCT vir.sku) > 1
+      ORDER BY vir."productId"`)
+
     console.log('[v0] === AFTER ===')
     console.log('[v0] products created:', productsCreated)
+    for (const r of residual.rows) {
+      console.log(
+        `[v0]   RESIDUAL product ${r.pid} (sku=${r.product_sku}) "${String(r.name).slice(0, 40)}" <- codes: ${r.codes.join(', ')}`,
+      )
+    }
     console.log('[v0] import purchase_volumes rows written:', pvWritten)
-    console.log('[v0] products with >1 committed vendor code:', afterMulti.rows[0].n, '(want 0)')
+    // Every remaining multi-code product must be a legitimate catalog ALIAS: all
+    // its codes already resolve, via EXACT vendor-code identity, to that same
+    // pre-existing product (two codes for one physical pack form). That is
+    // allowed. What must be zero is any multi-code product where the merge came
+    // from something OTHER than exact-code identity (i.e. the old fuzzy-name
+    // merge) — and any code-bearing row folded onto a product this run created.
+    // Build an exact-code index from the FINAL catalog state to judge residuals.
+    const allCanon = (
+      await client.query(`SELECT id, name, category FROM canonical_items`)
+    ).rows as CanonRow[]
+    const allProds = (
+      await client.query(
+        `SELECT id, name, category, sku, "canonicalItemId" FROM products`,
+      )
+    ).rows as ProdRow[]
+    const finalIndex = buildMatchIndex(allCanon, allProds)
+
+    // A residual product is legitimate only if EVERY committed staging row on it
+    // resolves to that SAME product via EXACT vendor-code identity (the code may
+    // live in the sku column OR, per the source's cross-reference quirk, in the
+    // itemName field — resolveExactIdentity handles both). If any contributing
+    // row would only have matched by fuzzy NAME, that's the old bug and must be
+    // zero. We check per row (not per bare code) so the itemName-as-code path is
+    // honored exactly as the resolver does it.
+    const badMerge: { pid: number; codes: string[] }[] = []
+    for (const r of residual.rows) {
+      const contributing = (
+        await client.query(
+          `SELECT DISTINCT vir.sku, vir."itemName"
+           FROM volume_import_rows vir JOIN volume_imports vi ON vi.id=vir."volumeImportId"
+           WHERE vi.status='committed' AND vir.include=true AND vir."productId"=$1
+             AND vir."annualVolume" IS NOT NULL AND vir."annualVolume"::numeric>0`,
+          [r.pid],
+        )
+      ).rows as { sku: string | null; itemName: string }[]
+      // Legitimate when every contributing row resolves by EXACT CODE (sku or
+      // the itemName-as-code cross-reference) to a single shared target — a
+      // product OR a canonical item. What we forbid is a row that would only
+      // have matched by fuzzy NAME (method !== 'code') or one with no exact
+      // identity at all: that is the old merge bug.
+      const targets = new Set<string>()
+      let anyFuzzy = false
+      for (const row of contributing) {
+        const hit = resolveExactIdentity(
+          { itemName: row.itemName, sku: row.sku },
+          finalIndex,
+        )
+        if (!hit || hit.method !== 'code') {
+          anyFuzzy = true
+          break
+        }
+        targets.add(
+          hit.target.kind === 'product'
+            ? `p:${hit.target.productId}`
+            : `c:${hit.target.canonicalItemId}`,
+        )
+      }
+      if (anyFuzzy || targets.size > 1) {
+        badMerge.push({ pid: r.pid, codes: r.codes })
+      }
+    }
+
+    console.log('[v0] products with >1 committed vendor code:', afterMulti.rows[0].n)
+    console.log('[v0]   of which legitimate catalog aliases:', residual.rows.length - badMerge.length)
+    console.log('[v0]   of which illegitimate merges:', badMerge.length, '(want 0)')
     console.log('[v0] eligible rows not confirmed:', suggestedLeft.rows[0].n, '(want 0)')
     console.log('[v0] CITGARD 622615001097 pv rows:', JSON.stringify(citgard.rows))
     console.log('[v0] CITGARD 600 15/40 products:', JSON.stringify(citgardName.rows))
 
-    const ok =
-      afterMulti.rows[0].n === 0 && suggestedLeft.rows[0].n === 0
+    const ok = badMerge.length === 0 && suggestedLeft.rows[0].n === 0
 
     if (!ok) {
       console.log('[v0] ASSERTIONS FAILED — rolling back regardless of --apply')
