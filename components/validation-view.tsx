@@ -81,7 +81,8 @@ export function ValidationView({
       if (filter === 'unvalidated' && r.validated) return false
       if (filter === 'validated' && !r.validated) return false
       if (q) {
-        const hay = `${r.vendorCode ?? ''} ${r.description}`.toLowerCase()
+        const hay =
+        `${r.vendorCode ?? ''} ${r.supplier ?? ''} ${r.description}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
       return true
@@ -260,6 +261,7 @@ export function ValidationView({
             <thead>
               <tr className="border-b border-border bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
                 <th className="px-3 py-2 font-semibold">Vendor code</th>
+                <th className="px-3 py-2 font-semibold">Vendor</th>
                 <th className="px-3 py-2 font-semibold">Description</th>
                 {EDITABLE_COLUMNS.map((c) => (
                   <th key={c.key} className="px-3 py-2 font-semibold">
@@ -275,7 +277,7 @@ export function ValidationView({
               {filtered.length === 0 && (
                 <tr>
                   <td
-                    colSpan={EDITABLE_COLUMNS.length + 5}
+                    colSpan={EDITABLE_COLUMNS.length + 6}
                     className="px-3 py-10 text-center text-sm text-muted-foreground"
                   >
                     {activeLocation
@@ -294,6 +296,11 @@ export function ValidationView({
                 >
                   <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
                     {r.vendorCode ?? '—'}
+                  </td>
+                  <td className="max-w-[160px] px-3 py-2">
+                    <span className="line-clamp-2 text-xs text-foreground">
+                      {r.supplier ?? '—'}
+                    </span>
                   </td>
                   <td className="max-w-[220px] px-3 py-2">
                     <span className="line-clamp-2 font-medium text-foreground">
