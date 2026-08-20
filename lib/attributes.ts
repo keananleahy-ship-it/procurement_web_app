@@ -350,6 +350,7 @@ export const PACKAGE_LABELS: string[] = PACKAGE_PATTERNS.map((p) => p.label)
 // read-only there. Defined here (not in the server action) so client and server
 // share one list.
 export const VALIDATION_ATTRIBUTE_KEYS: AttributeKey[] = [
+  'supplier',
   'category',
   'application',
   'subcategory',

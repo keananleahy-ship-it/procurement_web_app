@@ -297,10 +297,28 @@ export function ValidationView({
                   <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
                     {r.vendorCode ?? '—'}
                   </td>
-                  <td className="max-w-[160px] px-3 py-2">
-                    <span className="line-clamp-2 text-xs text-foreground">
-                      {r.supplier ?? '—'}
-                    </span>
+                  <td className="px-3 py-2">
+                    <AttrCell
+                      record={r}
+                      attrKey="supplier"
+                      disabled={pending}
+                      onChange={(value) =>
+                        run(async () => {
+                          if (!activeLocationId) return
+                          const res = await updateValidationAttribute({
+                            productId: r.productId,
+                            locationId: activeLocationId,
+                            key: 'supplier',
+                            value,
+                          })
+                          setStatus(
+                            res.clearedSignOffs > 0
+                              ? `Updated globally · cleared ${res.clearedSignOffs} prior sign-off(s) for re-confirmation.`
+                              : 'Updated globally across all sites.',
+                          )
+                        })
+                      }
+                    />
                   </td>
                   <td className="max-w-[220px] px-3 py-2">
                     <span className="line-clamp-2 font-medium text-foreground">
@@ -415,9 +433,18 @@ function AttrCell({
   const vocab = vocabularyFor(attrKey, record.category)
   const missing = !current
 
-  // Free-text attribute (viscosity): inline input committing on blur/Enter.
+  // Free-text attribute (viscosity, supplier): inline input committing on
+  // blur/Enter. Vendor names run longer than viscosity grades, so give them
+  // more room.
   if (!vocab) {
-    return <TextAttr value={current} disabled={disabled} onCommit={onChange} />
+    return (
+      <TextAttr
+        value={current}
+        disabled={disabled}
+        onCommit={onChange}
+        widthClass={attrKey === 'supplier' ? 'w-40' : 'w-24'}
+      />
+    )
   }
 
   // Merge an out-of-vocab current value so it still displays and is selectable.
@@ -461,10 +488,12 @@ function TextAttr({
   value,
   disabled,
   onCommit,
+  widthClass = 'w-24',
 }: {
   value: string | null
   disabled: boolean
   onCommit: (value: string | null) => void
+  widthClass?: string
 }) {
   const [draft, setDraft] = useState(value ?? '')
   const missing = !value
@@ -485,7 +514,8 @@ function TextAttr({
       }}
       placeholder="Set…"
       className={cn(
-        'h-8 w-24',
+        'h-8',
+        widthClass,
         missing && 'border-amber-500/60 placeholder:text-amber-600/70',
       )}
     />
