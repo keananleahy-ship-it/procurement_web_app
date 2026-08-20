@@ -10,8 +10,16 @@ import {
   locations,
 } from '@/lib/db/schema'
 import { requireUser, requireEditor } from '@/lib/roles'
-import { buildMatchIndex, resolveMatch } from '@/lib/volume-match'
+import {
+  buildMatchIndex,
+  resolveMatch,
+  resolveExactIdentity,
+  normalizeSku,
+  normalizeName,
+  type MatchIndex,
+} from '@/lib/volume-match'
 import { normalizeUom } from '@/lib/uom'
+import { deriveAttributes } from '@/lib/attributes'
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
 import { del } from '@vercel/blob'
 import { revalidatePath } from 'next/cache'
@@ -420,6 +428,147 @@ function aggregateVolumeRows(
   }))
 }
 
+// Resolve every included row to an AUTHORITATIVE product/canonical identity
+// before the volumes are written, creating a standalone product for any row
+// whose vendor code (or, for code-less rows, exact name) isn't already in the
+// catalog. This is the core of the vendor-code-identity fix: each distinct
+// vendor code becomes exactly one product, so distinct codes can never be
+// merged onto one item by name similarity.
+//
+// Rules per included row with a usable quantity:
+//   - Already `confirmed` with an id (an exact-code match from upload, or a
+//     reviewer's manual pick) -> authoritative, left untouched.
+//   - Otherwise re-resolve via resolveExactIdentity (exact code, else exact
+//     name for code-less rows). A hit points the row at that product/canonical
+//     and marks it confirmed. A miss auto-creates a standalone product keyed by
+//     the row's own code (or name) and points the row at it.
+// Fuzzy `suggested` rows therefore never borrow another item's identity; they
+// get their own product unless a human explicitly confirmed the suggestion.
+//
+// Runs inside commit/resync/reprocess (all go through writeVolumesFromRows), so
+// products are only ever created when an import is actually applied — never for
+// a pending upload the user might discard. Returns how many products it created.
+async function ensureProductsForImport(
+  volumeImportId: number,
+  userId: string,
+): Promise<{ created: number }> {
+  const rows = await db
+    .select()
+    .from(volumeImportRows)
+    .where(eq(volumeImportRows.volumeImportId, volumeImportId))
+
+  const [canon, prods] = await Promise.all([
+    db
+      .select({
+        id: canonicalItems.id,
+        name: canonicalItems.name,
+        category: canonicalItems.category,
+      })
+      .from(canonicalItems)
+      .where(eq(canonicalItems.userId, userId)),
+    db
+      .select({
+        id: products.id,
+        name: products.name,
+        category: products.category,
+        sku: products.sku,
+        canonicalItemId: products.canonicalItemId,
+      })
+      .from(products)
+      .where(eq(products.userId, userId)),
+  ])
+  const index: MatchIndex = buildMatchIndex(canon, prods)
+
+  // Identity key -> resolved ids, seeded as rows are handled so two rows with
+  // the same code/name (or a code newly created earlier in this run) collapse
+  // onto one product instead of creating duplicates.
+  const resolved = new Map<
+    string,
+    { canonicalItemId: number | null; productId: number | null }
+  >()
+
+  const identityKey = (sku: string | null, itemName: string): string => {
+    const code = sku?.trim() ? normalizeSku(sku) : ''
+    if (code) return `code:${code}`
+    return `name:${normalizeName(itemName)}`
+  }
+
+  let created = 0
+
+  for (const r of rows) {
+    if (!r.include) continue
+    if (r.annualVolume === null || Number(r.annualVolume) <= 0) continue
+
+    // Respect an authoritative match already on the row (exact code at upload
+    // or a reviewer's manual pick). Never override a human decision or a
+    // deterministic code hit.
+    if (
+      r.matchStatus === 'confirmed' &&
+      (r.canonicalItemId !== null || r.productId !== null)
+    ) {
+      continue
+    }
+
+    const key = identityKey(r.sku, r.itemName)
+    let target = resolved.get(key)
+
+    if (!target) {
+      const hit = resolveExactIdentity(
+        { itemName: r.itemName, sku: r.sku ?? null },
+        index,
+      )
+      if (hit) {
+        target = {
+          canonicalItemId:
+            hit.target.kind === 'canonical' ? hit.target.canonicalItemId : null,
+          productId: hit.target.kind === 'product' ? hit.target.productId : null,
+        }
+      } else {
+        // No exact identity in the catalog -> create a standalone product for
+        // this vendor code (or name). Prefill derived attributes so it shows up
+        // in Catalog Validation ready to review, and leave it canonical-
+        // unmatched so cross-vendor grouping stays an explicit, reviewed step.
+        const name = r.itemName.trim()
+        const attrs = deriveAttributes(name)
+        const [newProduct] = await db
+          .insert(products)
+          .values({
+            userId,
+            name,
+            sku: r.sku?.trim() || null,
+            baseUnit: r.baseUnit?.trim() || null,
+            unit: r.baseUnit?.trim() || null,
+            brand: attrs.brand,
+            category: attrs.category,
+            application: attrs.application,
+            subcategory: attrs.subcategory,
+            viscosity: attrs.viscosity,
+            packageType: attrs.packageType,
+            attributesEdited: false,
+            canonicalItemId: null,
+            matchStatus: 'unmatched',
+          })
+          .returning({ id: products.id })
+        created++
+        target = { canonicalItemId: null, productId: newProduct.id }
+      }
+      resolved.set(key, target)
+    }
+
+    await db
+      .update(volumeImportRows)
+      .set({
+        canonicalItemId: target.canonicalItemId,
+        productId: target.productId,
+        matchStatus: 'confirmed',
+        matchName: r.itemName.trim(),
+      })
+      .where(eq(volumeImportRows.id, r.id))
+  }
+
+  return { created }
+}
+
 // Filter a pending/committed import's staging rows down to the ones that can
 // weight a comparison (included, matched+confirmed, positive quantity), and
 // tally why the rest were dropped. Shared by the writer and the location
@@ -444,10 +593,14 @@ async function collectEligibleRows(volumeImportId: number): Promise<{
       continue
     }
     // A row must resolve to an item and carry a usable quantity, or it can't
-    // weight a comparison.
+    // weight a comparison. CONFIRMED ONLY: a fuzzy `suggested` guess never feeds
+    // the baseline. By the time this runs at commit/resync/reprocess,
+    // ensureProductsForImport has already turned every eligible row into a
+    // confirmed match against its own vendor-code/name identity (creating a
+    // product where needed), so confirmed-only drops nothing legitimate — it
+    // only fences out un-applied fuzzy guesses.
     const hasMatch = r.canonicalItemId !== null || r.productId !== null
-    const isConfirmed =
-      r.matchStatus === 'confirmed' || r.matchStatus === 'suggested'
+    const isConfirmed = r.matchStatus === 'confirmed'
     if (!hasMatch || !isConfirmed) {
       unmatched++
       continue
@@ -480,6 +633,11 @@ async function writeVolumesFromRows(opts: {
   defaultPeriod: string | null
 }): Promise<CommitVolumeResult> {
   const { userId, volumeImportId, locationId, defaultPeriod } = opts
+
+  // Resolve/create authoritative product identities first, so every eligible
+  // row is confirmed against exactly one vendor code (or exact name) before the
+  // baseline is written. This is what guarantees distinct codes never blend.
+  await ensureProductsForImport(volumeImportId, userId)
 
   const { eligible, skipped, unmatched } =
     await collectEligibleRows(volumeImportId)
