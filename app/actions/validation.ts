@@ -19,6 +19,30 @@ import {
   VALIDATION_ATTRIBUTE_KEYS,
   type AttributeKey,
 } from '@/lib/attributes'
+import { isMeasureUom } from '@/lib/uom'
+
+// Detect a purchase record whose captured unit can't be a real volume/weight
+// measure, which quietly distorts the savings math. Two high-confidence cases:
+//   - the unit starts with a digit ("55", "16 gallon", "1.06") — a pack size or
+//     descriptor leaked into the unit field; a real unit never starts with a
+//     number.
+//   - the unit is a container/count word (case, each, drum…) on a BULK product,
+//     which should be measured in gallons, not counted in cases.
+// Returns a short reason for display, or null when the unit looks fine. Packaged
+// (non-bulk) items legitimately counted in cases/each are intentionally NOT
+// flagged, to keep the signal actionable.
+function detectUnitIssue(
+  baseUnit: string | null,
+  packageType: string | null,
+): string | null {
+  const raw = (baseUnit ?? '').trim().toLowerCase()
+  if (raw === '') return null
+  if (/^\d/.test(raw)) return 'Unit looks like a pack size, not a measure'
+  if (!isMeasureUom(raw) && (packageType ?? '').toLowerCase() === 'bulk') {
+    return 'Bulk item captured in a container/count unit, not gallons'
+  }
+  return null
+}
 
 const VALIDATION_ATTR_SET = new Set<AttributeKey>(VALIDATION_ATTRIBUTE_KEYS)
 const PRODUCT_ATTR_KEYS = new Set<AttributeKey>(
@@ -56,6 +80,9 @@ export type ValidationRecord = {
   // true when a catalog attribute is missing (drives the "needs attention"
   // filter so champions can target incomplete rows first)
   hasGaps: boolean
+  // short reason when the captured unit looks wrong (pack size or count on a
+  // bulk item); null when the unit looks fine
+  unitIssue: string | null
 }
 
 export type ValidationProgress = {
@@ -147,6 +174,7 @@ export async function getValidationRecords(locationId: number): Promise<{
       !r.subcategory ||
       !r.viscosity ||
       !r.packageType
+    const unitIssue = detectUnitIssue(r.baseUnit, r.packageType)
     return {
       purchaseId: r.purchaseId,
       locationId: r.locationId ?? locationId,
@@ -167,13 +195,16 @@ export async function getValidationRecords(locationId: number): Promise<{
       supplier: r.supplier,
       brand: r.brand,
       hasGaps,
+      unitIssue,
     }
   })
 
   const progress: ValidationProgress = {
     total: records.length,
     validated: records.filter((r) => r.validated).length,
-    needsAttention: records.filter((r) => r.hasGaps && !r.validated).length,
+    needsAttention: records.filter(
+      (r) => (r.hasGaps || r.unitIssue !== null) && !r.validated,
+    ).length,
   }
   return { records, progress }
 }

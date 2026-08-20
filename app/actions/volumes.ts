@@ -11,6 +11,7 @@ import {
 } from '@/lib/db/schema'
 import { requireUser, requireEditor } from '@/lib/roles'
 import { buildMatchIndex, resolveMatch } from '@/lib/volume-match'
+import { normalizeUom } from '@/lib/uom'
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
 import { del } from '@vercel/blob'
 import { revalidatePath } from 'next/cache'
@@ -332,9 +333,12 @@ type AggregatedVolume = {
 // VOLUME-WEIGHTED across the detailed lines (so a big-volume, low-cost month
 // dominates the blended baseline correctly). Cost weighting only counts volume
 // that actually carries a cost, so rows with a blank cost don't drag the
-// average toward zero. The grouping key deliberately matches
-// replaceExistingImportedVolume's key (item + period, ignoring base unit) so a
-// single delete+insert per group can't clobber a sibling group.
+// average toward zero. The grouping key is item + period + NORMALIZED UNIT, so
+// a SKU reported in both gallons and cases yields two honest summaries instead
+// of one nonsensical blend. Because several summaries can now share an
+// (item, period), the writer deletes existing imported volumes once per
+// (item, period) — unit-agnostic — before inserting the per-unit rows, so a
+// sibling unit's delete can't clobber a just-written row.
 function aggregateVolumeRows(
   rows: AggregatableRow[],
   defaultPeriod: string | null,
@@ -364,8 +368,15 @@ function aggregateVolumeRows(
     // engine's present-state pricing, matches replaceExistingImportedVolume's
     // (canonical, product, period) key, and is a no-op for legacy rows where
     // productId is null.
+    // Key by BOTH item and NORMALIZED UNIT so incompatible units never blend
+    // into one summary. Vendors report the same SKU in gallons AND in cases/
+    // drums on separate lines; summing those quantities is meaningless and
+    // volume-weighting a per-gallon price with a per-case price corrupts the
+    // baseline. Splitting per unit keeps each summary's quantity and price
+    // honest; the savings engine already sums multiple rows per product.
+    const unit = normalizeUom(r.baseUnit)
     const itemKey = `c:${r.canonicalItemId ?? ''}:p:${r.productId ?? ''}`
-    const key = `${itemKey}|${period ?? ''}`
+    const key = `${itemKey}|${period ?? ''}|u:${unit}`
 
     let g = groups.get(key)
     if (!g) {
@@ -478,14 +489,22 @@ async function writeVolumesFromRows(opts: {
   // instead of each delete+insert overwriting the last.
   const summaries = aggregateVolumeRows(eligible, defaultPeriod)
 
+  // Delete existing imported volumes ONCE per (item, period) — unit-agnostic,
+  // so it also clears any pre-split blended row from an earlier commit — then
+  // insert one row per normalized unit.
+  const replaced = new Set<string>()
   for (const s of summaries) {
-    await replaceExistingImportedVolume({
-      userId,
-      canonicalItemId: s.canonicalItemId,
-      productId: s.productId,
-      locationId,
-      period: s.period,
-    })
+    const groupKey = `c:${s.canonicalItemId ?? ''}:p:${s.productId ?? ''}|${s.period ?? ''}`
+    if (!replaced.has(groupKey)) {
+      await replaceExistingImportedVolume({
+        userId,
+        canonicalItemId: s.canonicalItemId,
+        productId: s.productId,
+        locationId,
+        period: s.period,
+      })
+      replaced.add(groupKey)
+    }
     await db.insert(purchaseVolumes).values({
       userId,
       canonicalItemId: s.canonicalItemId,
@@ -638,7 +657,9 @@ export async function rollupVolumeImport(
       r.canonicalItemId !== null
         ? `c:${r.canonicalItemId}`
         : `p:${r.productId}`
-    const key = `${itemKey}|${period ?? ''}`
+    // Include normalized unit so the preview roll-up never merges gallons with
+    // cases/drums into one line — mirrors aggregateVolumeRows at commit time.
+    const key = `${itemKey}|${period ?? ''}|u:${normalizeUom(r.baseUnit)}`
     const bucket = groups.get(key)
     if (bucket) bucket.push(r)
     else groups.set(key, [r])
@@ -764,7 +785,13 @@ export async function reassignVolumeImportLocation(
   // summaries the writer produced, and delete each from the old location.
   const { eligible } = await collectEligibleRows(volumeImportId)
   const summaries = aggregateVolumeRows(eligible, imp.defaultPeriod)
+  // Delete once per (item, period) — unit-agnostic — so the per-unit summaries
+  // that now share an (item, period) don't each re-issue the same delete.
+  const relocated = new Set<string>()
   for (const s of summaries) {
+    const groupKey = `c:${s.canonicalItemId ?? ''}:p:${s.productId ?? ''}|${s.period ?? ''}`
+    if (relocated.has(groupKey)) continue
+    relocated.add(groupKey)
     await replaceExistingImportedVolume({
       userId,
       canonicalItemId: s.canonicalItemId,

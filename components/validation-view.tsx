@@ -77,7 +77,11 @@ export function ValidationView({
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     return records.filter((r) => {
-      if (filter === 'needs' && !(r.hasGaps && !r.validated)) return false
+      if (
+        filter === 'needs' &&
+        !((r.hasGaps || r.unitIssue !== null) && !r.validated)
+      )
+        return false
       if (filter === 'unvalidated' && r.validated) return false
       if (filter === 'validated' && !r.validated) return false
       if (q) {
@@ -356,8 +360,20 @@ export function ValidationView({
                     </td>
                   ))}
                   <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-muted-foreground">
-                    {formatNumber(Math.round(r.annualVolume))}
-                    {r.baseUnit ? ` ${r.baseUnit}` : ''}
+                    <span>{formatNumber(Math.round(r.annualVolume))}</span>
+                    {r.unitIssue ? (
+                      <span
+                        title={r.unitIssue}
+                        className="ml-1 inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-600"
+                      >
+                        <TriangleAlert className="size-3" />
+                        {r.baseUnit}
+                      </span>
+                    ) : r.baseUnit ? (
+                      ` ${r.baseUnit}`
+                    ) : (
+                      ''
+                    )}
                   </td>
                   <td className="px-3 py-2 font-mono text-xs text-muted-foreground/70">
                     #{r.purchaseId}
