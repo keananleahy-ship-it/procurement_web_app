@@ -1,10 +1,11 @@
 import { redirect } from 'next/navigation'
 import { getCurrentUser } from '@/lib/roles'
-import { getUsers } from '@/app/actions/users'
+import { getUsers, getSiteAssignments } from '@/app/actions/users'
 import { listInvitations } from '@/app/actions/invitations'
 import { PageHeader } from '@/components/page-header'
 import { UsersManager } from '@/components/users-manager'
 import { InvitationsManager } from '@/components/invitations-manager'
+import { SiteAssignmentsManager } from '@/components/site-assignments-manager'
 
 export default async function AdminPage() {
   const currentUser = await getCurrentUser()
@@ -12,7 +13,11 @@ export default async function AdminPage() {
   // Viewers and uploaders never see user management.
   if (currentUser.role !== 'admin') redirect('/')
 
-  const [users, invitations] = await Promise.all([getUsers(), listInvitations()])
+  const [users, invitations, siteAssignments] = await Promise.all([
+    getUsers(),
+    listInvitations(),
+    getSiteAssignments(),
+  ])
 
   return (
     <>
@@ -42,6 +47,23 @@ export default async function AdminPage() {
             </p>
           </div>
           <UsersManager users={users} currentUserId={currentUser.id} />
+        </section>
+
+        <section className="flex flex-col gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-foreground">
+              Site assignments
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Assign each member the location(s) they champion for Catalog
+              Validation. Admins can validate every site.
+            </p>
+          </div>
+          <SiteAssignmentsManager
+            users={users}
+            locations={siteAssignments.locations}
+            assignments={siteAssignments.assignments}
+          />
         </section>
       </div>
     </>

@@ -156,6 +156,30 @@ export const purchaseVolumes = pgTable('purchase_volumes', {
   period: text('period'),
   // 'manual' | 'import' | 'snowflake'
   source: text('source').notNull().default('manual'),
+  // --- Catalog validation sign-off ------------------------------------------
+  // A site champion reviews each purchase record for their location and signs
+  // off that its resolved product's catalog attributes are correct. Sign-off is
+  // per purchase record (so it's scoped to a location) but the attributes it
+  // confirms live on the shared product; editing those attributes clears the
+  // sign-off on every record pointing at that product so each site re-confirms.
+  validatedAt: timestamp('validatedAt'),
+  validatedByUserId: text('validatedByUserId'),
+  validatedByName: text('validatedByName'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
+// --- Catalog validation: site-champion assignments -------------------------
+// Which locations a user is the "site champion" for. A champion may review,
+// correct, and sign off catalog data for their assigned location(s) only.
+// Admins implicitly have access to every location and don't need rows here.
+// (id, userId) plus a unique (userId, locationId) guard prevent duplicates.
+export const userLocations = pgTable('user_locations', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  locationId: integer('locationId').notNull(),
+  // snapshot of who granted the assignment, for display/audit
+  assignedByUserId: text('assignedByUserId'),
+  assignedByName: text('assignedByName'),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 
