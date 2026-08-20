@@ -556,6 +556,7 @@ function SiteRow({
   unit,
   opportunity,
   source,
+  target,
 }: {
   name: string
   volume: number
@@ -564,6 +565,9 @@ function SiteRow({
   // where the equivalent this site would switch to is sourced from; when it
   // matches the site itself (within-site) we show "on-site" instead
   source?: string | null
+  // the site-specific like-for-like replacement, shown only when it differs
+  // from the line's representative target (e.g. within-site sourcing)
+  target?: string | null
 }) {
   const sourceLabel =
     source === undefined
@@ -573,12 +577,19 @@ function SiteRow({
         : `from ${source}`
   return (
     <li className="flex items-center justify-between gap-2 py-0.5 text-[0.6875rem] tabular-nums text-muted-foreground">
-      <span className="flex items-center gap-1 truncate">
-        <MapPin className="size-2.5 shrink-0 text-muted-foreground/50" />
-        <span className="truncate text-foreground">{name}</span>
-        {sourceLabel && (
-          <span className="shrink-0 rounded-sm bg-muted px-1 text-[0.5625rem] font-medium normal-case text-muted-foreground/80">
-            {sourceLabel}
+      <span className="flex min-w-0 flex-col">
+        <span className="flex items-center gap-1 truncate">
+          <MapPin className="size-2.5 shrink-0 text-muted-foreground/50" />
+          <span className="truncate text-foreground">{name}</span>
+          {sourceLabel && (
+            <span className="shrink-0 rounded-sm bg-muted px-1 text-[0.5625rem] font-medium normal-case text-muted-foreground/80">
+              {sourceLabel}
+            </span>
+          )}
+        </span>
+        {target && (
+          <span className="truncate pl-3.5 text-[0.5625rem] normal-case text-primary/80">
+            → {target}
           </span>
         )}
       </span>
@@ -749,18 +760,59 @@ function EquivalentLens({
                       className="rounded-md border border-border/60 bg-background/40 px-3 py-2"
                     >
                       <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="truncate text-xs font-medium text-foreground">
-                            {line.productName}
-                          </p>
-                          <p className="text-[0.625rem] tabular-nums text-muted-foreground/70">
-                            {formatCurrency(line.presentUnitCost)}/{unit}{' '}
-                            <ArrowRight className="inline size-2.5" />{' '}
-                            {formatCurrency(line.bestEquivalentUnitCost)}/{unit}
-                            {' · '}
-                            {formatNumber(Math.round(line.annualVolume))} {unit}
-                            /yr
-                          </p>
+                        <div className="min-w-0 flex-1">
+                          {(() => {
+                            const hasSwap =
+                              line.bestEquivalentProductName !== '—' &&
+                              line.savings > 0
+                            return (
+                              <>
+                                <div className="flex items-baseline justify-between gap-2">
+                                  <span className="text-[0.625rem] uppercase tracking-wide text-muted-foreground/60">
+                                    Buying
+                                  </span>
+                                  <span className="shrink-0 text-[0.625rem] tabular-nums text-muted-foreground/70">
+                                    {formatCurrency(line.presentUnitCost)}/{unit}
+                                    {line.presentBasis === 'paid-cost' && (
+                                      <span className="ml-0.5 text-muted-foreground/50">
+                                        paid
+                                      </span>
+                                    )}
+                                  </span>
+                                </div>
+                                <p className="truncate text-xs font-medium text-foreground">
+                                  {line.productName}
+                                </p>
+                                {hasSwap ? (
+                                  <>
+                                    <div className="mt-1 flex items-baseline justify-between gap-2">
+                                      <span className="flex items-center gap-1 text-[0.625rem] uppercase tracking-wide text-primary/80">
+                                        <ArrowRight className="size-2.5" />
+                                        Switch to
+                                      </span>
+                                      <span className="shrink-0 text-[0.625rem] tabular-nums text-primary/90">
+                                        {formatCurrency(
+                                          line.bestEquivalentUnitCost,
+                                        )}
+                                        /{unit}
+                                      </span>
+                                    </div>
+                                    <p className="truncate text-xs font-medium text-primary">
+                                      {line.bestEquivalentProductName}
+                                    </p>
+                                  </>
+                                ) : (
+                                  <p className="mt-1 text-[0.625rem] text-muted-foreground/60">
+                                    Already the cheapest like-for-like
+                                  </p>
+                                )}
+                                <p className="mt-1 text-[0.625rem] tabular-nums text-muted-foreground/60">
+                                  {formatNumber(Math.round(line.annualVolume))}{' '}
+                                  {unit}/yr
+                                </p>
+                              </>
+                            )
+                          })()}
                         </div>
                         <span
                           className={cn(
@@ -783,6 +835,14 @@ function EquivalentLens({
                               unit={unit}
                               opportunity={l.opportunity}
                               source={l.sourceLocationName}
+                              target={
+                                l.opportunity > 0 &&
+                                l.equivalentProductName !== '—' &&
+                                l.equivalentProductName !==
+                                  line.bestEquivalentProductName
+                                  ? l.equivalentProductName
+                                  : null
+                              }
                             />
                           ))}
                         </ul>
