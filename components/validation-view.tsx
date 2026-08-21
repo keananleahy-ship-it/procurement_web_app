@@ -10,6 +10,9 @@ import {
   Loader2,
   RotateCcw,
   CheckCheck,
+  Sparkles,
+  Check,
+  X,
 } from 'lucide-react'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -33,6 +36,9 @@ import {
   setRecordValidated,
   updateValidationAttribute,
   bulkSetValidated,
+  suggestAttributesForLocation,
+  acceptSuggestion,
+  dismissSuggestion,
   type AccessibleLocation,
   type ValidationRecord,
   type ValidationProgress,
@@ -63,6 +69,9 @@ export function ValidationView({
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
+  // Separate transition for the AI pass so a long model call shows its own
+  // spinner without freezing the per-cell edit affordances.
+  const [aiPending, startAi] = useTransition()
   const [filter, setFilter] = useState<Filter>('all')
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<string | null>(null)
@@ -70,6 +79,22 @@ export function ValidationView({
   function run(fn: () => Promise<void>) {
     startTransition(async () => {
       await fn()
+      router.refresh()
+    })
+  }
+
+  function runAiSuggest() {
+    if (!activeLocationId) return
+    setStatus(null)
+    startAi(async () => {
+      const res = await suggestAttributesForLocation(activeLocationId)
+      setStatus(
+        res.suggestionsCreated > 0
+          ? `AI proposed ${res.suggestionsCreated} value(s) across ${res.productsConsidered} high-volume item(s). Review the highlighted suggestions below — accept or edit each one.`
+          : res.productsConsidered === 0
+            ? 'No high-volume items here are missing attributes — nothing to suggest.'
+            : `Reviewed ${res.productsConsidered} item(s); the AI wasn't confident enough to propose values.`,
+      )
       router.refresh()
     })
   }
@@ -229,6 +254,20 @@ export function ValidationView({
           <Button
             size="sm"
             variant="outline"
+            disabled={aiPending || pending || !activeLocationId}
+            onClick={runAiSuggest}
+            title="Fill missing attributes for this site's highest-volume items using AI. Results are staged for your review — nothing is applied automatically."
+          >
+            {aiPending ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="size-3.5" />
+            )}
+            {aiPending ? 'Analyzing…' : 'Suggest with AI'}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
             disabled={pending || remainingIds.length === 0}
             onClick={() =>
               run(async () => {
@@ -322,6 +361,27 @@ export function ValidationView({
                           )
                         })
                       }
+                      onAccept={() =>
+                        run(async () => {
+                          if (!activeLocationId) return
+                          await acceptSuggestion({
+                            productId: r.productId,
+                            locationId: activeLocationId,
+                            key: 'supplier',
+                          })
+                          setStatus('Applied AI suggestion globally.')
+                        })
+                      }
+                      onDismiss={() =>
+                        run(async () => {
+                          if (!activeLocationId) return
+                          await dismissSuggestion({
+                            productId: r.productId,
+                            locationId: activeLocationId,
+                            key: 'supplier',
+                          })
+                        })
+                      }
                     />
                   </td>
                   <td className="max-w-[220px] px-3 py-2">
@@ -354,6 +414,27 @@ export function ValidationView({
                                 ? `Updated globally · cleared ${res.clearedSignOffs} prior sign-off(s) for re-confirmation.`
                                 : 'Updated globally across all sites.',
                             )
+                          })
+                        }
+                        onAccept={() =>
+                          run(async () => {
+                            if (!activeLocationId) return
+                            await acceptSuggestion({
+                              productId: r.productId,
+                              locationId: activeLocationId,
+                              key: c.key,
+                            })
+                            setStatus('Applied AI suggestion globally.')
+                          })
+                        }
+                        onDismiss={() =>
+                          run(async () => {
+                            if (!activeLocationId) return
+                            await dismissSuggestion({
+                              productId: r.productId,
+                              locationId: activeLocationId,
+                              key: c.key,
+                            })
                           })
                         }
                       />
@@ -439,15 +520,55 @@ function AttrCell({
   attrKey,
   disabled,
   onChange,
+  onAccept,
+  onDismiss,
 }: {
   record: ValidationRecord
   attrKey: AttributeKey
   disabled: boolean
   onChange: (value: string | null) => void
+  onAccept: () => void
+  onDismiss: () => void
 }) {
   const current = (record[attrKey] as string | null) ?? null
   const vocab = vocabularyFor(attrKey, record.category)
   const missing = !current
+  // A pending AI suggestion only shows when the value is still missing — once a
+  // champion sets a value, the suggestion for that cell is moot.
+  const suggestion = missing ? record.suggestions[attrKey] : undefined
+
+  // When there's a pending suggestion for an empty cell, surface it as a
+  // reviewable chip (accept / dismiss) sitting above the normal editor, so the
+  // champion can accept in one click or still edit/enter their own value.
+  if (suggestion) {
+    return (
+      <div className="flex flex-col gap-1.5">
+        <SuggestionChip
+          value={suggestion.value}
+          confidence={suggestion.confidence}
+          rationale={suggestion.rationale}
+          disabled={disabled}
+          onAccept={onAccept}
+          onDismiss={onDismiss}
+        />
+        {!vocab ? (
+          <TextAttr
+            value={current}
+            disabled={disabled}
+            onCommit={onChange}
+            widthClass={attrKey === 'supplier' ? 'w-40' : 'w-24'}
+          />
+        ) : (
+          <VocabSelect
+            current={current}
+            vocab={vocab}
+            missing={missing}
+            onChange={onChange}
+          />
+        )}
+      </div>
+    )
+  }
 
   // Free-text attribute (viscosity, supplier): inline input committing on
   // blur/Enter. Vendor names run longer than viscosity grades, so give them
@@ -463,6 +584,29 @@ function AttrCell({
     )
   }
 
+  return (
+    <VocabSelect
+      current={current}
+      vocab={vocab}
+      missing={missing}
+      onChange={onChange}
+    />
+  )
+}
+
+// The select over a controlled vocabulary, extracted so it can render both
+// standalone and beneath a suggestion chip.
+function VocabSelect({
+  current,
+  vocab,
+  missing,
+  onChange,
+}: {
+  current: string | null
+  vocab: string[]
+  missing: boolean
+  onChange: (value: string | null) => void
+}) {
   // Merge an out-of-vocab current value so it still displays and is selectable.
   const options = current && !vocab.includes(current) ? [current, ...vocab] : vocab
   const items: Record<string, string> = { [NONE]: 'Not set' }
@@ -497,6 +641,61 @@ function AttrCell({
         ))}
       </SelectContent>
     </Select>
+  )
+}
+
+// An AI-proposed value for an empty attribute cell, shown for the champion to
+// review. Accept applies it (globally, like a manual edit); dismiss discards
+// it. The proposal is never applied on its own. The distinct violet styling
+// separates "AI suggested, unconfirmed" from the amber "missing" and the
+// neutral confirmed states.
+function SuggestionChip({
+  value,
+  confidence,
+  rationale,
+  disabled,
+  onAccept,
+  onDismiss,
+}: {
+  value: string
+  confidence: number | null
+  rationale: string | null
+  disabled: boolean
+  onAccept: () => void
+  onDismiss: () => void
+}) {
+  const pct = confidence != null ? Math.round(confidence * 100) : null
+  const title = rationale
+    ? `AI suggestion: ${rationale}${pct != null ? ` (${pct}% confidence)` : ''}`
+    : `AI suggestion${pct != null ? ` (${pct}% confidence)` : ''}`
+  return (
+    <div
+      title={title}
+      className="flex items-center gap-1 rounded-md border border-violet-500/40 bg-violet-500/10 px-1.5 py-1"
+    >
+      <Sparkles className="size-3 shrink-0 text-violet-500" />
+      <span className="min-w-0 flex-1 truncate text-xs font-medium text-violet-700 dark:text-violet-300">
+        {value}
+      </span>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onAccept}
+        aria-label={`Accept suggestion ${value}`}
+        className="grid size-5 place-items-center rounded text-violet-600 transition-colors hover:bg-violet-500/20 disabled:opacity-50 dark:text-violet-300"
+      >
+        <Check className="size-3.5" />
+      </button>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onDismiss}
+        aria-label={`Dismiss suggestion ${value}`}
+        className="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50"
+      >
+        <X className="size-3.5" />
+      </button>
+    </div>
   )
 }
 
