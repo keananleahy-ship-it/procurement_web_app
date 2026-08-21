@@ -270,6 +270,31 @@ export const products = pgTable('products', {
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 
+// --- AI catalog-attribute suggestions --------------------------------------
+// The AI Catalog Validation pass proposes values for a product's MISSING
+// attributes (category, application, subcategory, viscosity, packageType,
+// supplier). Proposals are staged here as PENDING and never written to the
+// product until a champion accepts one, so nothing is auto-applied. Attributes
+// live on the shared product, so a suggestion is keyed by product+attribute
+// (one pending suggestion per pair) and shows wherever that product appears.
+// A row exists only while pending: accepting applies the value to the product
+// and deletes the row; dismissing (or a manual edit of that cell) deletes it.
+export const attributeSuggestions = pgTable('attribute_suggestions', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  productId: integer('productId').notNull(),
+  // One of the validation attribute keys.
+  attribute: text('attribute').notNull(),
+  // The AI-proposed value (already validated against the controlled vocabulary
+  // for select attributes; free text for viscosity/supplier).
+  value: text('value').notNull(),
+  // Model confidence 0..1 and a short human-readable justification.
+  confidence: numeric('confidence', { precision: 3, scale: 2 }),
+  rationale: text('rationale'),
+  model: text('model'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
 export const vendorPrices = pgTable('vendor_prices', {
   id: serial('id').primaryKey(),
   userId: text('userId').notNull(),
