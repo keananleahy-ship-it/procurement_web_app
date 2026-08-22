@@ -53,20 +53,39 @@ export const auth = betterAuth({
     ...(process.env.NODE_ENV === 'development'
       ? ['http://localhost:3000', 'http://127.0.0.1:3000']
       : []),
-    // Same-origin fallback: trust the exact host this request was served from.
-    // This is what makes sign-in work from any device / any URL the app is
-    // deployed under (vercel.app alias, preview deployments, future domains).
-    // It does NOT weaken CSRF protection: a cross-site attacker's request
-    // carries its own Origin (evil.com) while the Host is still ours, so the
-    // two don't match and the request is still rejected.
+    // Same-origin fallback: trust the host this request was served on, so
+    // sign-in works from whatever Vercel-generated URL the app is reached at
+    // (deployment URLs, aliases) without enumerating each one here.
+    //
+    // The host is only honoured when it belongs to a domain we control. The
+    // Host / X-Forwarded-Host headers are attacker-controllable when a request
+    // doesn't pass through Vercel's edge, so trusting them verbatim would let a
+    // cross-site attacker send Origin: evil.com together with
+    // X-Forwarded-Host: evil.com and defeat the CSRF origin check entirely.
+    // Restricting to these suffixes keeps that door shut. A brand new custom
+    // domain must be added to the explicit list above.
     ...(() => {
       const headers = request?.headers
       if (!headers) return []
       const host = headers.get('x-forwarded-host') ?? headers.get('host')
       if (!host) return []
+      const hostname = host.split(':')[0].toLowerCase()
+      const allowed = [
+        '.vercel.app',
+        '.vercel.run',
+        '.v0.build',
+        '.vusercontent.net',
+        'leahywolf.net',
+      ]
+      const ok = allowed.some(
+        (s) =>
+          s.startsWith('.')
+            ? hostname.endsWith(s)
+            : hostname === s || hostname.endsWith(`.${s}`),
+      )
+      if (!ok) return []
       // Both schemes: behind Vercel's proxy the forwarded proto can disagree
       // with the browser's Origin (http hop internally, https externally).
-      // The host is what matters for the same-origin check.
       return [`https://${host}`, `http://${host}`]
     })(),
   ],
