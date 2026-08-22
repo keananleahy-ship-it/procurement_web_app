@@ -36,6 +36,11 @@ export const auth = betterAuth({
     // The v0 sandbox dev preview is served from rotating *.vercel.run origins;
     // trust the whole domain so preview sign-in isn't rejected either.
     'https://*.vercel.run',
+    // The embedded v0 preview is proxied through *.v0.build, so the browser
+    // sends Origin: https://<chat>.v0.build while the request arrives at the
+    // sandbox under a different internal host. That mismatch is why sign-in
+    // failed inside the preview pane but worked when opened in its own tab.
+    'https://*.v0.build',
     // Production custom domain. Without these, sign-in requests coming from the
     // custom domain are rejected as "Invalid origin" once DNS is pointed here.
     'https://leahywolf.net',
