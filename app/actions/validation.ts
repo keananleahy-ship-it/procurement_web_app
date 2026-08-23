@@ -29,6 +29,7 @@ import {
   type AttributeFillInput,
 } from '@/lib/attributes-ai'
 import { isMeasureUom } from '@/lib/uom'
+import { resolveOrCreateVendor } from '@/lib/vendors-registry'
 
 // Detect a purchase record whose captured unit can't be a real volume/weight
 // measure, which quietly distorts the savings math. Two high-confidence cases:
@@ -306,9 +307,20 @@ export async function updateValidationAttribute(input: {
   }
   const clean = input.value?.trim() ? input.value.trim() : null
 
+  // A supplier typed here is also a vendor identity, so register it in the
+  // `vendors` table where the rest of the app looks vendors up. Existing
+  // vendors are matched ignoring case and punctuation, and the canonical name
+  // is what gets stored, so "PHILLIPS 66" resolves to the existing
+  // "Phillips66" instead of introducing a third spelling.
+  let stored = clean
+  if (input.key === 'supplier' && clean) {
+    const resolved = await resolveOrCreateVendor(u.id, clean)
+    if (resolved) stored = resolved.name
+  }
+
   await db
     .update(products)
-    .set({ [input.key]: clean, attributesEdited: true })
+    .set({ [input.key]: stored, attributesEdited: true })
     .where(eq(products.id, input.productId))
 
   // Clear sign-off everywhere this product is purchased (re-confirm required).
@@ -326,6 +338,7 @@ export async function updateValidationAttribute(input: {
   revalidatePath('/validation')
   revalidatePath('/products')
   revalidatePath('/compare')
+  revalidatePath('/vendors')
   revalidatePath('/')
   return { clearedSignOffs: cleared.length }
 }
@@ -535,9 +548,17 @@ export async function acceptSuggestion(input: {
     .limit(1)
   if (!sugg) throw new Error('Suggestion no longer exists')
 
+  // Accepting an AI-suggested supplier registers a vendor too, so the two
+  // write paths can't disagree about what counts as a known vendor.
+  let suggested = sugg.value
+  if (input.key === 'supplier' && suggested) {
+    const resolved = await resolveOrCreateVendor(u.id, suggested)
+    if (resolved) suggested = resolved.name
+  }
+
   await db
     .update(products)
-    .set({ [input.key]: sugg.value, attributesEdited: true })
+    .set({ [input.key]: suggested, attributesEdited: true })
     .where(eq(products.id, input.productId))
 
   const cleared = await db
@@ -563,6 +584,7 @@ export async function acceptSuggestion(input: {
   revalidatePath('/validation')
   revalidatePath('/products')
   revalidatePath('/compare')
+  revalidatePath('/vendors')
   revalidatePath('/')
   return { clearedSignOffs: cleared.length }
 }

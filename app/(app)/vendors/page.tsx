@@ -1,9 +1,12 @@
 import { PageHeader } from '@/components/page-header'
 import { VendorsView } from '@/components/vendors-view'
-import { getVendors } from '@/app/actions/vendors'
+import { getVendors, getVendorNameVariants } from '@/app/actions/vendors'
 
 export default async function VendorsPage() {
-  const vendors = await getVendors()
+  const [vendors, variantGroups] = await Promise.all([
+    getVendors(),
+    getVendorNameVariants(),
+  ])
 
   return (
     <>
@@ -18,6 +21,7 @@ export default async function VendorsPage() {
           contactEmail: v.contactEmail,
           notes: v.notes,
         }))}
+        variantGroups={variantGroups}
       />
     </>
   )
