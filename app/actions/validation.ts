@@ -9,6 +9,8 @@ import {
   products,
   purchaseVolumes,
   userLocations,
+  volumeImportRows,
+  volumeImports,
 } from '@/lib/db/schema'
 import {
   requireUser,
@@ -86,6 +88,8 @@ export type ValidationRecord = {
   // the shared product this record resolves to (attributes are global to it)
   productId: number
   vendorCode: string | null
+  // The site's own part number from its purchase file; null when not supplied.
+  locationPartNumber: string | null
   description: string
   category: string | null
   application: string | null
@@ -173,6 +177,26 @@ export async function getValidationRecords(locationId: number): Promise<{
       validatedByName: purchaseVolumes.validatedByName,
       productId: products.id,
       vendorCode: products.sku,
+      // The part number this specific site used in its own purchase file, read
+      // back from the raw import rows. Sites label the same product
+      // differently (vendor code 01055929 is "PMFAW46BLK" in Chicago), so this
+      // is what a champion recognizes — unlike our internal record ID.
+      // Prefer a productId match; fall back to canonicalItemId for records
+      // whose product link was resolved later. Null when the site's upload had
+      // no part-number column at all.
+      locationPartNumber: sql<string | null>`(
+        select vir."sku"
+        from ${volumeImportRows} vir
+        join ${volumeImports} vi on vi."id" = vir."volumeImportId"
+        where vi."locationId" = ${purchaseVolumes.locationId}
+          and vir."sku" is not null
+          and (
+            vir."productId" = ${purchaseVolumes.productId}
+            or vir."canonicalItemId" = ${purchaseVolumes.canonicalItemId}
+          )
+        order by (vir."productId" is not distinct from ${purchaseVolumes.productId}) desc
+        limit 1
+      )`,
       description: products.name,
       category: products.category,
       application: products.application,
@@ -237,8 +261,9 @@ export async function getValidationRecords(locationId: number): Promise<{
       validatedAt: r.validatedAt ? r.validatedAt.toISOString() : null,
       validatedByName: r.validatedByName,
       productId: r.productId,
-      vendorCode: r.vendorCode,
-      description: r.description,
+    vendorCode: r.vendorCode,
+    locationPartNumber: r.locationPartNumber,
+    description: r.description,
       category: r.category,
       application: r.application,
       subcategory: r.subcategory,

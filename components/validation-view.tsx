@@ -112,7 +112,7 @@ export function ValidationView({
       if (filter === 'validated' && !r.validated) return false
       if (q) {
         const hay =
-        `${r.vendorCode ?? ''} ${r.supplier ?? ''} ${r.description}`.toLowerCase()
+        `${r.vendorCode ?? ''} ${r.locationPartNumber ?? ''} ${r.supplier ?? ''} ${r.description}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
       return true
@@ -321,7 +321,7 @@ export function ValidationView({
                     Volume/yr
                   </span>
                 </th>
-                <th className="px-3 py-2 font-semibold">Record ID</th>
+                <th className="px-3 py-2 font-semibold">Site part no.</th>
                 <th className="px-3 py-2 font-semibold">Sign-off</th>
               </tr>
             </thead>
@@ -465,8 +465,19 @@ export function ValidationView({
                       ''
                     )}
                   </td>
-                  <td className="px-3 py-2 font-mono text-xs text-muted-foreground/70">
-                    #{r.purchaseId}
+                  <td className="px-3 py-2 font-mono text-xs">
+                    {r.locationPartNumber ? (
+                      <span className="text-foreground">
+                        {r.locationPartNumber}
+                      </span>
+                    ) : (
+                      <span
+                        className="text-muted-foreground/60"
+                        title="This site's purchase file did not include a part number"
+                      >
+                        —
+                      </span>
+                    )}
                   </td>
                   <td className="px-3 py-2">
                     {r.validated ? (
