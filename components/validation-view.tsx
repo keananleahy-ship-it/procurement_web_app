@@ -14,6 +14,7 @@ import {
   Check,
   X,
   ArrowDown,
+  Plus,
 } from 'lucide-react'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -46,6 +47,18 @@ import {
 } from '@/app/actions/validation'
 
 const NONE = '__none__'
+// Sentinel for the "Add new…" row in a controlled-vocabulary select. The built
+// in vocabularies are heuristic starting points, not an exhaustive list, so a
+// champion must be able to enter a value the derivation rules never predicted.
+const ADD_NEW = '__add_new__'
+
+// Bucket key for collecting values already in use. Formulation ("subcategory")
+// draws from a different vocabulary depending on the item's category — base-oil
+// types for engine oils, additive chemistry for hydraulics — so its saved values
+// must stay scoped per category or the two vocabularies would bleed together.
+function savedValueBucket(key: AttributeKey, category: string | null): string {
+  return key === 'subcategory' ? `subcategory::${category ?? ''}` : key
+}
 
 const EDITABLE_COLUMNS: { key: AttributeKey; label: string }[] = [
   { key: 'category', label: 'Category' },
@@ -118,6 +131,26 @@ export function ValidationView({
       return true
     })
   }, [records, filter, query])
+
+  // Values already saved on these records, so a custom value one champion adds
+  // becomes a normal dropdown option on every other row instead of having to be
+  // retyped. Keyed on the *unfiltered* records so searching never shrinks the
+  // available options. Formulation's vocabulary is category-dependent, so those
+  // are bucketed per category rather than pooled across all of them.
+  const savedValues = useMemo(() => {
+    const map = new Map<string, Set<string>>()
+    for (const r of records) {
+      for (const key of VALIDATION_ATTRIBUTE_KEYS) {
+        const v = r[key] as string | null
+        if (!v) continue
+        const bucket = savedValueBucket(key, r.category)
+        let set = map.get(bucket)
+        if (!set) map.set(bucket, (set = new Set()))
+        set.add(v)
+      }
+    }
+    return map
+  }, [records])
 
   const pct =
     progress.total > 0
@@ -405,10 +438,11 @@ export function ValidationView({
                   </td>
                   {EDITABLE_COLUMNS.map((c) => (
                     <td key={c.key} className="px-3 py-2">
-                      <AttrCell
-                        record={r}
-                        attrKey={c.key}
-                        disabled={pending}
+                    <AttrCell
+                      record={r}
+                      attrKey={c.key}
+                      savedValues={savedValues}
+                      disabled={pending}
                         onChange={(value) =>
                           run(async () => {
                             if (!activeLocationId) return
@@ -542,6 +576,7 @@ function AttrCell({
   onChange,
   onAccept,
   onDismiss,
+  savedValues,
 }: {
   record: ValidationRecord
   attrKey: AttributeKey
@@ -549,9 +584,21 @@ function AttrCell({
   onChange: (value: string | null) => void
   onAccept: () => void
   onDismiss: () => void
+  savedValues?: Map<string, Set<string>>
 }) {
   const current = (record[attrKey] as string | null) ?? null
-  const vocab = vocabularyFor(attrKey, record.category)
+  const builtInVocab = vocabularyFor(attrKey, record.category)
+  // Offer the built-in vocabulary plus any custom values already in use for this
+  // attribute, so previously added options are reusable across rows.
+  const vocab = useMemo(() => {
+    if (!builtInVocab) return null
+    const saved = savedValues?.get(savedValueBucket(attrKey, record.category))
+    if (!saved || saved.size === 0) return builtInVocab
+    const extras = [...saved]
+      .filter((v) => !builtInVocab.includes(v))
+      .sort((a, b) => a.localeCompare(b))
+    return extras.length > 0 ? [...builtInVocab, ...extras] : builtInVocab
+  }, [builtInVocab, savedValues, attrKey, record.category])
   const missing = !current
   // A pending AI suggestion only shows when the value is still missing — once a
   // champion sets a value, the suggestion for that cell is moot.
@@ -631,11 +678,32 @@ function VocabSelect({
   const options = current && !vocab.includes(current) ? [current, ...vocab] : vocab
   const items: Record<string, string> = { [NONE]: 'Not set' }
   for (const o of options) items[o] = o
+  items[ADD_NEW] = 'Add new…'
+
+  // Choosing "Add new…" swaps the select for a text input so the champion can
+  // type a value the vocabulary doesn't cover.
+  const [adding, setAdding] = useState(false)
+  if (adding) {
+    return (
+      <NewValueInput
+        existing={options}
+        onCancel={() => setAdding(false)}
+        onCommit={(value) => {
+          setAdding(false)
+          if (value && value !== current) onChange(value)
+        }}
+      />
+    )
+  }
 
   return (
     <Select
       value={current ?? NONE}
       onValueChange={(v) => {
+        if (v === ADD_NEW) {
+          setAdding(true)
+          return
+        }
         const next = !v || v === NONE ? null : v
         if (next !== current) onChange(next)
       }}
@@ -659,8 +727,64 @@ function VocabSelect({
             {o}
           </SelectItem>
         ))}
+        <SelectItem value={ADD_NEW}>
+          <span className="flex items-center gap-1.5 text-primary">
+            <Plus className="size-3" />
+            Add new…
+          </span>
+        </SelectItem>
       </SelectContent>
     </Select>
+  )
+}
+
+// Inline input for entering a vocabulary value that doesn't exist yet. Enter
+// saves, Escape or an empty blur backs out to the select. Re-entering a value
+// that already exists just selects it rather than creating a duplicate, and the
+// match is case-insensitive so "mining" doesn't shadow an existing "Mining".
+function NewValueInput({
+  existing,
+  onCommit,
+  onCancel,
+}: {
+  existing: string[]
+  onCommit: (value: string | null) => void
+  onCancel: () => void
+}) {
+  const [draft, setDraft] = useState('')
+
+  function commit() {
+    const trimmed = draft.trim()
+    if (!trimmed) {
+      onCancel()
+      return
+    }
+    const match = existing.find(
+      (o) => o.toLowerCase() === trimmed.toLowerCase(),
+    )
+    onCommit(match ?? trimmed)
+  }
+
+  return (
+    <Input
+      autoFocus
+      value={draft}
+      placeholder="New value…"
+      aria-label="New value"
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          onCancel()
+          return
+        }
+        if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+          e.currentTarget.blur()
+        }
+      }}
+      className="h-8 w-full min-w-[9rem] text-xs"
+    />
   )
 }
 
