@@ -13,6 +13,7 @@ import {
   Sparkles,
   Check,
   X,
+  ArrowDown,
 } from 'lucide-react'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -311,7 +312,15 @@ export function ValidationView({
                     {c.label}
                   </th>
                 ))}
-                <th className="px-3 py-2 text-right font-semibold">Volume/yr</th>
+                <th className="px-3 py-2 text-right font-semibold">
+                  <span
+                    className="inline-flex items-center gap-1 text-foreground"
+                    title="Sorted by annual volume, highest first"
+                  >
+                    <ArrowDown className="size-3" aria-hidden="true" />
+                    Volume/yr
+                  </span>
+                </th>
                 <th className="px-3 py-2 font-semibold">Record ID</th>
                 <th className="px-3 py-2 font-semibold">Sign-off</th>
               </tr>

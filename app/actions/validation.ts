@@ -185,7 +185,14 @@ export async function getValidationRecords(locationId: number): Promise<{
     .from(purchaseVolumes)
     .innerJoin(products, eq(products.id, purchaseVolumes.productId))
     .where(eq(purchaseVolumes.locationId, locationId))
-    .orderBy(asc(products.name))
+    // Highest-volume records first so champions spend their attention where it
+    // moves the most spend. Records with no captured volume sort last rather
+    // than leading the table (Postgres sorts NULLs first on DESC by default).
+    // Name is a stable tiebreaker so equal volumes don't shuffle between loads.
+    .orderBy(
+      sql`${purchaseVolumes.annualVolume} desc nulls last`,
+      asc(products.name),
+    )
 
   // Pending AI suggestions for the products shown here, grouped by productId.
   const productIds = Array.from(new Set(rows.map((r) => r.productId)))
