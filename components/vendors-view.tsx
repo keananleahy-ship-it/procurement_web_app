@@ -34,8 +34,8 @@ type Vendor = {
   notes: string | null
 }
 
-// Offers to consolidate supplier spellings that mean the same vendor. Kept as
-// an explicit action rather than an automatic cleanup, because it rewrites
+// Offers to consolidate vendor-name spellings that mean the same vendor. Kept
+// as an explicit action rather than an automatic cleanup, because it rewrites
 // existing product rows.
 function VariantMergePanel({ groups }: { groups: VendorVariantGroup[] }) {
   const [isPending, startTransition] = useTransition()
@@ -49,7 +49,7 @@ function VariantMergePanel({ groups }: { groups: VendorVariantGroup[] }) {
         <Merge className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
         <div className="flex flex-col gap-1">
           <h2 className="text-sm font-semibold text-foreground">
-            Duplicate supplier spellings
+            Duplicate vendor spellings
           </h2>
           <p className="text-xs leading-relaxed text-muted-foreground">
             These product records use different spellings of the same vendor.
@@ -136,7 +136,7 @@ export function VendorsView({
               <DialogHeader>
                 <DialogTitle>Add vendor</DialogTitle>
                 <DialogDescription>
-                  Add a supplier you want to compare pricing against.
+                  Add a vendor you want to compare pricing against.
                 </DialogDescription>
               </DialogHeader>
               <div className="flex flex-col gap-4 py-4">

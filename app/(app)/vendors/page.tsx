@@ -12,7 +12,7 @@ export default async function VendorsPage() {
     <>
       <PageHeader
         title="Vendors"
-        description="The suppliers you source from and compare prices across."
+        description="The vendors you source from and compare prices across."
       />
       <VendorsView
         vendors={vendors.map((v) => ({
