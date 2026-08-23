@@ -299,10 +299,10 @@ export function ValidationView({
 
       {/* Records table */}
       <Card className="overflow-hidden p-0">
-        <div className="scrollbar-always-x overflow-x-scroll">
+        <div className="scrollbar-always-x max-h-[65svh] overflow-x-scroll overflow-y-auto overscroll-contain">
           <table className="w-full min-w-[1100px] border-collapse text-sm">
-            <thead>
-              <tr className="border-b border-border bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
+            <thead className="sticky top-0 z-10">
+              <tr className="border-b border-border bg-muted text-left text-xs uppercase tracking-wide text-muted-foreground">
                 <th className="px-3 py-2 font-semibold">Vendor code</th>
                 <th className="px-3 py-2 font-semibold">Vendor</th>
                 <th className="px-3 py-2 font-semibold">Description</th>
