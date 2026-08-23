@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, useTransition } from 'react'
+import { useEffect, useMemo, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   MapPin,
@@ -27,6 +27,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { formatNumber } from '@/lib/format'
 import {
@@ -680,111 +688,146 @@ function VocabSelect({
   for (const o of options) items[o] = o
   items[ADD_NEW] = 'Add new…'
 
-  // Choosing "Add new…" swaps the select for a text input so the champion can
-  // type a value the vocabulary doesn't cover.
+  // Choosing "Add new…" opens a small dialog. An earlier version swapped the
+  // select for an inline autofocused input, but that depended on winning a focus
+  // race against the select's own close-and-restore-focus behaviour, and a
+  // stray blur silently discarded whatever had been typed. A portalled dialog
+  // with explicit buttons has no such race and cannot fail invisibly.
   const [adding, setAdding] = useState(false)
-  if (adding) {
-    return (
-      <NewValueInput
+
+  return (
+    <>
+      <Select
+        value={current ?? NONE}
+        onValueChange={(v) => {
+          if (v === ADD_NEW) {
+            // Let the select finish closing (and restoring focus) before the
+            // dialog takes over, so the two don't fight over the focus target.
+            setTimeout(() => setAdding(true), 0)
+            return
+          }
+          const next = !v || v === NONE ? null : v
+          if (next !== current) onChange(next)
+        }}
+        items={items}
+      >
+        <SelectTrigger
+          size="sm"
+          className={cn(
+            'w-full min-w-[9rem]',
+            missing && 'border-amber-500/60 text-amber-600',
+          )}
+        >
+          <SelectValue placeholder="Set…" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={NONE}>
+            <span className="text-muted-foreground">Not set</span>
+          </SelectItem>
+          {options.map((o) => (
+            <SelectItem key={o} value={o}>
+              {o}
+            </SelectItem>
+          ))}
+          <SelectItem value={ADD_NEW}>
+            <span className="flex items-center gap-1.5 text-primary">
+              <Plus className="size-3" />
+              Add new…
+            </span>
+          </SelectItem>
+        </SelectContent>
+      </Select>
+
+      <NewValueDialog
+        open={adding}
         existing={options}
-        onCancel={() => setAdding(false)}
+        onOpenChange={setAdding}
         onCommit={(value) => {
           setAdding(false)
           if (value && value !== current) onChange(value)
         }}
       />
-    )
-  }
-
-  return (
-    <Select
-      value={current ?? NONE}
-      onValueChange={(v) => {
-        if (v === ADD_NEW) {
-          setAdding(true)
-          return
-        }
-        const next = !v || v === NONE ? null : v
-        if (next !== current) onChange(next)
-      }}
-      items={items}
-    >
-      <SelectTrigger
-        size="sm"
-        className={cn(
-          'w-full min-w-[9rem]',
-          missing && 'border-amber-500/60 text-amber-600',
-        )}
-      >
-        <SelectValue placeholder="Set…" />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value={NONE}>
-          <span className="text-muted-foreground">Not set</span>
-        </SelectItem>
-        {options.map((o) => (
-          <SelectItem key={o} value={o}>
-            {o}
-          </SelectItem>
-        ))}
-        <SelectItem value={ADD_NEW}>
-          <span className="flex items-center gap-1.5 text-primary">
-            <Plus className="size-3" />
-            Add new…
-          </span>
-        </SelectItem>
-      </SelectContent>
-    </Select>
+    </>
   )
 }
 
-// Inline input for entering a vocabulary value that doesn't exist yet. Enter
-// saves, Escape or an empty blur backs out to the select. Re-entering a value
-// that already exists just selects it rather than creating a duplicate, and the
-// match is case-insensitive so "mining" doesn't shadow an existing "Mining".
-function NewValueInput({
+// Dialog for entering a vocabulary value that doesn't exist yet. Submitting the
+// form (Enter or the Add button) saves; Cancel and Escape back out. Re-entering
+// a value that already exists just selects it rather than creating a duplicate,
+// matched case-insensitively so "mining" doesn't shadow an existing "Mining".
+function NewValueDialog({
+  open,
   existing,
+  onOpenChange,
   onCommit,
-  onCancel,
 }: {
+  open: boolean
   existing: string[]
-  onCommit: (value: string | null) => void
-  onCancel: () => void
+  onOpenChange: (open: boolean) => void
+  onCommit: (value: string) => void
 }) {
   const [draft, setDraft] = useState('')
 
-  function commit() {
-    const trimmed = draft.trim()
-    if (!trimmed) {
-      onCancel()
-      return
-    }
-    const match = existing.find(
-      (o) => o.toLowerCase() === trimmed.toLowerCase(),
-    )
-    onCommit(match ?? trimmed)
-  }
+  // Start from a clean field each time the dialog opens, so a previously
+  // abandoned entry doesn't reappear on the next row.
+  useEffect(() => {
+    if (open) setDraft('')
+  }, [open])
+
+  const trimmed = draft.trim()
+  const duplicate = existing.find(
+    (o) => o.toLowerCase() === trimmed.toLowerCase(),
+  )
 
   return (
-    <Input
-      autoFocus
-      value={draft}
-      placeholder="New value…"
-      aria-label="New value"
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === 'Escape') {
-          e.preventDefault()
-          onCancel()
-          return
-        }
-        if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-          e.currentTarget.blur()
-        }
-      }}
-      className="h-8 w-full min-w-[9rem] text-xs"
-    />
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-sm">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (!trimmed) return
+            onCommit(duplicate ?? trimmed)
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>Add a new value</DialogTitle>
+            <DialogDescription>
+              This will be applied to the item and become available on every
+              other row.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-4">
+            <Input
+              autoFocus
+              value={draft}
+              placeholder="e.g. Mining Fleet"
+              aria-label="New value"
+              onChange={(e) => setDraft(e.target.value)}
+            />
+            {duplicate && (
+              <p className="pt-2 text-xs text-muted-foreground">
+                {`"${duplicate}" already exists — it will be selected instead of
+                creating a duplicate.`}
+              </p>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" disabled={!trimmed}>
+              Add
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }
 
