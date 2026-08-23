@@ -168,6 +168,22 @@ export type SavingsItem = {
 
 export type VendorRef = { id: number; name: string }
 
+// Selector options. A `null` category or subcategory means "no filter" (all).
+// Items whose category/subcategory is null in the data are keyed by the empty
+// string and labelled "Uncategorized", so "unset" stays distinguishable from
+// "all" instead of the two collapsing into one another.
+export type SubcategoryOption = {
+  subcategory: string
+  label: string
+  itemCount: number
+}
+export type CategoryOption = {
+  category: string
+  label: string
+  itemCount: number
+  subcategories: SubcategoryOption[]
+}
+
 export type SavingsResult = {
   items: SavingsItem[]
   totals: {
@@ -187,6 +203,12 @@ export type SavingsResult = {
   // switch to any like-for-like product; 'same-product' restricts it to the
   // same branded product line (a pure packaging move, no brand change)
   packagingBasis: 'equivalent' | 'same-product'
+  // every category/subcategory with analyzable items, for the selector. Built
+  // from the full canonical roster so it never shrinks with the active filter.
+  categories: CategoryOption[]
+  // active filter, echoed back (null = all)
+  category: string | null
+  subcategory: string | null
 }
 
 const familyLabel = (id: PackFamilyId) =>
@@ -218,14 +240,20 @@ const productLineKey = (name: string): string =>
     .join(' ')
     .trim()
 
-// Build the three savings lenses for AW hydraulic. Read-only: reuses the
-// comparison engine (offers, best/worst, per-location volume) and the paid
+// Build the three savings lenses for the selected category. Read-only: reuses
+// the comparison engine (offers, best/worst, per-location volume) and the paid
 // baselines from purchase volumes; no pricing math is redefined here.
-export async function getAwSavingsAnalyses(
+//
+// Each lens operates on ONE canonical item at a time, so widening the filter
+// only changes which items are listed — it never mixes prices across items.
+export async function getSavingsAnalyses(
   opts?: {
     excludedVendorIds?: number[]
     equivalentSourcing?: 'cross-site' | 'within-site'
     packagingBasis?: 'equivalent' | 'same-product'
+    // null/undefined = every category (resp. every subcategory)
+    category?: string | null
+    subcategory?: string | null
   },
 ): Promise<SavingsResult> {
   await requireUser()
@@ -238,18 +266,59 @@ export async function getAwSavingsAnalyses(
     loadVolumeMaps(),
   ])
 
-  const awGroups = comparisons.filter(
-    (c) =>
-      c.isCanonical &&
-      c.canonicalItemId !== null &&
-      c.category === 'Hydraulic Fluid' &&
-      c.subcategory === 'AW',
+  const canonicalGroups = comparisons.filter(
+    (c) => c.isCanonical && c.canonicalItemId !== null,
   )
 
-  // Vendor roster across all AW groups, independent of the active filter, so
-  // the toggle list stays stable even while some vendors are switched off.
+  // Selector options, built from the FULL canonical roster so the list of
+  // categories never shrinks as a result of the currently active filter.
+  const catMap = new Map<string, { count: number; subs: Map<string, number> }>()
+  for (const c of canonicalGroups) {
+    const ck = c.category ?? ''
+    const sk = c.subcategory ?? ''
+    const entry = catMap.get(ck) ?? { count: 0, subs: new Map<string, number>() }
+    entry.count += 1
+    entry.subs.set(sk, (entry.subs.get(sk) ?? 0) + 1)
+    catMap.set(ck, entry)
+  }
+  const label = (key: string) => (key === '' ? 'Uncategorized' : key)
+  const categories: CategoryOption[] = [...catMap.entries()]
+    .map(([key, entry]) => ({
+      category: key,
+      label: label(key),
+      itemCount: entry.count,
+      subcategories: [...entry.subs.entries()]
+        .map(([sk, n]) => ({
+          subcategory: sk,
+          label: label(sk),
+          itemCount: n,
+        }))
+        .sort((a, b) => b.itemCount - a.itemCount || a.label.localeCompare(b.label)),
+    }))
+    .sort((a, b) => b.itemCount - a.itemCount || a.label.localeCompare(b.label))
+
+  const category = opts?.category ?? null
+  // Ignore a subcategory that doesn't exist inside the selected category (e.g.
+  // left over from a previous selection), so a stale pair can't silently
+  // produce an empty result the user can't explain.
+  const requestedSub = opts?.subcategory ?? null
+  const subcategory =
+    requestedSub !== null &&
+    (category === null ||
+      (catMap.get(category)?.subs.has(requestedSub) ?? false))
+      ? requestedSub
+      : null
+
+  const selectedGroups = canonicalGroups.filter(
+    (c) =>
+      (category === null || (c.category ?? '') === category) &&
+      (subcategory === null || (c.subcategory ?? '') === subcategory),
+  )
+
+  // Vendor roster across the selected groups, independent of the vendor filter,
+  // so the toggle list stays stable even while some vendors are switched off.
   const vendorMap = new Map<number, string>()
-  for (const c of awGroups) {
+  for (const c of selectedGroups) {
     for (const o of c.offers) {
       if (!vendorMap.has(o.vendorId)) vendorMap.set(o.vendorId, o.vendorName)
     }
@@ -265,7 +334,7 @@ export async function getAwSavingsAnalyses(
 
   const items: SavingsItem[] = []
 
-  for (const rawGroup of awGroups) {
+  for (const rawGroup of selectedGroups) {
     // Apply the vendor filter to the QUOTES only; purchased volume is never
     // filtered, so toggling a vendor off changes the pricing targets each lens
     // can reach without changing how much was actually bought.
@@ -972,5 +1041,8 @@ export async function getAwSavingsAnalyses(
     excludedVendorIds,
     equivalentSourcing,
     packagingBasis,
+    categories,
+    category,
+    subcategory,
   }
 }

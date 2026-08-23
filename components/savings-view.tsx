@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useTransition } from 'react'
 import {
-  getAwSavingsAnalyses,
+  getSavingsAnalyses,
   type SavingsResult,
   type SavingsItem,
   type LocationProductLine,
@@ -12,6 +12,13 @@ import {
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { EmptyState } from '@/components/empty-state'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { formatCurrency, formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
@@ -26,6 +33,7 @@ import {
   Filter,
   Check,
   Package,
+  Layers,
 } from 'lucide-react'
 
 // Short unit label for per-unit prices ("gallon" -> "gal").
@@ -69,22 +77,33 @@ export function SavingsView({ result }: { result: SavingsResult }) {
   const [basis, setBasis] = useState<'equivalent' | 'same-product'>(
     result.packagingBasis,
   )
+  // null = every category / every subcategory
+  const [category, setCategory] = useState<string | null>(result.category)
+  const [subcategory, setSubcategory] = useState<string | null>(
+    result.subcategory,
+  )
   const [pending, startTransition] = useTransition()
 
   const recompute = (
     nextExcluded: Set<number>,
     nextSourcing: 'cross-site' | 'within-site' = sourcing,
     nextBasis: 'equivalent' | 'same-product' = basis,
+    nextCategory: string | null = category,
+    nextSubcategory: string | null = subcategory,
   ) => {
     setExcluded(nextExcluded)
     setSourcing(nextSourcing)
     setBasis(nextBasis)
+    setCategory(nextCategory)
+    setSubcategory(nextSubcategory)
     const ids = [...nextExcluded]
     startTransition(async () => {
-      const r = await getAwSavingsAnalyses({
+      const r = await getSavingsAnalyses({
         excludedVendorIds: ids,
         equivalentSourcing: nextSourcing,
         packagingBasis: nextBasis,
+        category: nextCategory,
+        subcategory: nextSubcategory,
       })
       setData(r)
     })
@@ -101,6 +120,22 @@ export function SavingsView({ result }: { result: SavingsResult }) {
 
   return (
     <div className="flex flex-col gap-6 p-6">
+      <CategorySelector
+        categories={data.categories}
+        category={category}
+        subcategory={subcategory}
+        itemCount={items.length}
+        // Changing category clears the subcategory, since a subcategory only
+        // has meaning inside its parent (AW exists under Hydraulic Fluid, not
+        // under Engine Oil).
+        onCategoryChange={(next) =>
+          recompute(excluded, sourcing, basis, next, null)
+        }
+        onSubcategoryChange={(next) =>
+          recompute(excluded, sourcing, basis, category, next)
+        }
+        pending={pending}
+      />
       <VendorToggleBar
         vendors={result.vendors}
         excluded={excluded}
@@ -121,8 +156,8 @@ export function SavingsView({ result }: { result: SavingsResult }) {
       {items.length === 0 ? (
         <EmptyState
           icon={PiggyBank}
-          title="No AW hydraulic opportunities"
-          description="With the current vendor selection there are no priced opportunities. Turn vendors back on to widen the comparison."
+          title="No opportunities in this selection"
+          description="Nothing is priced here with the current category and vendor selection. Widen the category or turn vendors back on to broaden the comparison."
         />
       ) : (
         <>
@@ -140,6 +175,135 @@ export function SavingsView({ result }: { result: SavingsResult }) {
         </>
       )}
     </div>
+  )
+}
+
+// Select values must be non-empty strings, but a category filter has two
+// distinct "empty-ish" states: no filter at all, and a genuinely unset
+// category in the data. Encode both as sentinels so they stay separable.
+const ALL = '__all__'
+const UNCAT = '__uncat__'
+const encode = (v: string | null) => (v === null ? ALL : v === '' ? UNCAT : v)
+const decode = (v: string): string | null =>
+  v === ALL ? null : v === UNCAT ? '' : v
+
+function CategorySelector({
+  categories,
+  category,
+  subcategory,
+  itemCount,
+  onCategoryChange,
+  onSubcategoryChange,
+  pending,
+}: {
+  categories: SavingsResult['categories']
+  category: string | null
+  subcategory: string | null
+  itemCount: number
+  onCategoryChange: (next: string | null) => void
+  onSubcategoryChange: (next: string | null) => void
+  pending: boolean
+}) {
+  const totalItems = categories.reduce((s, c) => s + c.itemCount, 0)
+  const active = categories.find((c) => c.category === category) ?? null
+  // Subcategory pills only make sense once a single category is chosen.
+  const subs = active?.subcategories ?? []
+
+  const categoryItems: Record<string, string> = {
+    [ALL]: `All categories (${totalItems})`,
+  }
+  for (const c of categories) {
+    categoryItems[encode(c.category)] = `${c.label} (${c.itemCount})`
+  }
+
+  return (
+    <Card className="flex flex-col gap-3 p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <Layers className="size-4" />
+          <span className="text-xs font-semibold uppercase tracking-wide">
+            Category
+          </span>
+          <span className="text-xs tabular-nums text-muted-foreground/70">
+            {formatNumber(itemCount)} {itemCount === 1 ? 'item' : 'items'} shown
+          </span>
+        </div>
+        <Select
+          value={encode(category)}
+          onValueChange={(v) => onCategoryChange(decode(v ?? ALL))}
+          items={categoryItems}
+        >
+          <SelectTrigger
+            size="sm"
+            disabled={pending}
+            className="w-full sm:w-72"
+            aria-label="Filter by category"
+          >
+            <SelectValue placeholder="All categories" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>{`All categories (${totalItems})`}</SelectItem>
+            {categories.map((c) => (
+              <SelectItem key={encode(c.category)} value={encode(c.category)}>
+                {`${c.label} (${c.itemCount})`}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {subs.length > 1 && (
+        <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+          <span className="text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground/70">
+            Formulation
+          </span>
+          <SubPill
+            label={`All (${active?.itemCount ?? 0})`}
+            on={subcategory === null}
+            disabled={pending}
+            onClick={() => onSubcategoryChange(null)}
+          />
+          {subs.map((s) => (
+            <SubPill
+              key={s.subcategory || UNCAT}
+              label={`${s.label} (${s.itemCount})`}
+              on={subcategory === s.subcategory}
+              disabled={pending}
+              onClick={() => onSubcategoryChange(s.subcategory)}
+            />
+          ))}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+function SubPill({
+  label,
+  on,
+  disabled,
+  onClick,
+}: {
+  label: string
+  on: boolean
+  disabled: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-pressed={on}
+      className={cn(
+        'rounded-full border px-3 py-1 text-xs font-medium transition-colors disabled:opacity-70',
+        on
+          ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/15'
+          : 'border-border text-muted-foreground hover:bg-muted',
+      )}
+    >
+      {label}
+    </button>
   )
 }
 
