@@ -299,7 +299,7 @@ export function ValidationView({
 
       {/* Records table */}
       <Card className="overflow-hidden p-0">
-        <div className="overflow-x-auto">
+        <div className="scrollbar-always-x overflow-x-scroll">
           <table className="w-full min-w-[1100px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
