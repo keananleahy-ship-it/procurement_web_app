@@ -231,9 +231,13 @@ export function VolumeImportReview({
   const [notice, setNotice] = useState<string | null>(null)
 
   function isReady(r: VolumeStagingRow) {
-    const hasMatch = r.canonicalItemId !== null || r.productId !== null
+    // Every included row with a usable quantity is applicable: its vendor code
+    // (or exact name) is its identity, and commit attaches it to that product,
+    // creating a standalone product when the code/name is new. A visible match
+    // is no longer required — an unmatched row becomes its own product rather
+    // than being dropped.
     const hasQty = r.annualVolume !== null && Number(r.annualVolume) > 0
-    return r.include && hasMatch && hasQty
+    return r.include && hasQty
   }
 
   const readyCount = rows.filter(isReady).length
@@ -468,9 +472,10 @@ export function VolumeImportReview({
           <AlertCircle className="mt-0.5 size-4 shrink-0 text-warning" />
           <p className="text-sm text-pretty text-muted-foreground">
             {unmatchedCount} {unmatchedCount === 1 ? 'row is' : 'rows are'} not
-            matched to an item yet. Use the item picker on each row to link it to
-            a canonical item or product. Unmatched rows are skipped when you
-            apply — they won&apos;t weight any comparison.
+            matched to an existing item. When you apply, each will be added as a
+            new product under its own vendor code (code-less rows use their exact
+            name), so no volume is dropped. Use the item picker to instead link a
+            row to an existing canonical item or product before applying.
           </p>
         </div>
       )}

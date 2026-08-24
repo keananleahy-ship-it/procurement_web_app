@@ -5,9 +5,12 @@ import {
   canonicalItems,
   matchRejectionFeedback,
   products,
+  purchaseVolumes,
 } from '@/lib/db/schema'
 import { bestMatch } from '@/lib/match'
 import { aiMatchProducts } from '@/lib/match-ai'
+import { deriveAttributes } from '@/lib/attributes'
+import { underlyingProductKey, displayProductName } from '@/lib/pack-family'
 import { requireUser, requireEditor } from '@/lib/roles'
 import { and, asc, desc, eq, inArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
@@ -340,6 +343,134 @@ export async function rematchRejected() {
   revalidatePath('/compare')
   revalidatePath('/')
   return { resuggested, excluded }
+}
+
+/**
+ * Group packaging VARIANTS of the same underlying product under one canonical
+ * item, so data can be viewed BY PRODUCT (the canonical item) as well as BY
+ * PACKAGING (each variant's pack family).
+ *
+ * A vendor code is the atomic unit of purchase history — one code = one item =
+ * one pack form — so bulk / case / drum of the same product are separate
+ * products. This pass reunites those pack forms into their underlying product
+ * using the item label alone (pack words + sizes stripped; product identity such
+ * as line numbers and viscosity grades preserved). It is vendor-agnostic and
+ * deliberately conservative: it clusters only labels that clearly describe the
+ * same product in different packs. Cross-vendor synonyms with genuinely
+ * different wording are left to the AI match pass.
+ *
+ * SAFE BY DESIGN:
+ *   - Suggestion only. Members are staged as 'suggested' (never 'confirmed'), so
+ *     nothing enters the savings baseline until a human confirms in Matching.
+ *   - Only touches undecided products (unmatched / already-suggested and still
+ *     ungrouped). Confirmed, rejected, and excluded products are never altered.
+ *   - Idempotent. Re-running reuses the canonical item created for a cluster
+ *     (matched by its underlying-product key) instead of duplicating it.
+ *   - Reversible. Reject or reset in Matching detaches members; deleting the
+ *     canonical item detaches them too.
+ */
+export async function suggestPackVariantGroups() {
+  await requireEditor()
+
+  // Only consider products that actually carry committed purchase volume — those
+  // are the ones that matter for reporting — and that the user hasn't decided on.
+  const withVolume = await db
+    .selectDistinct({ productId: purchaseVolumes.productId })
+    .from(purchaseVolumes)
+  const volumeIds = new Set(
+    withVolume.map((r) => r.productId).filter((id): id is number => id !== null),
+  )
+
+  const [allProducts, existingCanon] = await Promise.all([
+    db.select().from(products),
+    db.select().from(canonicalItems),
+  ])
+
+  // Existing canonical items indexed by their own underlying-product key, so a
+  // re-run (or a cluster whose product already has a canonical home) reuses them.
+  const canonByKey = new Map<string, number>()
+  for (const c of existingCanon) {
+    const k = underlyingProductKey(c.name)
+    if (k && !canonByKey.has(k)) canonByKey.set(k, c.id)
+  }
+
+  // Cluster the eligible, ungrouped, undecided products by underlying product.
+  const clusters = new Map<string, typeof allProducts>()
+  for (const p of allProducts) {
+    if (!volumeIds.has(p.id)) continue
+    if (p.canonicalItemId !== null) continue
+    if (
+      p.matchStatus === 'confirmed' ||
+      p.matchStatus === 'rejected' ||
+      p.matchStatus === 'excluded'
+    )
+      continue
+    const key = underlyingProductKey(p.name)
+    if (!key) continue
+    const g = clusters.get(key)
+    if (g) g.push(p)
+    else clusters.set(key, [p])
+  }
+
+  let groupsCreated = 0
+  let productsGrouped = 0
+
+  for (const [key, members] of clusters) {
+    // A cluster is only meaningful when it either has multiple pack variants to
+    // unite, or an existing canonical item to join. A lone new product stays
+    // standalone rather than minting a one-member canonical item.
+    const existingId = canonByKey.get(key)
+    if (members.length < 2 && existingId === undefined) continue
+
+    let canonicalId = existingId
+    if (canonicalId === undefined) {
+      // Name the canonical item from the longest member label (most descriptive)
+      // with its pack prefix stripped, and derive attributes for the hierarchy.
+      const longest = members.reduce((a, b) =>
+        b.name.length > a.name.length ? b : a,
+      )
+      const displayName = displayProductName(longest.name)
+      const attrs = deriveAttributes(displayName)
+      const category =
+        members.find((m) => m.category)?.category ?? attrs.category
+      const baseUnit = members.find((m) => m.baseUnit)?.baseUnit ?? null
+      const [created] = await db
+        .insert(canonicalItems)
+        .values({
+          userId: longest.userId,
+          name: displayName,
+          category,
+          application: attrs.application,
+          subcategory: attrs.subcategory,
+          viscosity: attrs.viscosity,
+          baseUnit,
+          unit: baseUnit,
+        })
+        .returning({ id: canonicalItems.id })
+      canonicalId = created.id
+      canonByKey.set(key, canonicalId)
+      groupsCreated++
+    }
+
+    const memberIds = members.map((m) => m.id)
+    await db
+      .update(products)
+      .set({
+        canonicalItemId: canonicalId,
+        matchStatus: 'suggested',
+        matchScore: null,
+        matchMethod: 'pack-family',
+        matchReason: 'Same product, different packaging',
+      })
+      .where(inArray(products.id, memberIds))
+    productsGrouped += memberIds.length
+  }
+
+  revalidatePath('/matching')
+  revalidatePath('/canonical')
+  revalidatePath('/compare')
+  revalidatePath('/')
+  return { groupsCreated, productsGrouped }
 }
 
 export async function confirmMatch(productId: number) {

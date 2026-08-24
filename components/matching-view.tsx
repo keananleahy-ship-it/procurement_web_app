@@ -10,6 +10,7 @@ import {
   rejectMatch,
   rematchRejected,
   resetMatch,
+  suggestPackVariantGroups,
 } from '@/app/actions/canonical'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -50,6 +51,7 @@ import {
   Sparkles,
   ListChecks,
   AlertCircle,
+  Layers,
 } from 'lucide-react'
 
 type CanonicalOption = { id: number; name: string }
@@ -566,6 +568,27 @@ export function MatchingView({
     })
   }
 
+  // Group packaging variants of the same product under one canonical item. This
+  // CREATES canonical items (unlike the match passes, which only match against
+  // existing ones), so it stays enabled even when there are none yet. Everything
+  // it stages is 'suggested' for review — nothing is grouped until confirmed.
+  const [groupPending, startGroup] = useTransition()
+
+  function runGroupVariants() {
+    setCascadeMsg(null)
+    startGroup(async () => {
+      const res = await suggestPackVariantGroups()
+      setCascadeMsg(
+        res.productsGrouped > 0
+          ? `Grouped ${res.productsGrouped} products into ${res.groupsCreated} ${
+              res.groupsCreated === 1 ? 'product' : 'products'
+            } by packaging — review them under “Needs review”.`
+          : 'No new packaging variants to group. Everything is already grouped or awaiting review.',
+      )
+      router.refresh()
+    })
+  }
+
   // Re-match rejected products using the notes left at rejection time. Any that
   // get a new, confident suggestion move back into "Needs review".
   const [rematchPending, startRematch] = useTransition()
@@ -614,13 +637,15 @@ export function MatchingView({
           </div>
           <div>
             <p className="text-sm font-medium text-foreground">
-              Auto-match products to canonical items
+              Group products into the item they really are
             </p>
             <p className="text-sm text-muted-foreground">
-              Run a fast name-similarity pass, then an AI pass that catches
-              synonyms and pack-size variants. You confirm or reject each one —
-              nothing is grouped until you approve it. Confirming a match
-              applies to every pack size of that item.
+              Start with “Group pack variants” to unite the bulk, case, and drum
+              forms of one product (so you can view by product as well as by
+              packaging). Then run the name pass and the AI pass to catch
+              cross-vendor synonyms. You confirm or reject each one — nothing is
+              grouped until you approve it, and confirming applies to every pack
+              size of that item.
             </p>
           </div>
         </div>
@@ -628,7 +653,15 @@ export function MatchingView({
           <div className="flex flex-wrap items-center gap-2">
             <Button
               variant="outline"
-              disabled={genPending || aiPending || noCanonical}
+              disabled={groupPending || genPending || aiPending}
+              onClick={runGroupVariants}
+            >
+              <Layers className="size-4" />
+              {groupPending ? 'Grouping…' : 'Group pack variants'}
+            </Button>
+            <Button
+              variant="outline"
+              disabled={genPending || aiPending || groupPending || noCanonical}
               onClick={() =>
                 startGen(() => {
                   void generateSuggestions()
@@ -639,7 +672,7 @@ export function MatchingView({
               {genPending ? 'Scanning…' : 'Name match'}
             </Button>
             <Button
-              disabled={aiPending || genPending || noCanonical}
+              disabled={aiPending || genPending || groupPending || noCanonical}
               onClick={runAiPass}
             >
               <Sparkles className={cn('size-4', aiPending && 'animate-pulse')} />
@@ -656,8 +689,9 @@ export function MatchingView({
       {noCanonical && (
         <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
           <AlertCircle className="size-4 shrink-0" />
-          Add canonical items first, then generate suggestions to match your
-          products against them.
+          No canonical items yet. Run “Group pack variants” to create them
+          automatically from your products, or add them manually — then the name
+          and AI passes can match against them.
         </div>
       )}
 

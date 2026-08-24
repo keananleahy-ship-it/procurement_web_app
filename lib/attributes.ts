@@ -25,11 +25,15 @@ export type AttributeDef = {
 
 // Shared attribute defs, in the canonical drill-down order:
 // category > application > subcategory (formulation) > viscosity > package,
-// with supplier and brand as the outer product-only levels. "Application" is
+// with vendor and brand as the outer product-only levels. "Application" is
 // the end-use / duty (Heavy Duty Diesel, Industrial, ...); "Subcategory" is the
 // formulation / base oil (Full Synthetic, Synthetic Blend, Conventional).
+//
+// "Vendor" and "supplier" mean the same thing in this domain. The user-facing
+// label is always "Vendor" (matching the Vendors page and the `vendors` table);
+// the `supplier` key stays as-is because it's the products column name.
 export const ALL_ATTRIBUTES: AttributeDef[] = [
-  { key: 'supplier', label: 'Supplier' },
+  { key: 'supplier', label: 'Vendor' },
   { key: 'brand', label: 'Brand' },
   { key: 'category', label: 'Category' },
   { key: 'application', label: 'Application / Duty' },
@@ -73,7 +77,7 @@ export const CANONICAL_ATTRIBUTES: AttributeDef[] = ALL_ATTRIBUTES.filter(
 export function emptyLabelFor(key: AttributeKey): string {
   switch (key) {
     case 'supplier':
-      return 'No supplier'
+      return 'No vendor'
     case 'brand':
       return 'No brand'
     case 'category':
@@ -342,6 +346,47 @@ export function formulationLabelsForCategory(
     : FORMULATION_LABELS
 }
 export const KNOWN_BRAND_LABELS: string[] = BRAND_PATTERNS.map((p) => p.label)
+// Package-size vocabulary (drum/pail/bulk/…), for inline package-size selects.
+export const PACKAGE_LABELS: string[] = PACKAGE_PATTERNS.map((p) => p.label)
+
+// The catalog attributes a site champion may correct on the Catalog Validation
+// screen. Vendor code (sku) and description (name) identify the product and are
+// read-only there. Defined here (not in the server action) so client and server
+// share one list.
+export const VALIDATION_ATTRIBUTE_KEYS: AttributeKey[] = [
+  'supplier',
+  'category',
+  'application',
+  'subcategory',
+  'viscosity',
+  'packageType',
+]
+
+// The controlled vocabulary a UI should offer for a given attribute, or null
+// when the attribute is free-form (viscosity spans too many grades; supplier
+// and brand are open-ended). `category` scopes the formulation vocabulary.
+// Used by the catalog-validation inline editor to constrain corrections to
+// exactly the labels the grouping/derivation logic recognizes.
+export function vocabularyFor(
+  key: AttributeKey,
+  category?: string | null,
+): string[] | null {
+  switch (key) {
+    case 'category':
+      return CATEGORY_LABELS
+    case 'application':
+      return APPLICATION_LABELS
+    case 'subcategory':
+      return formulationLabelsForCategory(category)
+    case 'packageType':
+      return PACKAGE_LABELS
+    case 'brand':
+      return KNOWN_BRAND_LABELS
+    case 'viscosity':
+    case 'supplier':
+      return null
+  }
+}
 
 export function derivePackageType(name: string, packSize?: number): string | null {
   const upper = name.toUpperCase()

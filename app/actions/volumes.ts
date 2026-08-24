@@ -10,7 +10,16 @@ import {
   locations,
 } from '@/lib/db/schema'
 import { requireUser, requireEditor } from '@/lib/roles'
-import { buildMatchIndex, resolveMatch } from '@/lib/volume-match'
+import {
+  buildMatchIndex,
+  resolveMatch,
+  resolveExactIdentity,
+  normalizeSku,
+  normalizeName,
+  type MatchIndex,
+} from '@/lib/volume-match'
+import { normalizeUom } from '@/lib/uom'
+import { deriveAttributes } from '@/lib/attributes'
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
 import { del } from '@vercel/blob'
 import { revalidatePath } from 'next/cache'
@@ -332,9 +341,12 @@ type AggregatedVolume = {
 // VOLUME-WEIGHTED across the detailed lines (so a big-volume, low-cost month
 // dominates the blended baseline correctly). Cost weighting only counts volume
 // that actually carries a cost, so rows with a blank cost don't drag the
-// average toward zero. The grouping key deliberately matches
-// replaceExistingImportedVolume's key (item + period, ignoring base unit) so a
-// single delete+insert per group can't clobber a sibling group.
+// average toward zero. The grouping key is item + period + NORMALIZED UNIT, so
+// a SKU reported in both gallons and cases yields two honest summaries instead
+// of one nonsensical blend. Because several summaries can now share an
+// (item, period), the writer deletes existing imported volumes once per
+// (item, period) — unit-agnostic — before inserting the per-unit rows, so a
+// sibling unit's delete can't clobber a just-written row.
 function aggregateVolumeRows(
   rows: AggregatableRow[],
   defaultPeriod: string | null,
@@ -357,11 +369,22 @@ function aggregateVolumeRows(
     const vol = Number(r.annualVolume)
     if (!Number.isFinite(vol) || vol <= 0) continue
     const period = r.period?.trim() || defaultPeriod || null
-    const itemKey =
-      r.canonicalItemId !== null
-        ? `c:${r.canonicalItemId}`
-        : `p:${r.productId}`
-    const key = `${itemKey}|${period ?? ''}`
+    // Key by BOTH canonical and product so that when a canonical-matched line
+    // also carries a specific product (set by the product backfill), each
+    // distinct product keeps its own summary row instead of collapsing to a
+    // single canonical blend. This preserves per-product volume for the savings
+    // engine's present-state pricing, matches replaceExistingImportedVolume's
+    // (canonical, product, period) key, and is a no-op for legacy rows where
+    // productId is null.
+    // Key by BOTH item and NORMALIZED UNIT so incompatible units never blend
+    // into one summary. Vendors report the same SKU in gallons AND in cases/
+    // drums on separate lines; summing those quantities is meaningless and
+    // volume-weighting a per-gallon price with a per-case price corrupts the
+    // baseline. Splitting per unit keeps each summary's quantity and price
+    // honest; the savings engine already sums multiple rows per product.
+    const unit = normalizeUom(r.baseUnit)
+    const itemKey = `c:${r.canonicalItemId ?? ''}:p:${r.productId ?? ''}`
+    const key = `${itemKey}|${period ?? ''}|u:${unit}`
 
     let g = groups.get(key)
     if (!g) {
@@ -405,6 +428,147 @@ function aggregateVolumeRows(
   }))
 }
 
+// Resolve every included row to an AUTHORITATIVE product/canonical identity
+// before the volumes are written, creating a standalone product for any row
+// whose vendor code (or, for code-less rows, exact name) isn't already in the
+// catalog. This is the core of the vendor-code-identity fix: each distinct
+// vendor code becomes exactly one product, so distinct codes can never be
+// merged onto one item by name similarity.
+//
+// Rules per included row with a usable quantity:
+//   - Already `confirmed` with an id (an exact-code match from upload, or a
+//     reviewer's manual pick) -> authoritative, left untouched.
+//   - Otherwise re-resolve via resolveExactIdentity (exact code, else exact
+//     name for code-less rows). A hit points the row at that product/canonical
+//     and marks it confirmed. A miss auto-creates a standalone product keyed by
+//     the row's own code (or name) and points the row at it.
+// Fuzzy `suggested` rows therefore never borrow another item's identity; they
+// get their own product unless a human explicitly confirmed the suggestion.
+//
+// Runs inside commit/resync/reprocess (all go through writeVolumesFromRows), so
+// products are only ever created when an import is actually applied — never for
+// a pending upload the user might discard. Returns how many products it created.
+async function ensureProductsForImport(
+  volumeImportId: number,
+  userId: string,
+): Promise<{ created: number }> {
+  const rows = await db
+    .select()
+    .from(volumeImportRows)
+    .where(eq(volumeImportRows.volumeImportId, volumeImportId))
+
+  const [canon, prods] = await Promise.all([
+    db
+      .select({
+        id: canonicalItems.id,
+        name: canonicalItems.name,
+        category: canonicalItems.category,
+      })
+      .from(canonicalItems)
+      .where(eq(canonicalItems.userId, userId)),
+    db
+      .select({
+        id: products.id,
+        name: products.name,
+        category: products.category,
+        sku: products.sku,
+        canonicalItemId: products.canonicalItemId,
+      })
+      .from(products)
+      .where(eq(products.userId, userId)),
+  ])
+  const index: MatchIndex = buildMatchIndex(canon, prods)
+
+  // Identity key -> resolved ids, seeded as rows are handled so two rows with
+  // the same code/name (or a code newly created earlier in this run) collapse
+  // onto one product instead of creating duplicates.
+  const resolved = new Map<
+    string,
+    { canonicalItemId: number | null; productId: number | null }
+  >()
+
+  const identityKey = (sku: string | null, itemName: string): string => {
+    const code = sku?.trim() ? normalizeSku(sku) : ''
+    if (code) return `code:${code}`
+    return `name:${normalizeName(itemName)}`
+  }
+
+  let created = 0
+
+  for (const r of rows) {
+    if (!r.include) continue
+    if (r.annualVolume === null || Number(r.annualVolume) <= 0) continue
+
+    // Respect an authoritative match already on the row (exact code at upload
+    // or a reviewer's manual pick). Never override a human decision or a
+    // deterministic code hit.
+    if (
+      r.matchStatus === 'confirmed' &&
+      (r.canonicalItemId !== null || r.productId !== null)
+    ) {
+      continue
+    }
+
+    const key = identityKey(r.sku, r.itemName)
+    let target = resolved.get(key)
+
+    if (!target) {
+      const hit = resolveExactIdentity(
+        { itemName: r.itemName, sku: r.sku ?? null },
+        index,
+      )
+      if (hit) {
+        target = {
+          canonicalItemId:
+            hit.target.kind === 'canonical' ? hit.target.canonicalItemId : null,
+          productId: hit.target.kind === 'product' ? hit.target.productId : null,
+        }
+      } else {
+        // No exact identity in the catalog -> create a standalone product for
+        // this vendor code (or name). Prefill derived attributes so it shows up
+        // in Catalog Validation ready to review, and leave it canonical-
+        // unmatched so cross-vendor grouping stays an explicit, reviewed step.
+        const name = r.itemName.trim()
+        const attrs = deriveAttributes(name)
+        const [newProduct] = await db
+          .insert(products)
+          .values({
+            userId,
+            name,
+            sku: r.sku?.trim() || null,
+            baseUnit: r.baseUnit?.trim() || null,
+            unit: r.baseUnit?.trim() || null,
+            brand: attrs.brand,
+            category: attrs.category,
+            application: attrs.application,
+            subcategory: attrs.subcategory,
+            viscosity: attrs.viscosity,
+            packageType: attrs.packageType,
+            attributesEdited: false,
+            canonicalItemId: null,
+            matchStatus: 'unmatched',
+          })
+          .returning({ id: products.id })
+        created++
+        target = { canonicalItemId: null, productId: newProduct.id }
+      }
+      resolved.set(key, target)
+    }
+
+    await db
+      .update(volumeImportRows)
+      .set({
+        canonicalItemId: target.canonicalItemId,
+        productId: target.productId,
+        matchStatus: 'confirmed',
+        matchName: r.itemName.trim(),
+      })
+      .where(eq(volumeImportRows.id, r.id))
+  }
+
+  return { created }
+}
+
 // Filter a pending/committed import's staging rows down to the ones that can
 // weight a comparison (included, matched+confirmed, positive quantity), and
 // tally why the rest were dropped. Shared by the writer and the location
@@ -429,10 +593,14 @@ async function collectEligibleRows(volumeImportId: number): Promise<{
       continue
     }
     // A row must resolve to an item and carry a usable quantity, or it can't
-    // weight a comparison.
+    // weight a comparison. CONFIRMED ONLY: a fuzzy `suggested` guess never feeds
+    // the baseline. By the time this runs at commit/resync/reprocess,
+    // ensureProductsForImport has already turned every eligible row into a
+    // confirmed match against its own vendor-code/name identity (creating a
+    // product where needed), so confirmed-only drops nothing legitimate — it
+    // only fences out un-applied fuzzy guesses.
     const hasMatch = r.canonicalItemId !== null || r.productId !== null
-    const isConfirmed =
-      r.matchStatus === 'confirmed' || r.matchStatus === 'suggested'
+    const isConfirmed = r.matchStatus === 'confirmed'
     if (!hasMatch || !isConfirmed) {
       unmatched++
       continue
@@ -466,6 +634,11 @@ async function writeVolumesFromRows(opts: {
 }): Promise<CommitVolumeResult> {
   const { userId, volumeImportId, locationId, defaultPeriod } = opts
 
+  // Resolve/create authoritative product identities first, so every eligible
+  // row is confirmed against exactly one vendor code (or exact name) before the
+  // baseline is written. This is what guarantees distinct codes never blend.
+  await ensureProductsForImport(volumeImportId, userId)
+
   const { eligible, skipped, unmatched } =
     await collectEligibleRows(volumeImportId)
 
@@ -474,14 +647,22 @@ async function writeVolumesFromRows(opts: {
   // instead of each delete+insert overwriting the last.
   const summaries = aggregateVolumeRows(eligible, defaultPeriod)
 
+  // Delete existing imported volumes ONCE per (item, period) — unit-agnostic,
+  // so it also clears any pre-split blended row from an earlier commit — then
+  // insert one row per normalized unit.
+  const replaced = new Set<string>()
   for (const s of summaries) {
-    await replaceExistingImportedVolume({
-      userId,
-      canonicalItemId: s.canonicalItemId,
-      productId: s.productId,
-      locationId,
-      period: s.period,
-    })
+    const groupKey = `c:${s.canonicalItemId ?? ''}:p:${s.productId ?? ''}|${s.period ?? ''}`
+    if (!replaced.has(groupKey)) {
+      await replaceExistingImportedVolume({
+        userId,
+        canonicalItemId: s.canonicalItemId,
+        productId: s.productId,
+        locationId,
+        period: s.period,
+      })
+      replaced.add(groupKey)
+    }
     await db.insert(purchaseVolumes).values({
       userId,
       canonicalItemId: s.canonicalItemId,
@@ -634,7 +815,9 @@ export async function rollupVolumeImport(
       r.canonicalItemId !== null
         ? `c:${r.canonicalItemId}`
         : `p:${r.productId}`
-    const key = `${itemKey}|${period ?? ''}`
+    // Include normalized unit so the preview roll-up never merges gallons with
+    // cases/drums into one line — mirrors aggregateVolumeRows at commit time.
+    const key = `${itemKey}|${period ?? ''}|u:${normalizeUom(r.baseUnit)}`
     const bucket = groups.get(key)
     if (bucket) bucket.push(r)
     else groups.set(key, [r])
@@ -760,7 +943,13 @@ export async function reassignVolumeImportLocation(
   // summaries the writer produced, and delete each from the old location.
   const { eligible } = await collectEligibleRows(volumeImportId)
   const summaries = aggregateVolumeRows(eligible, imp.defaultPeriod)
+  // Delete once per (item, period) — unit-agnostic — so the per-unit summaries
+  // that now share an (item, period) don't each re-issue the same delete.
+  const relocated = new Set<string>()
   for (const s of summaries) {
+    const groupKey = `c:${s.canonicalItemId ?? ''}:p:${s.productId ?? ''}|${s.period ?? ''}`
+    if (relocated.has(groupKey)) continue
+    relocated.add(groupKey)
     await replaceExistingImportedVolume({
       userId,
       canonicalItemId: s.canonicalItemId,

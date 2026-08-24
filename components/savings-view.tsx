@@ -1,16 +1,24 @@
 'use client'
 
-import { useMemo, useState } from 'react'
-import type {
-  SavingsResult,
-  SavingsItem,
-  LocationOpportunity,
-  EquivalentOpportunity,
-  PackagingOpportunity,
+import { useMemo, useState, useTransition } from 'react'
+import {
+  getSavingsAnalyses,
+  type SavingsResult,
+  type SavingsItem,
+  type LocationProductLine,
+  type EquivalentOpportunity,
+  type PackagingOpportunity,
 } from '@/app/actions/savings'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { EmptyState } from '@/components/empty-state'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { formatCurrency, formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
@@ -22,6 +30,10 @@ import {
   ArrowRight,
   ChevronDown,
   PiggyBank,
+  Filter,
+  Check,
+  Package,
+  Layers,
 } from 'lucide-react'
 
 // Short unit label for per-unit prices ("gallon" -> "gal").
@@ -37,44 +49,475 @@ const LENS = {
   location: {
     label: 'By Location',
     icon: MapPin,
-    blurb: 'Same item, different prices per site',
+    blurb: "Each site's current price vs the best price on offer anywhere",
   },
   equivalent: {
     label: 'By Equivalent',
     icon: GitCompareArrows,
-    blurb: 'Switch spend to a cheaper comparable',
+    blurb: 'Present price vs cheapest like-packaged equivalent',
   },
   packaging: {
     label: 'By Packaging',
     icon: Boxes,
-    blurb: 'Shift to a lower-cost pack format',
+    blurb: 'Same product bought in a pricier container than a cheaper format',
   },
 } as const
 
 export function SavingsView({ result }: { result: SavingsResult }) {
-  const { items, totals } = result
+  // `result` is the server-rendered baseline (no vendors excluded). Toggling a
+  // vendor recomputes on the server via the same action and swaps in the new
+  // numbers; volume is never filtered, only the pricing targets each lens sees.
+  const [data, setData] = useState<SavingsResult>(result)
+  const [excluded, setExcluded] = useState<Set<number>>(
+    () => new Set(result.excludedVendorIds),
+  )
+  const [sourcing, setSourcing] = useState<'cross-site' | 'within-site'>(
+    result.equivalentSourcing,
+  )
+  const [basis, setBasis] = useState<'equivalent' | 'same-product'>(
+    result.packagingBasis,
+  )
+  // null = every category / every subcategory
+  const [category, setCategory] = useState<string | null>(result.category)
+  const [subcategory, setSubcategory] = useState<string | null>(
+    result.subcategory,
+  )
+  const [pending, startTransition] = useTransition()
 
-  if (items.length === 0) {
-    return (
-      <div className="p-6">
-        <EmptyState
-          icon={PiggyBank}
-          title="No AW hydraulic opportunities yet"
-          description="Once AW hydraulic products have vendor prices and purchase volumes on file, savings opportunities will appear here."
-        />
-      </div>
-    )
+  const recompute = (
+    nextExcluded: Set<number>,
+    nextSourcing: 'cross-site' | 'within-site' = sourcing,
+    nextBasis: 'equivalent' | 'same-product' = basis,
+    nextCategory: string | null = category,
+    nextSubcategory: string | null = subcategory,
+  ) => {
+    setExcluded(nextExcluded)
+    setSourcing(nextSourcing)
+    setBasis(nextBasis)
+    setCategory(nextCategory)
+    setSubcategory(nextSubcategory)
+    const ids = [...nextExcluded]
+    startTransition(async () => {
+      const r = await getSavingsAnalyses({
+        excludedVendorIds: ids,
+        equivalentSourcing: nextSourcing,
+        packagingBasis: nextBasis,
+        category: nextCategory,
+        subcategory: nextSubcategory,
+      })
+      setData(r)
+    })
   }
+
+  const toggleVendor = (id: number) => {
+    const next = new Set(excluded)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    recompute(next)
+  }
+
+  const { items, totals } = data
 
   return (
     <div className="flex flex-col gap-6 p-6">
-      <SummaryBar totals={totals} />
-      <div className="flex flex-col gap-4">
-        {items.map((item) => (
-          <ItemCard key={item.canonicalItemId} item={item} />
-        ))}
-      </div>
+      <CategorySelector
+        categories={data.categories}
+        category={category}
+        subcategory={subcategory}
+        itemCount={items.length}
+        // Changing category clears the subcategory, since a subcategory only
+        // has meaning inside its parent (AW exists under Hydraulic Fluid, not
+        // under Engine Oil).
+        onCategoryChange={(next) =>
+          recompute(excluded, sourcing, basis, next, null)
+        }
+        onSubcategoryChange={(next) =>
+          recompute(excluded, sourcing, basis, category, next)
+        }
+        pending={pending}
+      />
+      <VendorToggleBar
+        vendors={result.vendors}
+        excluded={excluded}
+        onToggle={toggleVendor}
+        onReset={() => recompute(new Set())}
+        pending={pending}
+      />
+      <SourcingToggle
+        sourcing={sourcing}
+        onChange={(mode) => recompute(excluded, mode)}
+        pending={pending}
+      />
+      <PackagingBasisToggle
+        basis={basis}
+        onChange={(next) => recompute(excluded, sourcing, next)}
+        pending={pending}
+      />
+      {items.length === 0 ? (
+        <EmptyState
+          icon={PiggyBank}
+          title="No opportunities in this selection"
+          description="Nothing is priced here with the current category and vendor selection. Widen the category or turn vendors back on to broaden the comparison."
+        />
+      ) : (
+        <>
+          <SummaryBar totals={totals} />
+          <div
+            className={cn(
+              'flex flex-col gap-4 transition-opacity',
+              pending && 'pointer-events-none opacity-60',
+            )}
+          >
+            {items.map((item) => (
+              <ItemCard key={item.canonicalItemId} item={item} />
+            ))}
+          </div>
+        </>
+      )}
     </div>
+  )
+}
+
+// Select values must be non-empty strings, but a category filter has two
+// distinct "empty-ish" states: no filter at all, and a genuinely unset
+// category in the data. Encode both as sentinels so they stay separable.
+const ALL = '__all__'
+const UNCAT = '__uncat__'
+const encode = (v: string | null) => (v === null ? ALL : v === '' ? UNCAT : v)
+const decode = (v: string): string | null =>
+  v === ALL ? null : v === UNCAT ? '' : v
+
+function CategorySelector({
+  categories,
+  category,
+  subcategory,
+  itemCount,
+  onCategoryChange,
+  onSubcategoryChange,
+  pending,
+}: {
+  categories: SavingsResult['categories']
+  category: string | null
+  subcategory: string | null
+  itemCount: number
+  onCategoryChange: (next: string | null) => void
+  onSubcategoryChange: (next: string | null) => void
+  pending: boolean
+}) {
+  const totalItems = categories.reduce((s, c) => s + c.itemCount, 0)
+  const active = categories.find((c) => c.category === category) ?? null
+  // Subcategory pills only make sense once a single category is chosen.
+  const subs = active?.subcategories ?? []
+
+  const categoryItems: Record<string, string> = {
+    [ALL]: `All categories (${totalItems})`,
+  }
+  for (const c of categories) {
+    categoryItems[encode(c.category)] = `${c.label} (${c.itemCount})`
+  }
+
+  return (
+    <Card className="flex flex-col gap-3 p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <Layers className="size-4" />
+          <span className="text-xs font-semibold uppercase tracking-wide">
+            Category
+          </span>
+          <span className="text-xs tabular-nums text-muted-foreground/70">
+            {formatNumber(itemCount)} {itemCount === 1 ? 'item' : 'items'} shown
+          </span>
+        </div>
+        <Select
+          value={encode(category)}
+          onValueChange={(v) => onCategoryChange(decode(v ?? ALL))}
+          items={categoryItems}
+        >
+          <SelectTrigger
+            size="sm"
+            disabled={pending}
+            className="w-full sm:w-72"
+            aria-label="Filter by category"
+          >
+            <SelectValue placeholder="All categories" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>{`All categories (${totalItems})`}</SelectItem>
+            {categories.map((c) => (
+              <SelectItem key={encode(c.category)} value={encode(c.category)}>
+                {`${c.label} (${c.itemCount})`}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {subs.length > 1 && (
+        <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+          <span className="text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground/70">
+            Formulation
+          </span>
+          <SubPill
+            label={`All (${active?.itemCount ?? 0})`}
+            on={subcategory === null}
+            disabled={pending}
+            onClick={() => onSubcategoryChange(null)}
+          />
+          {subs.map((s) => (
+            <SubPill
+              key={s.subcategory || UNCAT}
+              label={`${s.label} (${s.itemCount})`}
+              on={subcategory === s.subcategory}
+              disabled={pending}
+              onClick={() => onSubcategoryChange(s.subcategory)}
+            />
+          ))}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+function SubPill({
+  label,
+  on,
+  disabled,
+  onClick,
+}: {
+  label: string
+  on: boolean
+  disabled: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-pressed={on}
+      className={cn(
+        'rounded-full border px-3 py-1 text-xs font-medium transition-colors disabled:opacity-70',
+        on
+          ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/15'
+          : 'border-border text-muted-foreground hover:bg-muted',
+      )}
+    >
+      {label}
+    </button>
+  )
+}
+
+function VendorToggleBar({
+  vendors,
+  excluded,
+  onToggle,
+  onReset,
+  pending,
+}: {
+  vendors: SavingsResult['vendors']
+  excluded: Set<number>
+  onToggle: (id: number) => void
+  onReset: () => void
+  pending: boolean
+}) {
+  if (vendors.length === 0) return null
+  const activeCount = vendors.length - excluded.size
+  return (
+    <Card className="flex flex-col gap-3 p-4">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <Filter className="size-4" />
+          <span className="text-xs font-semibold uppercase tracking-wide">
+            Vendors in comparison
+          </span>
+          <span className="text-xs tabular-nums text-muted-foreground/70">
+            {activeCount} of {vendors.length}
+          </span>
+        </div>
+        {excluded.size > 0 && (
+          <button
+            type="button"
+            onClick={onReset}
+            className="text-xs font-medium text-primary transition-colors hover:underline"
+          >
+            Reset
+          </button>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {vendors.map((v) => {
+          const on = !excluded.has(v.id)
+          return (
+            <button
+              key={v.id}
+              type="button"
+              onClick={() => onToggle(v.id)}
+              disabled={pending}
+              aria-pressed={on}
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors disabled:opacity-70',
+                on
+                  ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/15'
+                  : 'border-border bg-muted text-muted-foreground line-through hover:bg-muted/70',
+              )}
+            >
+              <span
+                className={cn(
+                  'flex size-3.5 items-center justify-center rounded-full border',
+                  on
+                    ? 'border-primary bg-primary text-primary-foreground'
+                    : 'border-muted-foreground/40',
+                )}
+              >
+                {on && <Check className="size-2.5" />}
+              </span>
+              {v.name}
+            </button>
+          )
+        })}
+      </div>
+      <p className="text-[0.625rem] text-muted-foreground/70">
+        Switching a vendor off removes its quotes as a pricing target across all
+        three lenses and re-sizes every opportunity. Purchased volume is
+        unchanged.
+      </p>
+    </Card>
+  )
+}
+
+function SourcingToggle({
+  sourcing,
+  onChange,
+  pending,
+}: {
+  sourcing: 'cross-site' | 'within-site'
+  onChange: (mode: 'cross-site' | 'within-site') => void
+  pending: boolean
+}) {
+  const options: {
+    id: 'cross-site' | 'within-site'
+    label: string
+    hint: string
+  }[] = [
+    {
+      id: 'cross-site',
+      label: 'Cross-site',
+      hint: 'source alternatives from any location',
+    },
+    {
+      id: 'within-site',
+      label: 'Within site',
+      hint: 'only alternatives available at the buying site',
+    },
+  ]
+  const active = options.find((o) => o.id === sourcing) ?? options[0]
+  return (
+    <Card className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <GitCompareArrows className="size-4" />
+        <span className="text-xs font-semibold uppercase tracking-wide">
+          Sourcing scope
+        </span>
+        <span className="text-[0.625rem] text-muted-foreground/70">
+          {active.hint} · applies to By Equivalent &amp; By Packaging
+        </span>
+      </div>
+      <div
+        role="radiogroup"
+        aria-label="Alternative sourcing scope"
+        className="inline-flex shrink-0 rounded-full border border-border bg-muted p-0.5"
+      >
+        {options.map((o) => {
+          const on = o.id === sourcing
+          return (
+            <button
+              key={o.id}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              disabled={pending}
+              onClick={() => !on && onChange(o.id)}
+              className={cn(
+                'rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:opacity-70',
+                on
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {o.label}
+            </button>
+          )
+        })}
+      </div>
+    </Card>
+  )
+}
+
+function PackagingBasisToggle({
+  basis,
+  onChange,
+  pending,
+}: {
+  basis: 'equivalent' | 'same-product'
+  onChange: (basis: 'equivalent' | 'same-product') => void
+  pending: boolean
+}) {
+  const options: {
+    id: 'equivalent' | 'same-product'
+    label: string
+    hint: string
+  }[] = [
+    {
+      id: 'equivalent',
+      label: 'Any equivalent',
+      hint: 'a cheaper container from any like-for-like product',
+    },
+    {
+      id: 'same-product',
+      label: 'Same product',
+      hint: 'a cheaper container of the same branded product only',
+    },
+  ]
+  const active = options.find((o) => o.id === basis) ?? options[0]
+  return (
+    <Card className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <Boxes className="size-4" />
+        <span className="text-xs font-semibold uppercase tracking-wide">
+          Packaging basis
+        </span>
+        <span className="text-[0.625rem] text-muted-foreground/70">
+          {active.hint} · By Packaging only
+        </span>
+      </div>
+      <div
+        role="radiogroup"
+        aria-label="By Packaging comparison basis"
+        className="inline-flex shrink-0 rounded-full border border-border bg-muted p-0.5"
+      >
+        {options.map((o) => {
+          const on = o.id === basis
+          return (
+            <button
+              key={o.id}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              disabled={pending}
+              onClick={() => !on && onChange(o.id)}
+              className={cn(
+                'rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:opacity-70',
+                on
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {o.label}
+            </button>
+          )
+        })}
+      </div>
+    </Card>
   )
 }
 
@@ -153,10 +596,7 @@ function ItemCard({ item }: { item: SavingsItem }) {
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-4">
-          <LensChip
-            label={LENS.location.label}
-            value={item.byLocationTotal}
-          />
+          <LensChip label={LENS.location.label} value={item.byLocationTotal} />
           <LensChip
             label={LENS.equivalent.label}
             value={item.byEquivalent?.opportunity ?? 0}
@@ -177,7 +617,7 @@ function ItemCard({ item }: { item: SavingsItem }) {
       {open && (
         <div className="grid gap-px border-t border-border bg-border md:grid-cols-3">
           <LocationLens
-            rows={item.byLocation}
+            lines={item.byLocationLines}
             total={item.byLocationTotal}
             unit={unit}
           />
@@ -189,13 +629,7 @@ function ItemCard({ item }: { item: SavingsItem }) {
   )
 }
 
-function LensChip({
-  label,
-  value,
-}: {
-  label: string
-  value: number | null
-}) {
+function LensChip({ label, value }: { label: string; value: number | null }) {
   const hidden = value === null
   return (
     <div className="hidden text-right sm:block">
@@ -205,9 +639,7 @@ function LensChip({
       <p
         className={cn(
           'text-sm font-semibold tabular-nums',
-          hidden || value === 0
-            ? 'text-muted-foreground'
-            : 'text-primary',
+          hidden || value === 0 ? 'text-muted-foreground' : 'text-primary',
         )}
       >
         {hidden ? 'n/a' : formatCurrency(value)}
@@ -253,61 +685,161 @@ function LensHeader({
   )
 }
 
+// Shared "View breakdown" toggle used by the drill-down lenses.
+function DrilldownToggle({
+  open,
+  onToggle,
+  count,
+}: {
+  open: boolean
+  onToggle: () => void
+  count: number
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      className="mt-2 flex w-full items-center justify-center gap-1 rounded-md border border-border/60 py-1.5 text-[0.6875rem] font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+    >
+      {open ? 'Hide' : 'View'} breakdown
+      <span className="text-muted-foreground/60">
+        ({count} {count === 1 ? 'product' : 'products'})
+      </span>
+      <ChevronDown
+        className={cn('size-3 transition-transform', open && 'rotate-180')}
+      />
+    </button>
+  )
+}
+
+// A per-site volume row shared by the two drill-downs.
+function SiteRow({
+  name,
+  volume,
+  unit,
+  opportunity,
+  source,
+  target,
+}: {
+  name: string
+  volume: number
+  unit: string
+  opportunity?: number
+  // where the equivalent this site would switch to is sourced from; when it
+  // matches the site itself (within-site) we show "on-site" instead
+  source?: string | null
+  // the site-specific like-for-like replacement, shown only when it differs
+  // from the line's representative target (e.g. within-site sourcing)
+  target?: string | null
+}) {
+  const sourceLabel =
+    source === undefined
+      ? null
+      : source === null || source === name
+        ? 'on-site'
+        : `from ${source}`
+  return (
+    <li className="flex items-center justify-between gap-2 py-0.5 text-[0.6875rem] tabular-nums text-muted-foreground">
+      <span className="flex min-w-0 flex-col">
+        <span className="flex items-center gap-1 truncate">
+          <MapPin className="size-2.5 shrink-0 text-muted-foreground/50" />
+          <span className="truncate text-foreground">{name}</span>
+          {sourceLabel && (
+            <span className="shrink-0 rounded-sm bg-muted px-1 text-[0.5625rem] font-medium normal-case text-muted-foreground/80">
+              {sourceLabel}
+            </span>
+          )}
+        </span>
+        {target && (
+          <span className="truncate pl-3.5 text-[0.5625rem] normal-case text-primary/80">
+            → {target}
+          </span>
+        )}
+      </span>
+      <span className="shrink-0">
+        {formatNumber(Math.round(volume))} {unit}
+        {opportunity !== undefined && opportunity > 0 && (
+          <span className="ml-1.5 text-primary">
+            {formatCurrency(opportunity)}
+          </span>
+        )}
+      </span>
+    </li>
+  )
+}
+
 function LocationLens({
-  rows,
+  lines,
   total,
   unit,
 }: {
-  rows: LocationOpportunity[]
+  lines: LocationProductLine[]
   total: number
   unit: string
 }) {
   return (
     <div className="bg-card p-4">
       <LensHeader lens="location" opportunity={total} />
-      {rows.length === 0 ? (
-        <LensEmpty text="No per-site paid cost on file to compare against the best quote." />
+      {lines.length === 0 ? (
+        <LensEmpty text="Every site is already quoted the best available price for what it buys, so there is no location pricing gap." />
       ) : (
-        <ul className="flex flex-col gap-2">
-          {rows.map((r) => (
+        <ul className="flex flex-col gap-2.5">
+          {lines.map((line) => (
             <li
-              key={String(r.locationId)}
+              key={line.productId}
               className="rounded-md border border-border/60 bg-background/40 px-3 py-2"
             >
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-sm font-medium text-foreground">
-                  {r.locationName}
-                </span>
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-foreground">
+                    {line.productName}
+                  </p>
+                  <p className="text-[0.625rem] text-muted-foreground/70">
+                    {line.packFamilyLabel} · best on offer{' '}
+                    {formatCurrency(line.bestUnitCost)}/{unit} at{' '}
+                    {line.bestSiteName}
+                  </p>
+                </div>
                 <span
                   className={cn(
                     'shrink-0 text-sm font-semibold tabular-nums',
-                    r.opportunity > 0
+                    line.opportunity > 0
                       ? 'text-primary'
                       : 'text-muted-foreground',
                   )}
                 >
-                  {formatCurrency(r.opportunity)}
+                  {formatCurrency(line.opportunity)}
                 </span>
               </div>
-              <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
-                <span>
-                  pays {formatCurrency(r.paidUnitCost)}/{unit}
-                </span>
-                <ArrowRight className="size-3" />
-                <span className="text-foreground">
-                  {formatCurrency(r.bestQuote)}/{unit}
-                </span>
-                <span className="text-muted-foreground/70">
-                  · {formatNumber(Math.round(r.annualVolume))} {unit}/yr
-                </span>
-              </div>
+              <ul className="mt-1.5 flex flex-col gap-1">
+                {line.sites.map((s) => (
+                  <li
+                    key={String(s.locationId)}
+                    className="flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums"
+                  >
+                    <span className="truncate text-foreground">
+                      {s.locationName}
+                    </span>
+                    <span>quoted {formatCurrency(s.unitCost)}</span>
+                    <ArrowRight className="size-3 shrink-0" />
+                    <span className="text-foreground">
+                      {formatCurrency(line.bestUnitCost)}/{unit}
+                    </span>
+                    <span className="text-muted-foreground/70">
+                      · {formatNumber(Math.round(s.annualVolume))} {unit}/yr
+                    </span>
+                  </li>
+                ))}
+              </ul>
             </li>
           ))}
         </ul>
       )}
-      {rows.length > 0 && (
+      {lines.length > 0 && (
         <p className="mt-2 text-[0.625rem] text-muted-foreground/70">
-          Target: best available quote — {rows[0].bestQuoteLabel}
+          Each site&apos;s current quote vs the best price on offer anywhere for
+          the same product/package, on historical volume — no substitution.
         </p>
       )}
     </div>
@@ -321,20 +853,26 @@ function EquivalentLens({
   data: EquivalentOpportunity | null
   unit: string
 }) {
+  const [open, setOpen] = useState(false)
+  const confLabel: Record<EquivalentOpportunity['confidence'], string> = {
+    high: 'current pricing',
+    mixed: 'partly paid-cost',
+    low: 'mostly paid-cost',
+  }
   return (
     <div className="bg-card p-4">
       <LensHeader lens="equivalent" opportunity={data?.opportunity ?? null} />
       {!data ? (
-        <LensEmpty text="Only one comparable offer — no cheaper equivalent to switch to." />
+        <LensEmpty text="No cheaper like-packaged equivalent to switch to." />
       ) : (
         <div className="flex flex-col gap-2">
           <div className="rounded-md border border-border/60 bg-background/40 px-3 py-2">
             <p className="text-[0.625rem] font-medium uppercase tracking-wide text-muted-foreground/70">
-              Currently pricier
+              Currently buying
             </p>
             <p className="truncate text-sm text-foreground">{data.worstLabel}</p>
             <p className="text-xs text-muted-foreground tabular-nums">
-              {formatCurrency(data.worstPerUnit)}/{unit}
+              {formatCurrency(data.worstPerUnit)}/{unit} now
             </p>
           </div>
           <div className="flex items-center justify-center">
@@ -342,17 +880,143 @@ function EquivalentLens({
           </div>
           <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2">
             <p className="text-[0.625rem] font-medium uppercase tracking-wide text-primary/80">
-              Best comparable
+              Cheapest like-for-like
             </p>
             <p className="truncate text-sm text-foreground">{data.bestLabel}</p>
             <p className="text-xs text-muted-foreground tabular-nums">
-              {formatCurrency(data.bestPerUnit)}/{unit}
+              {formatCurrency(data.bestPerUnit)}/{unit} current
             </p>
           </div>
-          <p className="mt-1 text-[0.625rem] text-muted-foreground/70 tabular-nums">
-            Spread {formatCurrency(data.spreadPerUnit)}/{unit} ×{' '}
-            {formatNumber(Math.round(data.annualVolume))} {unit}/yr
-          </p>
+          <div className="mt-1 flex items-center justify-between gap-2">
+            <Badge
+              variant="outline"
+              className={cn(
+                'text-[0.625rem]',
+                data.confidence === 'high'
+                  ? 'border-primary/40 text-primary'
+                  : data.confidence === 'low'
+                    ? 'border-warning/40 text-warning'
+                    : 'border-border text-muted-foreground',
+              )}
+            >
+              {confLabel[data.confidence]}
+            </Badge>
+            <span className="text-[0.625rem] text-muted-foreground/70 tabular-nums">
+              {formatNumber(Math.round(data.pricedVolume))} {unit}/yr priced
+              {data.unpricedVolume > 0 && (
+                <> · {formatNumber(Math.round(data.unpricedVolume))} unpriced</>
+              )}
+            </span>
+          </div>
+
+          {data.lines.length > 0 && (
+            <>
+              <DrilldownToggle
+                open={open}
+                onToggle={() => setOpen((o) => !o)}
+                count={data.lines.length}
+              />
+              {open && (
+                <ul className="flex flex-col gap-2">
+                  {data.lines.map((line) => (
+                    <li
+                      key={String(line.productId)}
+                      className="rounded-md border border-border/60 bg-background/40 px-3 py-2"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          {(() => {
+                            const hasSwap =
+                              line.bestEquivalentProductName !== '—' &&
+                              line.savings > 0
+                            return (
+                              <>
+                                <div className="flex items-baseline justify-between gap-2">
+                                  <span className="text-[0.625rem] uppercase tracking-wide text-muted-foreground/60">
+                                    Buying
+                                  </span>
+                                  <span className="shrink-0 text-[0.625rem] tabular-nums text-muted-foreground/70">
+                                    {formatCurrency(line.presentUnitCost)}/{unit}
+                                    {line.presentBasis === 'paid-cost' && (
+                                      <span className="ml-0.5 text-muted-foreground/50">
+                                        paid
+                                      </span>
+                                    )}
+                                  </span>
+                                </div>
+                                <p className="truncate text-xs font-medium text-foreground">
+                                  {line.productName}
+                                </p>
+                                {hasSwap ? (
+                                  <>
+                                    <div className="mt-1 flex items-baseline justify-between gap-2">
+                                      <span className="flex items-center gap-1 text-[0.625rem] uppercase tracking-wide text-primary/80">
+                                        <ArrowRight className="size-2.5" />
+                                        Switch to
+                                      </span>
+                                      <span className="shrink-0 text-[0.625rem] tabular-nums text-primary/90">
+                                        {formatCurrency(
+                                          line.bestEquivalentUnitCost,
+                                        )}
+                                        /{unit}
+                                      </span>
+                                    </div>
+                                    <p className="truncate text-xs font-medium text-primary">
+                                      {line.bestEquivalentProductName}
+                                    </p>
+                                  </>
+                                ) : (
+                                  <p className="mt-1 text-[0.625rem] text-muted-foreground/60">
+                                    Already the cheapest like-for-like
+                                  </p>
+                                )}
+                                <p className="mt-1 text-[0.625rem] tabular-nums text-muted-foreground/60">
+                                  {formatNumber(Math.round(line.annualVolume))}{' '}
+                                  {unit}/yr
+                                </p>
+                              </>
+                            )
+                          })()}
+                        </div>
+                        <span
+                          className={cn(
+                            'shrink-0 text-xs font-semibold tabular-nums',
+                            line.savings > 0
+                              ? 'text-primary'
+                              : 'text-muted-foreground',
+                          )}
+                        >
+                          {formatCurrency(line.savings)}
+                        </span>
+                      </div>
+                      {line.locations.length > 0 && (
+                        <ul className="mt-1 border-t border-border/40 pt-1">
+                          {line.locations.map((l) => (
+                            <SiteRow
+                              key={String(l.locationId)}
+                              name={l.locationName}
+                              volume={l.annualVolume}
+                              unit={unit}
+                              opportunity={l.opportunity}
+                              source={l.sourceLocationName}
+                              target={
+                                l.opportunity > 0 &&
+                                l.equivalentProductName !== '—' &&
+                                l.equivalentProductName !==
+                                  line.bestEquivalentProductName
+                                  ? l.equivalentProductName
+                                  : null
+                              }
+                            />
+                          ))}
+                        </ul>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>
@@ -366,6 +1030,7 @@ function PackagingLens({
   data: PackagingOpportunity
   unit: string
 }) {
+  const [open, setOpen] = useState(false)
   const maxPer = useMemo(
     () => Math.max(...data.options.map((o) => o.cheapestPerUnit), 0.0001),
     [data.options],
@@ -415,22 +1080,150 @@ function PackagingLens({
                     }}
                   />
                 </div>
+                {o.cheapestLabel && (
+                  <p className="truncate text-[0.625rem] text-muted-foreground/70">
+                    best: {o.cheapestLabel} ({o.offerCount}{' '}
+                    {o.offerCount === 1 ? 'quote' : 'quotes'})
+                  </p>
+                )}
               </li>
             )
           })}
         </ul>
       )}
       <p className="mt-2 text-[0.625rem] text-muted-foreground/70 tabular-nums">
-        {data.blendedPaidUnitCost !== null ? (
+        {data.options.length > 1 ? (
           <>
-            Blended paid {formatCurrency(data.blendedPaidUnitCost)}/{unit} →{' '}
-            {data.cheapestFamilyLabel} {formatCurrency(data.cheapestPerUnit)}/
-            {unit}
+            Cheapest container: {data.cheapestFamilyLabel}{' '}
+            {formatCurrency(data.cheapestPerUnit)}/{unit}. Rates by container
+            above; expand to see which volume can move to it.
           </>
         ) : (
-          'No paid baseline on file to size the switch.'
+          'Only one container format on file — no packaging switch to size.'
         )}
       </p>
+
+      {data.breakdown.length > 0 && (
+        <>
+          <DrilldownToggle
+            open={open}
+            onToggle={() => setOpen((o) => !o)}
+            count={data.breakdown.length}
+          />
+          {open && (
+            <ul className="flex flex-col gap-2">
+              {data.breakdown.map((row) => (
+                <li
+                  key={row.family}
+                  className="rounded-md border border-border/60 bg-background/40 px-3 py-2"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      {row.targetFamily ? (
+                        <p className="flex items-center gap-1 text-xs font-medium text-foreground">
+                          <span>{row.familyLabel}</span>
+                          <ArrowRight className="size-3 shrink-0 text-primary" />
+                          <span className="text-primary">
+                            {row.targetFamilyLabel}
+                          </span>
+                        </p>
+                      ) : (
+                        <p className="flex items-center gap-1 text-xs font-medium text-foreground">
+                          {row.familyLabel}
+                          <span className="text-[0.625rem] font-normal text-muted-foreground/70">
+                            lowest-cost container
+                          </span>
+                        </p>
+                      )}
+                      <p className="text-[0.625rem] tabular-nums text-muted-foreground/70">
+                        {formatNumber(Math.round(row.annualVolume))} {unit}/yr
+                        {row.currentBestPerUnit !== null && (
+                          <>
+                            {' · '}
+                            {formatCurrency(row.currentBestPerUnit)}/{unit} here
+                          </>
+                        )}
+                        {row.targetPerUnit !== null && (
+                          <>
+                            {' → '}
+                            {formatCurrency(row.targetPerUnit)}/{unit}
+                          </>
+                        )}
+                      </p>
+                    </div>
+                    {row.opportunity > 0 && (
+                      <span className="shrink-0 text-right text-xs font-semibold tabular-nums text-primary">
+                        {formatCurrency(row.opportunity)}
+                      </span>
+                    )}
+                  </div>
+                  {row.targetLabel && (
+                    <p className="mt-0.5 truncate text-[0.625rem] text-muted-foreground/70">
+                      switch to: {row.targetLabel} ({row.targetOfferCount}{' '}
+                      {row.targetOfferCount === 1 ? 'quote' : 'quotes'})
+                    </p>
+                  )}
+                  {row.products.length > 0 && (
+                    <ul className="mt-1.5 flex flex-col gap-1.5 border-t border-border/40 pt-1.5">
+                      {row.products.map((p) => (
+                        <li key={p.productId} className="flex flex-col">
+                          <div className="flex items-center justify-between gap-2 text-[0.6875rem]">
+                            <span className="flex items-center gap-1 truncate">
+                              <Package className="size-2.5 shrink-0 text-muted-foreground/50" />
+                              <span className="truncate font-medium text-foreground">
+                                {p.productName}
+                              </span>
+                            </span>
+                            <span className="shrink-0 tabular-nums text-muted-foreground">
+                              {formatNumber(Math.round(p.annualVolume))} {unit}
+                              {p.blendedPaidUnitCost !== null && (
+                                <span className="ml-1 text-muted-foreground/60">
+                                  @ {formatCurrency(p.blendedPaidUnitCost)}
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                          {p.targetFamilyLabel &&
+                            p.targetPerUnit !== null &&
+                            p.currentBestPerUnit !== null && (
+                              <p className="flex items-center justify-between gap-2 pl-3.5 text-[0.625rem] tabular-nums text-primary/90">
+                                <span className="flex items-center gap-1 truncate">
+                                  <ArrowRight className="size-2.5 shrink-0" />
+                                  <span className="truncate">
+                                    {p.targetFamilyLabel}{' '}
+                                    {formatCurrency(p.currentBestPerUnit)} →{' '}
+                                    {formatCurrency(p.targetPerUnit)}/{unit}
+                                  </span>
+                                </span>
+                                {p.opportunity > 0 && (
+                                  <span className="shrink-0 font-semibold">
+                                    {formatCurrency(p.opportunity)}
+                                  </span>
+                                )}
+                              </p>
+                            )}
+                          {p.locations.length > 0 && (
+                            <ul className="pl-3.5">
+                              {p.locations.map((l) => (
+                                <SiteRow
+                                  key={String(l.locationId)}
+                                  name={l.locationName}
+                                  volume={l.annualVolume}
+                                  unit={unit}
+                                />
+                              ))}
+                            </ul>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
     </div>
   )
 }

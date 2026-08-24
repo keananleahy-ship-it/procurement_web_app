@@ -33,6 +33,17 @@ export function normalizeSku(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
+// Identity key for a NO-CODE row: the item name is its only identity, so
+// compare on a lowercased, whitespace-collapsed, punctuation-stripped form.
+// This is an EXACT identity (two names that normalize equal are the same item),
+// never a fuzzy similarity — that distinction is the whole point of the fix.
+export function normalizeName(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
 // Looser SKU key that also drops leading zeros, but ONLY when the normalized
 // SKU is entirely numeric. Purchasing exports (especially anything that has
 // passed through Excel) silently strip leading zeros from numeric-looking
@@ -97,6 +108,9 @@ export type MatchIndex = {
   // Leading-zero-stripped numeric SKU key -> resolved target (null when
   // ambiguous). Reconciles codes that lost leading zeros in an Excel export.
   looseSkuTargets: Map<string, ResolvedTarget | null>
+  // Exact normalized item NAME -> resolved target (null when ambiguous). Used
+  // as the authoritative identity for rows that carry no vendor code.
+  nameTargets: Map<string, ResolvedTarget | null>
 }
 
 export function buildMatchIndex(
@@ -108,7 +122,14 @@ export function buildMatchIndex(
   // Group products by each key, then resolve each group to a single target.
   const bySkuGroup = new Map<string, ProdTarget[]>()
   const byLooseGroup = new Map<string, ProdTarget[]>()
+  const byNameGroup = new Map<string, ProdTarget[]>()
   for (const p of prods) {
+    const nk = normalizeName(p.name)
+    if (nk) {
+      const g = byNameGroup.get(nk)
+      if (g) g.push(p)
+      else byNameGroup.set(nk, [p])
+    }
     if (!p.sku || !p.sku.trim()) continue
     const k = normalizeSku(p.sku)
     if (k) {
@@ -132,8 +153,71 @@ export function buildMatchIndex(
   for (const [k, group] of byLooseGroup) {
     looseSkuTargets.set(k, resolveGroup(group, canonById))
   }
+  const nameTargets = new Map<string, ResolvedTarget | null>()
+  for (const [k, group] of byNameGroup) {
+    nameTargets.set(k, resolveGroup(group, canonById))
+  }
 
-  return { canon, prods, canonById, skuTargets, looseSkuTargets }
+  return {
+    canon,
+    prods,
+    canonById,
+    skuTargets,
+    looseSkuTargets,
+    nameTargets,
+  }
+}
+
+// Resolve a row's AUTHORITATIVE identity using exact signals only — never a
+// fuzzy name similarity. This is the single rule the fix hinges on: a vendor
+// code is the atomic unit of purchase history (one code = one item = one pack
+// form), so distinct codes must never collapse onto one product. Order:
+//   1. exact vendor code (from the SKU column or the item label), then
+//      leading-zero-tolerant numeric code, then
+//   2. for rows with NO code, the exact normalized item name.
+// Returns the resolved target and which signal matched, or null when the row
+// has no exact identity in the catalog (the caller then auto-creates a product
+// keyed by the row's own code/name). An ambiguous key (target === null) short-
+// circuits to null too — it is never downgraded to a looser guess.
+export function resolveExactIdentity(
+  row: VolumeMatchInput,
+  index: MatchIndex,
+): { target: ResolvedTarget; method: 'code' | 'name' } | null {
+  const rowSku = row.sku?.trim() ? normalizeSku(row.sku) : ''
+  const nameAsSku = row.itemName?.trim() ? normalizeSku(row.itemName) : ''
+  const hasCode = Boolean(row.sku?.trim())
+
+  for (const key of [rowSku, nameAsSku]) {
+    if (!key) continue
+    if (index.skuTargets.has(key)) {
+      const t = index.skuTargets.get(key)
+      if (t) return { target: t, method: 'code' }
+      return null // present but ambiguous — do not fall through
+    }
+  }
+  for (const candidate of [row.sku, row.itemName]) {
+    if (!candidate?.trim()) continue
+    const lk = looseSkuKey(candidate)
+    if (lk && index.looseSkuTargets.has(lk)) {
+      const t = index.looseSkuTargets.get(lk)
+      if (t) return { target: t, method: 'code' }
+      return null
+    }
+  }
+
+  // Exact-name identity only for rows that genuinely have no vendor code. A
+  // row WITH a code whose code isn't in the catalog is a distinct item to be
+  // created under that code — it must not borrow another item's identity by
+  // name.
+  if (!hasCode) {
+    const nk = row.itemName?.trim() ? normalizeName(row.itemName) : ''
+    if (nk && index.nameTargets.has(nk)) {
+      const t = index.nameTargets.get(nk)
+      if (t) return { target: t, method: 'name' }
+    }
+  }
+
+  return null
 }
 
 // Turn a resolved SKU target into a match result. A SKU hit is 'confirmed'
@@ -189,13 +273,18 @@ export function resolveMatch(
   }
 
   // 2. Fuzzy name match, canonical items first (only meaningful when the item
-  // label is an actual description). Surfaced as 'suggested' for review.
+  // label is an actual description). Surfaced as 'suggested' purely as an
+  // ADVISORY hint for the review UI — it deliberately does NOT set
+  // canonicalItemId/productId, so a fuzzy guess can never silently attach a row
+  // to a different item's identity or reach the committed baseline. A reviewer
+  // must explicitly confirm it (which sets the ids), or the commit will create
+  // a standalone product for the row's own code/name.
   const product = { name: row.itemName, category: null as string | null }
   const canonHit = bestMatch(product, index.canon, 0.5)
   if (canonHit) {
     const hit = index.canonById.get(canonHit.canonicalItemId)
     return {
-      canonicalItemId: canonHit.canonicalItemId,
+      canonicalItemId: null,
       productId: null,
       matchName: hit?.name ?? null,
       matchStatus: 'suggested',
@@ -207,7 +296,7 @@ export function resolveMatch(
     const hit = index.prods.find((p) => p.id === prodHit.canonicalItemId)
     return {
       canonicalItemId: null,
-      productId: prodHit.canonicalItemId,
+      productId: null,
       matchName: hit?.name ?? null,
       matchStatus: 'suggested',
       matchScore: prodHit.score,

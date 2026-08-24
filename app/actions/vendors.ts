@@ -3,6 +3,11 @@
 import { db } from '@/lib/db'
 import { vendors } from '@/lib/db/schema'
 import { requireUser, requireEditor } from '@/lib/roles'
+import {
+  findVendorNameVariants,
+  mergeVendorNameVariants,
+  type VendorVariantGroup,
+} from '@/lib/vendors-registry'
 import { asc, eq } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 
@@ -22,6 +27,24 @@ export async function createVendor(formData: FormData) {
   await db.insert(vendors).values({ userId, name, contactEmail, notes })
   revalidatePath('/vendors')
   revalidatePath('/')
+}
+
+// Supplier spellings that collapse to the same vendor identity. Read-only.
+export async function getVendorNameVariants(): Promise<VendorVariantGroup[]> {
+  await requireUser()
+  return findVendorNameVariants()
+}
+
+// Apply one variant group, rewriting products.supplier to the canonical name.
+// Deliberately per-group and user-triggered: it edits existing product rows.
+export async function mergeVendorNames(key: string, canonicalName: string) {
+  await requireEditor()
+  const { updated } = await mergeVendorNameVariants(key, canonicalName)
+  revalidatePath('/vendors')
+  revalidatePath('/validation')
+  revalidatePath('/products')
+  revalidatePath('/')
+  return { updated }
 }
 
 export async function deleteVendor(id: number) {

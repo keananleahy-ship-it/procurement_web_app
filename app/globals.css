@@ -258,3 +258,29 @@
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+/* Always-visible horizontal scrollbar for wide data tables.
+   Overlay scrollbars (macOS, some mobile) auto-hide until scroll, which hides
+   the fact that a table scrolls sideways. This forces a persistent track. */
+.scrollbar-always-x {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  scrollbar-gutter: stable;
+}
+.scrollbar-always-x::-webkit-scrollbar {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 10px;
+}
+.scrollbar-always-x::-webkit-scrollbar-track {
+  background: var(--muted);
+  border-top: 1px solid var(--border);
+}
+.scrollbar-always-x::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  border: 2px solid var(--muted);
+  background: color-mix(in oklab, var(--muted-foreground) 45%, transparent);
+}
+.scrollbar-always-x::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--muted-foreground) 70%, transparent);
+}

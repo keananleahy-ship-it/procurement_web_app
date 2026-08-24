@@ -1,7 +1,7 @@
 'use server'
 
 import { db } from '@/lib/db'
-import { user } from '@/lib/db/schema'
+import { locations, user, userLocations } from '@/lib/db/schema'
 import { type Role, ROLES, requireAdmin } from '@/lib/roles'
 import { normalizeRole } from '@/lib/roles-shared'
 import { and, asc, eq, ne, sql } from 'drizzle-orm'
@@ -83,4 +83,83 @@ export async function deleteUser(userId: string) {
   }
   await db.delete(user).where(eq(user.id, userId))
   revalidatePath('/admin')
+}
+
+// --- Site-champion location assignments ------------------------------------
+// Admins assign which location(s) each user is the catalog-validation champion
+// for. Assignments live in user_locations; admins implicitly have every
+// location and are not listed here.
+
+export type LocationOption = { id: number; name: string; region: string | null }
+
+export type UserAssignments = {
+  userId: string
+  locationIds: number[]
+}
+
+// All locations plus each non-admin user's current assignments, for the admin
+// "Site assignments" UI.
+export async function getSiteAssignments(): Promise<{
+  locations: LocationOption[]
+  assignments: UserAssignments[]
+}> {
+  await requireAdmin()
+  const locs = await db
+    .select({ id: locations.id, name: locations.name, region: locations.region })
+    .from(locations)
+    .orderBy(asc(locations.name))
+  const rows = await db
+    .select({
+      userId: userLocations.userId,
+      locationId: userLocations.locationId,
+    })
+    .from(userLocations)
+  const byUser = new Map<string, number[]>()
+  for (const r of rows) {
+    const list = byUser.get(r.userId) ?? []
+    list.push(r.locationId)
+    byUser.set(r.userId, list)
+  }
+  const assignments: UserAssignments[] = [...byUser.entries()].map(
+    ([userId, locationIds]) => ({ userId, locationIds }),
+  )
+  return { locations: locs, assignments }
+}
+
+export async function assignUserLocation(userId: string, locationId: number) {
+  const admin = await requireAdmin()
+  // Ignore duplicates (unique index guards, but avoid throwing on re-add).
+  const [existing] = await db
+    .select({ id: userLocations.id })
+    .from(userLocations)
+    .where(
+      and(
+        eq(userLocations.userId, userId),
+        eq(userLocations.locationId, locationId),
+      ),
+    )
+    .limit(1)
+  if (existing) return
+  await db.insert(userLocations).values({
+    userId,
+    locationId,
+    assignedByUserId: admin.id,
+    assignedByName: admin.name,
+  })
+  revalidatePath('/admin')
+  revalidatePath('/validation')
+}
+
+export async function unassignUserLocation(userId: string, locationId: number) {
+  await requireAdmin()
+  await db
+    .delete(userLocations)
+    .where(
+      and(
+        eq(userLocations.userId, userId),
+        eq(userLocations.locationId, locationId),
+      ),
+    )
+  revalidatePath('/admin')
+  revalidatePath('/validation')
 }
