@@ -3,6 +3,7 @@
 // with a small boost when categories agree. No external dependencies.
 
 import { sameFoodGradeSegment } from './attributes'
+import { attributeVerdict, deriveSpecKey, type ComparableItem } from './match-key'
 
 function normalize(s: string): string {
   return s
@@ -47,24 +48,57 @@ export function diceCoefficient(a: string, b: string): number {
 export type ScoredCandidate = {
   canonicalItemId: number
   score: number
+  /** 'spec-key' for an exact attribute-tuple hit, 'fuzzy' for name similarity. */
+  method: 'spec-key' | 'fuzzy'
 }
+
+export type MatchProduct = ComparableItem & { name: string }
+export type MatchCandidate = ComparableItem & { id: number; name: string }
 
 /**
  * Score a product against a list of canonical items and return the best match.
- * A matching category adds a small boost (capped at 1). Returns null when no
- * candidate clears the threshold.
+ *
+ * Two tiers, in order:
+ *   0. SPEC KEY — the product and exactly one candidate derive the same
+ *      attribute tuple (category|grade|formulation). This is an identity
+ *      assertion from structured data, so it wins outright with score 1 and
+ *      needs no name similarity or LLM call. Requires a UNIQUE hit: several
+ *      canonical items can share a tuple (269 such pairings in this catalog),
+ *      and picking one arbitrarily would be a confident guess, not a match.
+ *   1. FUZZY — Sorensen-Dice over names, with a small boost when categories
+ *      agree, for everything the structured data can't settle.
+ *
+ * Candidates whose gating attributes conflict with the product's are vetoed
+ * outright, alongside the pre-existing food-grade segment gate: a name can
+ * look almost identical while the item is a different product type or grade
+ * (a grease vs a circulating oil that share "460").
  */
 export function bestMatch(
-  product: { name: string; category: string | null },
-  candidates: { id: number; name: string; category: string | null }[],
+  product: MatchProduct,
+  candidates: MatchCandidate[],
   threshold = 0.4,
 ): ScoredCandidate | null {
+  // --- Tier 0: exact attribute-tuple identity -----------------------------
+  const productKey = deriveSpecKey(product)
+  if (productKey) {
+    const keyed = candidates.filter(
+      (c) => sameFoodGradeSegment(product, c) && deriveSpecKey(c) === productKey,
+    )
+    if (keyed.length === 1) {
+      return { canonicalItemId: keyed[0].id, score: 1, method: 'spec-key' }
+    }
+  }
+
+  // --- Tier 1: name similarity, with attribute vetoes ---------------------
   let best: ScoredCandidate | null = null
   for (const c of candidates) {
     // Never cross the food-grade / standard divide, no matter how similar the
     // names are (e.g. food-grade "Purity FG AW Hydraulic 46" vs a standard AW
     // hydraulic ISO 46).
     if (!sameFoodGradeSegment(product, c)) continue
+    // Never match across a known category or grade difference. Unknown values
+    // fall through so sparsely-attributed products still reach the fuzzy path.
+    if (attributeVerdict(product, c).hasConflict) continue
     let score = diceCoefficient(product.name, c.name)
     if (
       product.category &&
@@ -74,7 +108,7 @@ export function bestMatch(
       score = Math.min(1, score + 0.1)
     }
     if (!best || score > best.score) {
-      best = { canonicalItemId: c.id, score }
+      best = { canonicalItemId: c.id, score, method: 'fuzzy' }
     }
   }
   if (best && best.score >= threshold) return best

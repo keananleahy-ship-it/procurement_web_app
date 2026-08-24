@@ -40,10 +40,16 @@ export async function POST(req: Request) {
       .limit(200),
   ])
 
+  // Include the structured attribute tuple so the model compares fields
+  // rather than inferring identity from name similarity, and so the
+  // deterministic guards in matchProductBatch have data to veto against.
   const canonicalOptions: CanonicalInput[] = items.map((i) => ({
     id: i.id,
     name: i.name,
     category: i.category,
+    application: i.application,
+    subcategory: i.subcategory,
+    viscosity: i.viscosity,
     baseUnit: i.baseUnit,
   }))
   const validCanonicalIds = new Set(canonicalOptions.map((c) => c.id))
@@ -67,6 +73,9 @@ export async function POST(req: Request) {
       id: p.id,
       name: p.name,
       category: p.category,
+      application: p.application,
+      subcategory: p.subcategory,
+      viscosity: p.viscosity,
       unit: p.unit,
       baseUnit: p.baseUnit,
     })),

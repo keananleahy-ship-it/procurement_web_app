@@ -62,17 +62,28 @@ export async function generateSuggestions() {
     db.select().from(products),
   ])
 
+  // Pass the full attribute tuple so the matcher can gate on category/grade
+  // and resolve exact spec-key identities, not just compare names.
   const candidates = items.map((i) => ({
     id: i.id,
     name: i.name,
     category: i.category,
+    application: i.application,
+    subcategory: i.subcategory,
+    viscosity: i.viscosity,
   }))
 
   let suggested = 0
   for (const p of prods) {
     if (p.matchStatus === 'confirmed' || p.matchStatus === 'rejected') continue
     const match = bestMatch(
-      { name: p.name, category: p.category },
+      {
+        name: p.name,
+        category: p.category,
+        application: p.application,
+        subcategory: p.subcategory,
+        viscosity: p.viscosity,
+      },
       candidates,
     )
     if (match) {
@@ -82,8 +93,12 @@ export async function generateSuggestions() {
           canonicalItemId: match.canonicalItemId,
           matchStatus: 'suggested',
           matchScore: match.score.toFixed(4),
-          matchMethod: 'fuzzy',
-          matchReason: null,
+          // Distinguish a deterministic attribute-tuple hit from a name guess.
+          matchMethod: match.method,
+          matchReason:
+            match.method === 'spec-key'
+              ? 'Exact attribute match (category, grade, formulation)'
+              : null,
         })
         .where(eq(products.id, p.id))
       suggested++
@@ -129,6 +144,9 @@ export async function generateAiSuggestions() {
     id: i.id,
     name: i.name,
     category: i.category,
+    application: i.application,
+    subcategory: i.subcategory,
+    viscosity: i.viscosity,
     baseUnit: i.baseUnit,
   }))
 
@@ -149,6 +167,9 @@ export async function generateAiSuggestions() {
       id: p.id,
       name: p.name,
       category: p.category,
+      application: p.application,
+      subcategory: p.subcategory,
+      viscosity: p.viscosity,
       unit: p.unit,
       baseUnit: p.baseUnit,
     })),
@@ -257,6 +278,9 @@ export async function rematchRejected() {
     id: i.id,
     name: i.name,
     category: i.category,
+    application: i.application,
+    subcategory: i.subcategory,
+    viscosity: i.viscosity,
     baseUnit: i.baseUnit,
   }))
   if (rejected.length === 0 || canonicalOptions.length === 0) {
@@ -280,6 +304,9 @@ export async function rematchRejected() {
       id: p.id,
       name: p.name,
       category: p.category,
+      application: p.application,
+      subcategory: p.subcategory,
+      viscosity: p.viscosity,
       unit: p.unit,
       baseUnit: p.baseUnit,
     })),
@@ -654,6 +681,18 @@ export async function resetMatch(productId: number) {
   revalidatePath('/')
 }
 
+// The attribute values for both sides of a pairing, so the review UI can show
+// them column-by-column instead of asking a reviewer to infer identity from
+// two product names.
+export type MatchRowAttributes = Record<
+  ComparedAttribute,
+  {
+    product: string | null
+    canonical: string | null
+    status: AttributeComparison
+  }
+>
+
 export type MatchRow = {
   productId: number
   productName: string
@@ -667,6 +706,10 @@ export type MatchRow = {
   matchReason: string | null
   canonicalItemId: number | null
   canonicalItemName: string | null
+  /** Per-attribute comparison, null when the product has no canonical item. */
+  attributes: MatchRowAttributes | null
+  /** True when a gating attribute is known on both sides and disagrees. */
+  hasConflict: boolean
 }
 
 /** Products joined with their (suggested or confirmed) canonical item. */
@@ -677,6 +720,9 @@ export async function getMatchRows(): Promise<MatchRow[]> {
       productId: products.id,
       productName: products.name,
       category: products.category,
+      application: products.application,
+      subcategory: products.subcategory,
+      viscosity: products.viscosity,
       unit: products.unit,
       packSize: products.packSize,
       baseUnit: products.baseUnit,
@@ -686,14 +732,68 @@ export async function getMatchRows(): Promise<MatchRow[]> {
       matchReason: products.matchReason,
       canonicalItemId: products.canonicalItemId,
       canonicalItemName: canonicalItems.name,
+      canonicalCategory: canonicalItems.category,
+      canonicalApplication: canonicalItems.application,
+      canonicalSubcategory: canonicalItems.subcategory,
+      canonicalViscosity: canonicalItems.viscosity,
     })
     .from(products)
     .leftJoin(canonicalItems, eq(canonicalItems.id, products.canonicalItemId))
     .orderBy(asc(products.name))
 
-  return rows.map((r) => ({
-    ...r,
-    packSize: Number(r.packSize ?? 1),
-    matchScore: r.matchScore === null ? null : Number(r.matchScore),
-  }))
+  return rows.map((r) => {
+    const {
+      application,
+      subcategory,
+      viscosity,
+      canonicalCategory,
+      canonicalApplication,
+      canonicalSubcategory,
+      canonicalViscosity,
+      ...rest
+    } = r
+
+    const productSide = {
+      name: r.productName,
+      category: r.category,
+      application,
+      subcategory,
+      viscosity,
+    }
+    const canonicalSide = {
+      name: r.canonicalItemName,
+      category: canonicalCategory,
+      application: canonicalApplication,
+      subcategory: canonicalSubcategory,
+      viscosity: canonicalViscosity,
+    }
+
+    // Conflicts are computed at READ time rather than stored, so surfacing
+    // them changes no rows and leaves every savings figure untouched until a
+    // reviewer explicitly acts on a flagged match.
+    let attributes: MatchRowAttributes | null = null
+    let hasConflict = false
+    if (r.canonicalItemId !== null) {
+      const verdict = attributeVerdict(productSide, canonicalSide)
+      hasConflict = verdict.hasConflict
+      attributes = Object.fromEntries(
+        COMPARED_ATTRIBUTES.map((key) => [
+          key,
+          {
+            product: productSide[key] ?? null,
+            canonical: canonicalSide[key] ?? null,
+            status: verdict.attributes[key],
+          },
+        ]),
+      ) as MatchRowAttributes
+    }
+
+    return {
+      ...rest,
+      packSize: Number(r.packSize ?? 1),
+      matchScore: r.matchScore === null ? null : Number(r.matchScore),
+      attributes,
+      hasConflict,
+    }
+  })
 }

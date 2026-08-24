@@ -279,6 +279,11 @@ export function resolveMatch(
   // to a different item's identity or reach the committed baseline. A reviewer
   // must explicitly confirm it (which sets the ids), or the commit will create
   // a standalone product for the row's own code/name.
+  // A volume-import row is only ever a name + SKU from a spreadsheet, so it
+  // carries no catalog attributes. bestMatch's attribute gates treat unknown
+  // values as "no opinion" and fall through to name similarity, so behavior
+  // here is unchanged; there is nothing to gate on until the row is committed
+  // and resolved to a real product.
   const product = { name: row.itemName, category: null as string | null }
   const canonHit = bestMatch(product, index.canon, 0.5)
   if (canonHit) {

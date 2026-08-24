@@ -121,6 +121,14 @@ export const canonicalItems = pgTable('canonical_items', {
   application: text('application'),
   subcategory: text('subcategory'),
   viscosity: text('viscosity'),
+  // LEGACY, and deliberately not used for matching. Holds structured identity
+  // keys from an earlier design, in a vocabulary the current attribute columns
+  // cannot reproduce (e.g. `engine oil pc|0w-20|full-synthetic`, where "pc"
+  // folds the application into the category). Mapped here so the column is
+  // visible instead of an invisible orphan that gets rediscovered. Matching
+  // derives its own key from the attribute columns for BOTH sides — see
+  // `deriveSpecKey` in lib/match-key.ts.
+  specKey: text('specKey'),
   attributesEdited: boolean('attributesEdited').notNull().default(false),
   unit: text('unit'),
   // The base unit used to normalize prices across pack sizes for this item
