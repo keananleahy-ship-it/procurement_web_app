@@ -85,11 +85,29 @@ function ConfidenceBadge({ score }: { score: number | null }) {
 
 // The attributes shown per pairing, in the order a reviewer judges them:
 // product type first, then grade, then the advisory fields.
-const ATTRIBUTE_COLUMNS: { key: ComparedAttribute; label: string }[] = [
+//
+// The two gating attributes stay visible at every width — they are the reason
+// this grid exists, and a reviewer must never scroll sideways to find out why
+// a match is flagged. The advisory columns only appear once there is room:
+// with all four shown the table is ~1280px inside a ~530px container on a
+// narrow viewport, which would push Type and Grade off-screen.
+const ATTRIBUTE_COLUMNS: {
+  key: ComparedAttribute
+  label: string
+  className?: string
+}[] = [
   { key: 'category', label: 'Type' },
   { key: 'viscosity', label: 'Grade' },
-  { key: 'subcategory', label: 'Formulation' },
-  { key: 'application', label: 'Application' },
+  {
+    key: 'subcategory',
+    label: 'Formulation',
+    className: 'hidden xl:table-cell',
+  },
+  {
+    key: 'application',
+    label: 'Application',
+    className: 'hidden xl:table-cell',
+  },
 ]
 
 /**
@@ -163,7 +181,7 @@ function AttributeHeadCells() {
   return (
     <>
       {ATTRIBUTE_COLUMNS.map((col) => (
-        <TableHead key={col.key} className="whitespace-nowrap">
+        <TableHead key={col.key} className={col.className}>
           {col.label}
         </TableHead>
       ))}
@@ -176,7 +194,16 @@ function AttributeCells({ row }: { row: MatchRow }) {
   return (
     <>
       {ATTRIBUTE_COLUMNS.map((col) => (
-        <TableCell key={col.key} className="align-top">
+        <TableCell
+          key={col.key}
+          className={cn(
+            // whitespace-normal overrides TableCell's default nowrap, which
+            // would otherwise push values like "Circulating / R&O Oil" out of
+            // their column.
+            'align-top break-words whitespace-normal',
+            col.className,
+          )}
+        >
           {row.attributes ? (
             <AttributeCell
               cell={row.attributes[col.key]}
@@ -1172,14 +1199,20 @@ export function MatchingView({
             </p>
           </div>
 
-          <div className="rounded-lg border border-border bg-card">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Vendor product</TableHead>
-                  <TableHead>Matched to</TableHead>
-                  <AttributeHeadCells />
-                  <TableHead>Status</TableHead>
+              <div className="rounded-lg border border-border bg-card">
+                {/* Fixed layout so the column widths below are honoured. In the
+                    default auto layout a long product name overrides any width
+                    hint and squeezes the attribute columns off-screen. */}
+                <Table className="table-fixed">
+                  <TableHeader>
+                    <TableRow>
+                      {/* Product names are long free-text strings; left
+                          unconstrained they consume the full container and push
+                          the attribute columns out of view. */}
+                      <TableHead className="w-[24%]">Vendor product</TableHead>
+                      <TableHead className="w-[22%]">Matched to</TableHead>
+                    <AttributeHeadCells />
+                    <TableHead>Status</TableHead>
                   {canEdit && (
                     <TableHead className="text-right">Action</TableHead>
                   )}
@@ -1188,10 +1221,13 @@ export function MatchingView({
               <TableBody>
                 {groups.conflicts.slice(0, visible.conflicts).map((r) => (
                   <TableRow key={r.productId}>
-                    <TableCell className="align-top font-medium text-foreground">
+                    {/* whitespace-normal overrides TableCell's default nowrap;
+                        break-words then keeps long pack codes inside the
+                        fixed-width cell without splitting ordinary words. */}
+                    <TableCell className="align-top font-medium text-foreground break-words whitespace-normal">
                       {r.productName}
                     </TableCell>
-                    <TableCell className="align-top text-foreground">
+                    <TableCell className="align-top text-foreground break-words whitespace-normal">
                       {r.canonicalItemName ?? '—'}
                     </TableCell>
                     <AttributeCells row={r} />
