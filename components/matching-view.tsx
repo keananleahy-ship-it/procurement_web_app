@@ -52,7 +52,13 @@ import {
   ListChecks,
   AlertCircle,
   Layers,
+  ArrowRight,
+  TriangleAlert,
 } from 'lucide-react'
+import type {
+  AttributeComparison,
+  ComparedAttribute,
+} from '@/lib/match-key'
 
 type CanonicalOption = { id: number; name: string }
 
@@ -76,6 +82,118 @@ function ConfidenceBadge({ score }: { score: number | null }) {
     </span>
   )
 }
+
+// The attributes shown per pairing, in the order a reviewer judges them:
+// product type first, then grade, then the advisory fields.
+const ATTRIBUTE_COLUMNS: { key: ComparedAttribute; label: string }[] = [
+  { key: 'category', label: 'Type' },
+  { key: 'viscosity', label: 'Grade' },
+  { key: 'subcategory', label: 'Formulation' },
+  { key: 'application', label: 'Application' },
+]
+
+/**
+ * One attribute, compared across the vendor product and the canonical item.
+ *
+ * When the two agree the value is printed ONCE: repeating an identical string
+ * on two lines is noise that buries the cells that actually disagree. Only a
+ * conflict shows both sides, so a reviewer's eye lands on the real problem.
+ */
+function AttributeCell({
+  cell,
+  gating,
+}: {
+  cell: { product: string | null; canonical: string | null; status: AttributeComparison }
+  gating: boolean
+}) {
+  if (cell.status === 'agree') {
+    return (
+      <span className="text-sm text-muted-foreground">{cell.product}</span>
+    )
+  }
+  if (cell.status === 'conflict') {
+    return (
+      <span className="flex flex-col gap-0.5 text-sm">
+        <span
+          className={cn(
+            'font-medium',
+            gating ? 'text-destructive' : 'text-foreground',
+          )}
+        >
+          {cell.product ?? '—'}
+        </span>
+        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+          <ArrowRight className="size-3 shrink-0" aria-hidden="true" />
+          {cell.canonical ?? '—'}
+        </span>
+        <span className="sr-only">
+          {gating
+            ? 'Conflict: this difference blocks the match'
+            : 'Differs, advisory only'}
+        </span>
+      </span>
+    )
+  }
+  // Unknown on one or both sides. Show whichever value exists so the reviewer
+  // can still see it, dimmed to signal it carries no verdict.
+  const known = cell.product ?? cell.canonical
+  return (
+    <span className="text-sm text-muted-foreground/50">
+      {known ?? '—'}
+      <span className="sr-only"> (not comparable, value missing)</span>
+    </span>
+  )
+}
+
+/** Row-level flag for a pairing whose gating attributes disagree. */
+function ConflictBadge() {
+  return (
+    <Badge
+      variant="outline"
+      className="w-fit gap-1 border-destructive/30 text-xs text-destructive"
+    >
+      <TriangleAlert className="size-3" />
+      Conflict
+    </Badge>
+  )
+}
+
+/** The attribute column headers shared by every pairing table. */
+function AttributeHeadCells() {
+  return (
+    <>
+      {ATTRIBUTE_COLUMNS.map((col) => (
+        <TableHead key={col.key} className="whitespace-nowrap">
+          {col.label}
+        </TableHead>
+      ))}
+    </>
+  )
+}
+
+/** The attribute cells for one pairing. */
+function AttributeCells({ row }: { row: MatchRow }) {
+  return (
+    <>
+      {ATTRIBUTE_COLUMNS.map((col) => (
+        <TableCell key={col.key} className="align-top">
+          {row.attributes ? (
+            <AttributeCell
+              cell={row.attributes[col.key]}
+              gating={GATING_KEYS.includes(col.key)}
+            />
+          ) : (
+            <span className="text-sm text-muted-foreground/50">—</span>
+          )}
+        </TableCell>
+      ))}
+    </>
+  )
+}
+
+// Only these two can veto a match; the others are advisory. Kept in sync with
+// GATING_ATTRIBUTES in lib/match-key.ts, which owns the actual gating.
+const GATING_KEYS: ComparedAttribute[] = ['category', 'viscosity']
 
 function AssignSelect({
   productId,
@@ -518,6 +636,11 @@ export function MatchingView({
           r.matchStatus === 'rejected' ||
           r.matchStatus === 'excluded',
       ),
+      // Pairings whose gating attributes disagree. These are live matches that
+      // predate the attribute gates, so they still appear under their own
+      // status too — this tab is a worklist, not a separate state. Nothing is
+      // unlinked automatically; every row here is a judgement call.
+      conflicts: rows.filter((r) => r.hasConflict),
     }
   }, [rows])
 
@@ -529,6 +652,7 @@ export function MatchingView({
     suggested: PAGE_SIZE,
     confirmed: PAGE_SIZE,
     other: PAGE_SIZE,
+    conflicts: PAGE_SIZE,
   })
   const showMore = (tab: keyof typeof visible) =>
     setVisible((v) => ({ ...v, [tab]: v[tab] + PAGE_SIZE }))
@@ -731,6 +855,16 @@ export function MatchingView({
               </Badge>
             )}
           </TabsTrigger>
+          {groups.conflicts.length > 0 && (
+            <TabsTrigger value="conflicts">
+              Conflicts
+              <Badge
+                className="ml-2 bg-destructive text-destructive-foreground hover:bg-destructive"
+              >
+                {groups.conflicts.length}
+              </Badge>
+            </TabsTrigger>
+          )}
         </TabsList>
 
         {/* Needs review */}
@@ -748,6 +882,7 @@ export function MatchingView({
                   <TableRow>
                     <TableHead>Vendor product</TableHead>
                     <TableHead>Suggested canonical item</TableHead>
+                    <AttributeHeadCells />
                     <TableHead>Confidence</TableHead>
                     {canEdit && <TableHead className="text-right">Verify</TableHead>}
                   </TableRow>
@@ -755,17 +890,13 @@ export function MatchingView({
                 <TableBody>
                   {groups.suggested.slice(0, visible.suggested).map((r) => (
                     <TableRow key={r.productId}>
-                      <TableCell className="font-medium text-foreground">
+                      <TableCell className="align-top font-medium text-foreground">
                         {r.productName}
-                        {r.category && (
-                          <span className="ml-2 text-xs text-muted-foreground">
-                            {r.category}
-                          </span>
-                        )}
                       </TableCell>
-                      <TableCell className="text-foreground">
+                      <TableCell className="align-top text-foreground">
                         <div className="flex flex-col gap-0.5">
                           <span>{r.canonicalItemName ?? '—'}</span>
+                          {r.hasConflict && <ConflictBadge />}
                           {r.matchReason && (
                             <span className="max-w-xs text-xs text-muted-foreground">
                               {r.matchReason}
@@ -773,7 +904,8 @@ export function MatchingView({
                           )}
                         </div>
                       </TableCell>
-                      <TableCell>
+                      <AttributeCells row={r} />
+                      <TableCell className="align-top">
                         <div className="flex items-center gap-1.5">
                           <ConfidenceBadge score={r.matchScore} />
                           {r.matchMethod === 'ai' && (
@@ -783,6 +915,16 @@ export function MatchingView({
                             >
                               <Sparkles className="size-3" />
                               AI
+                            </Badge>
+                          )}
+                          {r.matchMethod === 'spec-key' && (
+                            <Badge
+                              variant="outline"
+                              className="gap-1 border-success/30 text-xs text-success"
+                              title="Matched on an exact attribute tuple, no name guessing"
+                            >
+                              <Check className="size-3" />
+                              Exact
                             </Badge>
                           )}
                         </div>
@@ -852,22 +994,33 @@ export function MatchingView({
                   <TableRow>
                     <TableHead>Vendor product</TableHead>
                     <TableHead>Canonical item</TableHead>
+                    <AttributeHeadCells />
                     {canEdit && <TableHead className="text-right">Action</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {groups.confirmed.slice(0, visible.confirmed).map((r) => (
                     <TableRow key={r.productId}>
-                      <TableCell className="font-medium text-foreground">
+                      <TableCell className="align-top font-medium text-foreground">
                         {r.productName}
                       </TableCell>
-                      <TableCell>
-                        <Badge className="bg-success text-success-foreground hover:bg-success">
-                          {r.canonicalItemName ?? 'Unknown'}
-                        </Badge>
+                      <TableCell className="align-top">
+                        <div className="flex flex-col items-start gap-1">
+                          <Badge
+                            className={cn(
+                              r.hasConflict
+                                ? 'bg-muted text-muted-foreground hover:bg-muted'
+                                : 'bg-success text-success-foreground hover:bg-success',
+                            )}
+                          >
+                            {r.canonicalItemName ?? 'Unknown'}
+                          </Badge>
+                          {r.hasConflict && <ConflictBadge />}
+                        </div>
                       </TableCell>
+                      <AttributeCells row={r} />
                       {canEdit && (
-                        <TableCell className="text-right">
+                        <TableCell className="text-right align-top">
                           <Button
                             size="sm"
                             variant="ghost"
@@ -1003,6 +1156,73 @@ export function MatchingView({
               />
             </div>
           )}
+        </TabsContent>
+
+        {/* Attribute conflicts: live matches whose type or grade disagree. */}
+        <TabsContent value="conflicts" className="mt-4 flex flex-col gap-3">
+          <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
+            <TriangleAlert className="mt-0.5 size-4 shrink-0 text-destructive" />
+            <p className="text-sm text-muted-foreground">
+              These matches disagree on a defining attribute — the product type
+              or the grade — so the two items are probably not the same thing.
+              They were matched before attribute checks existed and are still
+              live in the comparison. Nothing has been changed automatically:
+              unlink the ones that are wrong, and leave any that are
+              deliberate.
+            </p>
+          </div>
+
+          <div className="rounded-lg border border-border bg-card">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Vendor product</TableHead>
+                  <TableHead>Matched to</TableHead>
+                  <AttributeHeadCells />
+                  <TableHead>Status</TableHead>
+                  {canEdit && (
+                    <TableHead className="text-right">Action</TableHead>
+                  )}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {groups.conflicts.slice(0, visible.conflicts).map((r) => (
+                  <TableRow key={r.productId}>
+                    <TableCell className="align-top font-medium text-foreground">
+                      {r.productName}
+                    </TableCell>
+                    <TableCell className="align-top text-foreground">
+                      {r.canonicalItemName ?? '—'}
+                    </TableCell>
+                    <AttributeCells row={r} />
+                    <TableCell className="align-top">
+                      <Badge variant="outline" className="w-fit capitalize">
+                        {r.matchStatus}
+                      </Badge>
+                    </TableCell>
+                    {canEdit && (
+                      <TableCell className="text-right align-top">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={isPending}
+                          onClick={() => run(() => resetMatch(r.productId))}
+                        >
+                          <RotateCcw className="size-4" />
+                          Unlink
+                        </Button>
+                      </TableCell>
+                    )}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            <ShowMoreBar
+              shown={Math.min(visible.conflicts, groups.conflicts.length)}
+              total={groups.conflicts.length}
+              onMore={() => showMore('conflicts')}
+            />
+          </div>
         </TabsContent>
       </Tabs>
 

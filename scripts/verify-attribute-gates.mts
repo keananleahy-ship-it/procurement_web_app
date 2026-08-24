@@ -4,6 +4,7 @@ import {
   deriveSpecKey,
   normalizeGrade,
 } from '../lib/match-key.ts'
+import { bestMatch } from '../lib/match.ts'
 
 // READ-ONLY verification of the attribute-gate design against live data.
 // Answers, before any behavior ships:
@@ -142,6 +143,43 @@ async function main() {
   for (const g of grades) {
     console.log(`      ${String(g.viscosity).padEnd(14)} x${g.n.padEnd(4)} -> ${normalizeGrade(g.viscosity)}`)
   }
+
+  // --- 6. Full re-score through the REAL matcher --------------------------
+  // Sections 1-5 test the primitives in isolation; this runs the actual
+  // bestMatch() the app ships, so the tiering, gating and scoring are all
+  // exercised together. Read-only: nothing is persisted.
+  const allProducts = await q<Row>(
+    `select id, name, category, application, subcategory, viscosity from products`,
+  )
+  const tiers = { 'spec-key': 0, fuzzy: 0, none: 0 } as Record<string, number>
+  let gradeConflictsBlocked = 0
+  const samples: string[] = []
+
+  for (const p of allProducts) {
+    const m = bestMatch(p, cans)
+    if (!m) {
+      tiers.none++
+      // Confirm the reason a product with a derivable key found nothing is a
+      // veto or absent candidate, never a silent crash.
+      continue
+    }
+    tiers[m.method] = (tiers[m.method] ?? 0) + 1
+    const c = cans.find((x) => x.id === m.canonicalItemId)!
+    const v = attributeVerdict(p, c)
+    if (v.hasConflict) gradeConflictsBlocked++
+    if (m.method === 'spec-key' && samples.length < 5) {
+      samples.push(`${p.name.slice(0, 38).padEnd(38)} -> ${c.name.slice(0, 32)}`)
+    }
+  }
+
+  console.log('\n[6] full re-score via real bestMatch():', allProducts.length, 'products')
+  for (const [k, n] of Object.entries(tiers)) {
+    const pctv = Math.round((n / allProducts.length) * 100)
+    console.log(`      ${k.padEnd(10)} ${String(n).padStart(5)}  ${pctv}%`)
+  }
+  console.log('    MUST BE 0 -> returned matches that still conflict:', gradeConflictsBlocked)
+  console.log('    sample tier-0 (deterministic, no LLM) hits:')
+  for (const s of samples) console.log(`      ${s}`)
 
   await pool.end()
 }

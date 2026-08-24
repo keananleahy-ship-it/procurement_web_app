@@ -10,6 +10,12 @@ import {
 import { bestMatch } from '@/lib/match'
 import { aiMatchProducts } from '@/lib/match-ai'
 import { deriveAttributes } from '@/lib/attributes'
+import {
+  COMPARED_ATTRIBUTES,
+  attributeVerdict,
+  type AttributeComparison,
+  type ComparedAttribute,
+} from '@/lib/match-key'
 import { underlyingProductKey, displayProductName } from '@/lib/pack-family'
 import { requireUser, requireEditor } from '@/lib/roles'
 import { and, asc, desc, eq, inArray } from 'drizzle-orm'
