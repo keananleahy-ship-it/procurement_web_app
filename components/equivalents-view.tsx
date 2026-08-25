@@ -271,9 +271,16 @@ export function EquivalentsView({
 
           {shown.length === 0 ? (
             <p className="rounded-lg border border-border bg-card px-4 py-8 text-center text-sm text-muted-foreground">
+              {/* Name the actual cause: suggesting a looser key is wrong advice
+                  when the search term or supplier filter is what excluded
+                  everything. */}
               {active.length === 0
                 ? 'Select an attribute above to group products.'
-                : 'No groups match. Try removing an attribute from the key to loosen the comparison.'}
+                : query.trim()
+                  ? `No groups match "${query.trim()}". Clear the search to see all groups.`
+                  : crossSupplierOnly
+                    ? 'No spec is currently offered by two or more suppliers. Remove an attribute from the key to loosen the comparison, or turn off the supplier filter.'
+                    : 'No groups match. Try removing an attribute from the key to loosen the comparison.'}
             </p>
           ) : (
             <div className="flex flex-col gap-2">
@@ -311,10 +318,14 @@ export function EquivalentsView({
                           ))}
                           {/* ~30% of products have no supplier recorded. Say so
                               rather than letting the badge list imply the
-                              supplier set is complete. */}
+                              supplier set is complete. Worded as "products"
+                              because a bare "+4" sitting among supplier badges
+                              reads as four more suppliers. */}
                           {group.unattributed > 0 && (
                             <span className="text-xs text-muted-foreground">
-                              +{group.unattributed} no supplier recorded
+                              {group.unattributed} product
+                              {group.unattributed === 1 ? '' : 's'} with no
+                              supplier
                             </span>
                           )}
                         </span>
