@@ -48,7 +48,7 @@ export type ComparableItem = {
 }
 
 /** Case/punctuation-insensitive form of a plain text attribute value. */
-function normalizeText(value: string | null | undefined): string | null {
+export function normalizeText(value: string | null | undefined): string | null {
   if (value == null) return null
   const out = value
     .toLowerCase()
