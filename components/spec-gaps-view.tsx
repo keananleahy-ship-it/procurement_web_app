@@ -84,8 +84,11 @@ function GapRowCard({
 
   const listId = `gap-opts-${row.id}`
 
+  // The row goes side-by-side only at lg, matching the editor's lg:w-96. When
+  // these two breakpoints disagreed, the editor claimed width at md and
+  // truncated the product name to "S…" — the one field that identifies the row.
   return (
-    <li className="flex flex-col gap-3 border-b border-border px-4 py-3.5 last:border-b-0 md:flex-row md:items-center md:gap-6">
+    <li className="flex flex-col gap-3 border-b border-border px-4 py-3.5 last:border-b-0 lg:flex-row lg:items-center lg:gap-6">
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           {row.rivalSuppliers > 0 && (
@@ -126,7 +129,9 @@ function GapRowCard({
         </div>
       </div>
 
-      <div className="flex shrink-0 flex-col gap-2 md:w-96">
+      {/* Stacks until lg: at ~820px a side-by-side editor squeezed the product
+          name down to "SUNOCO S…", and the name is how you identify the row. */}
+      <div className="flex shrink-0 flex-col gap-2 lg:w-96">
         <div className="flex items-center gap-2">
           <span className="w-24 shrink-0 text-xs font-medium text-muted-foreground">
             {DIMENSION_LABEL.get(key)}

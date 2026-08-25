@@ -3,6 +3,8 @@ import { SpecGapsView } from '@/components/spec-gaps-view'
 import { getGapItems } from '@/app/actions/spec-gaps'
 
 export default async function GapsPage() {
+  // Role gating lives in the view via useCanEdit()/RoleProvider, matching the
+  // other 11 views, so nothing role-related is passed down from here.
   const items = await getGapItems()
 
   return (
