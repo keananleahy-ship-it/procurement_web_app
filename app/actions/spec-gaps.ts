@@ -34,6 +34,11 @@ export async function getGapItems(): Promise<GapItem[]> {
     .select({
       id: products.id,
       name: products.name,
+      // Plain column read. Deriving the vendor from vendor_prices was measured
+      // and rejected: all 295 products with a blank supplier but existing price
+      // rows are ALREADY fully spec-keyed, and every one of the 101 "No vendor"
+      // rows in this queue has no price rows at all. The two sets are disjoint,
+      // so a fallback join changes no row and no ranking.
       supplier: products.supplier,
       category: products.category,
       application: products.application,
