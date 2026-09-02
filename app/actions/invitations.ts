@@ -321,6 +321,18 @@ export async function acceptInvitation(input: {
     updatedAt: now,
   })
 
+  // Better Auth's createUser only persists fields it knows about, so a custom
+  // `role` passed above is dropped and the column falls back to its DB default
+  // ('viewer'). Set it directly to guarantee the invited role sticks — this is
+  // what makes a champion actually get the champion role (and its validation-
+  // only scoping) instead of silently becoming a viewer with full read access.
+  if (createdUser.role !== invite.role) {
+    await db
+      .update(userTable)
+      .set({ role: invite.role })
+      .where(eq(userTable.id, createdUser.id))
+  }
+
   // For a site champion, assign their location now that the account exists.
   // This closes the ordering gap where a champion could sign in before an
   // admin manually assigned a site and see "No locations assigned". Guarded so
