@@ -74,8 +74,13 @@ export const invitations = pgTable('invitations', {
   // The email the invite is locked to (lowercased). The recipient must
   // register with this exact address.
   email: text('email').notNull(),
-  // Role granted on acceptance: 'viewer' | 'uploader' | 'admin'.
+  // Role granted on acceptance: 'viewer' | 'champion' | 'uploader' | 'admin'.
   role: text('role').notNull().default('viewer'),
+  // For a 'champion' invite, the single location the new account is the site
+  // champion for. Assigned to user_locations automatically on acceptance so a
+  // champion is scoped to their site the moment they first sign in. Null for
+  // non-champion invites.
+  locationId: integer('locationId'),
   // SHA-256 hex of the raw token. Never store the raw token.
   tokenHash: text('tokenHash').notNull(),
   // 'pending' | 'accepted' | 'revoked'. Expiry is derived from expiresAt.

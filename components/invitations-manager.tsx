@@ -29,6 +29,8 @@ import {
 } from '@/components/ui/table'
 import { Check, Copy, RefreshCw, X } from 'lucide-react'
 
+type LocationOption = { id: number; name: string }
+
 function statusBadge(row: InvitationRow) {
   if (row.status === 'accepted')
     return { label: 'Accepted', cls: 'bg-primary text-primary-foreground' }
@@ -49,11 +51,15 @@ function formatDate(d: Date) {
 
 export function InvitationsManager({
   invitations,
+  locations,
 }: {
   invitations: InvitationRow[]
+  locations: LocationOption[]
 }) {
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<Role>('viewer')
+  // Selected site for a champion invite, as a string for the Select control.
+  const [locationId, setLocationId] = useState<string>('')
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [pendingId, setPendingId] = useState<string | null>(null)
@@ -77,8 +83,17 @@ export function InvitationsManager({
     e.preventDefault()
     setError(null)
     setFreshLink(null)
+    // A champion must be scoped to a site; block before hitting the server.
+    if (role === 'champion' && !locationId) {
+      setError('Select a site for this Site Champion.')
+      return
+    }
     startTransition(async () => {
-      const res = await createInvitation({ email, role })
+      const res = await createInvitation({
+        email,
+        role,
+        locationId: role === 'champion' ? Number(locationId) : null,
+      })
       if (!res.ok) {
         setError(res.error)
         return
@@ -86,6 +101,7 @@ export function InvitationsManager({
       setFreshLink({ email: res.email, url: res.inviteUrl })
       setEmail('')
       setRole('viewer')
+      setLocationId('')
     })
   }
 
@@ -118,9 +134,9 @@ export function InvitationsManager({
     <div className="flex flex-col gap-4">
       <form
         onSubmit={handleCreate}
-        className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4 sm:flex-row sm:items-end"
+        className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4 sm:flex-row sm:flex-wrap sm:items-end"
       >
-        <div className="flex flex-1 flex-col gap-2">
+        <div className="flex flex-1 flex-col gap-2 sm:min-w-56">
           <Label htmlFor="invite-email">Email address</Label>
           <Input
             id="invite-email"
@@ -134,7 +150,14 @@ export function InvitationsManager({
         </div>
         <div className="flex flex-col gap-2">
           <Label htmlFor="invite-role">Role</Label>
-          <Select value={role} onValueChange={(v) => setRole(v as Role)}>
+          <Select
+            value={role}
+            onValueChange={(v) => {
+              setRole(v as Role)
+              // Clear any stale site selection when leaving the champion role.
+              if (v !== 'champion') setLocationId('')
+            }}
+          >
             <SelectTrigger id="invite-role" className="w-full sm:w-40">
               <SelectValue />
             </SelectTrigger>
@@ -147,10 +170,43 @@ export function InvitationsManager({
             </SelectContent>
           </Select>
         </div>
+        {role === 'champion' && (
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="invite-site">Site</Label>
+            <Select
+              value={locationId}
+              onValueChange={(v) => setLocationId(v ?? '')}
+            >
+              <SelectTrigger id="invite-site" className="w-full sm:w-48">
+                <SelectValue placeholder="Select a site" />
+              </SelectTrigger>
+              <SelectContent>
+                {locations.length === 0 ? (
+                  <div className="px-2 py-1.5 text-sm text-muted-foreground">
+                    No sites available
+                  </div>
+                ) : (
+                  locations.map((loc) => (
+                    <SelectItem key={loc.id} value={String(loc.id)}>
+                      {loc.name}
+                    </SelectItem>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
         <Button type="submit" disabled={isPending}>
           {isPending ? 'Creating...' : 'Create invite'}
         </Button>
       </form>
+
+      {role === 'champion' && (
+        <p className="text-xs text-muted-foreground text-balance">
+          Site Champions can only access Catalog Validation, scoped to the site
+          you choose here. The site is assigned automatically when they accept.
+        </p>
+      )}
 
       {error && (
         <p
@@ -227,6 +283,11 @@ export function InvitationsManager({
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {ROLE_LABELS[inv.role]}
+                      {inv.locationName ? (
+                        <span className="block text-xs text-muted-foreground">
+                          {inv.locationName}
+                        </span>
+                      ) : null}
                     </TableCell>
                     <TableCell>
                       <Badge className={badge.cls}>{badge.label}</Badge>

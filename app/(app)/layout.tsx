@@ -1,7 +1,8 @@
+import { headers } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { AppSidebar } from '@/components/app-sidebar'
 import { RoleProvider } from '@/components/role-provider'
-import { getCurrentUser } from '@/lib/roles'
+import { getCurrentUser, isValidationOnly } from '@/lib/roles'
 
 export default async function AppLayout({
   children,
@@ -10,6 +11,16 @@ export default async function AppLayout({
 }) {
   const currentUser = await getCurrentUser()
   if (!currentUser) redirect('/sign-in')
+
+  // Site champions are confined to the Catalog Validation function. Any other
+  // in-app route is bounced to /validation. The path comes from the proxy
+  // (x-pathname header) since Server Components don't receive it directly.
+  if (isValidationOnly(currentUser.role)) {
+    const pathname = (await headers()).get('x-pathname') ?? ''
+    if (!pathname.startsWith('/validation')) {
+      redirect('/validation')
+    }
+  }
 
   return (
     <RoleProvider role={currentUser.role}>
