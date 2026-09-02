@@ -36,7 +36,10 @@ export default async function AdminPage() {
               the workspace with the role you choose.
             </p>
           </div>
-          <InvitationsManager invitations={invitations} />
+          <InvitationsManager
+            invitations={invitations}
+            locations={siteAssignments.locations}
+          />
         </section>
 
         <section className="flex flex-col gap-4">

@@ -53,6 +53,14 @@ export default async function AcceptInvitePage({
             <span className="font-medium text-foreground">
               {ROLE_LABELS[result.role]}
             </span>
+            {result.locationName ? (
+              <>
+                {' '}for{' '}
+                <span className="font-medium text-foreground">
+                  {result.locationName}
+                </span>
+              </>
+            ) : null}
             . Set a password to finish creating your account.
           </p>
         </div>

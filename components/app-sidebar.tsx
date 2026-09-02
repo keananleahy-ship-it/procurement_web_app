@@ -21,7 +21,7 @@ import {
   PiggyBank,
   ClipboardCheck,
 } from 'lucide-react'
-import { type Role, ROLE_LABELS } from '@/lib/roles-shared'
+import { type Role, ROLE_LABELS, isValidationOnly } from '@/lib/roles-shared'
 
 const nav = [
   { href: '/', label: 'Overview', icon: LayoutDashboard },
@@ -48,6 +48,12 @@ export function AppSidebar({
   const pathname = usePathname()
   const router = useRouter()
 
+  // Site champions are confined to Catalog Validation, so their nav shows only
+  // that entry. Everyone else sees the full workspace nav.
+  const items = isValidationOnly(role)
+    ? nav.filter((item) => item.href === '/validation')
+    : nav
+
   async function handleSignOut() {
     await authClient.signOut()
     router.push('/sign-in')
@@ -73,7 +79,7 @@ export function AppSidebar({
       </div>
 
       <nav className="flex flex-1 flex-col gap-1 px-3 py-2">
-        {nav.map((item) => {
+        {items.map((item) => {
           const active =
             item.href === '/'
               ? pathname === '/'

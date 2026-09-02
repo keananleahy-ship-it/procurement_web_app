@@ -14,7 +14,7 @@ import {
 } from '@/lib/db/schema'
 import {
   requireUser,
-  requireEditor,
+  requireCatalogValidator,
   canAdmin,
   type SessionUser,
 } from '@/lib/roles'
@@ -421,7 +421,7 @@ const AI_SUGGEST_LIMIT = 40
 export async function suggestAttributesForLocation(
   locationId: number,
 ): Promise<{ productsConsidered: number; suggestionsCreated: number }> {
-  const u = await requireEditor()
+  const u = await requireCatalogValidator()
   await assertLocationAccess(u, locationId)
 
   // Rank this location's product-linked records by annual volume (desc), then

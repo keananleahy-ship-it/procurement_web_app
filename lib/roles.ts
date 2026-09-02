@@ -10,6 +10,7 @@ import {
   type Role,
   canAdmin,
   canEdit,
+  canValidateCatalog,
   normalizeRole,
 } from '@/lib/roles-shared'
 
@@ -20,6 +21,8 @@ export {
   ROLE_DESCRIPTIONS,
   canEdit,
   canAdmin,
+  canValidateCatalog,
+  isValidationOnly,
 } from '@/lib/roles-shared'
 
 export type SessionUser = {
@@ -63,6 +66,18 @@ export async function requireEditor(): Promise<SessionUser> {
   const current = await requireUser()
   if (!canEdit(current.role)) {
     throw new Error('Forbidden: this action requires uploader or admin access.')
+  }
+  return current
+}
+
+// Guard for Catalog Validation write actions (attribute fixes, sign-off, and
+// the AI-suggest pass). Allows site champions in addition to uploaders/admins.
+// Per-location scoping is enforced separately by assertLocationAccess in the
+// validation actions, so this only checks the capability, not the site.
+export async function requireCatalogValidator(): Promise<SessionUser> {
+  const current = await requireUser()
+  if (!canValidateCatalog(current.role)) {
+    throw new Error('Forbidden: this action requires catalog-validation access.')
   }
   return current
 }
