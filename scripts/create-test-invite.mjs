@@ -1,7 +1,7 @@
 import { randomBytes, createHash, randomUUID } from 'node:crypto'
 import { Pool } from 'pg'
 
-const EMAIL = 'keananleahy@leahywolf.com'
+const EMAIL = process.argv[2] ?? 'keananleahy@leahywolf.com'
 const ROLE = 'viewer'
 const INVITE_TTL_DAYS = 7
 
