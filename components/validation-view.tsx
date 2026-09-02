@@ -97,6 +97,10 @@ export function ValidationView({
   const [filter, setFilter] = useState<Filter>('all')
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<string | null>(null)
+  // "Validate all shown" signs off every filtered record in one click. Because
+  // that is irreversible in bulk and easy to hit by accident, gate it behind an
+  // explicit confirmation dialog rather than firing on the first click.
+  const [confirmBulkOpen, setConfirmBulkOpen] = useState(false)
 
   function run(fn: () => Promise<void>) {
     startTransition(async () => {
@@ -311,17 +315,7 @@ export function ValidationView({
             size="sm"
             variant="outline"
             disabled={pending || remainingIds.length === 0}
-            onClick={() =>
-              run(async () => {
-                if (!activeLocationId) return
-                const res = await bulkSetValidated({
-                  locationId: activeLocationId,
-                  purchaseIds: remainingIds,
-                  validated: true,
-                })
-                setStatus(`Signed off ${res.count} record(s).`)
-              })
-            }
+            onClick={() => setConfirmBulkOpen(true)}
           >
             {pending ? (
               <Loader2 className="size-3.5 animate-spin" />
@@ -332,6 +326,60 @@ export function ValidationView({
           </Button>
         </div>
       </div>
+
+      <Dialog open={confirmBulkOpen} onOpenChange={setConfirmBulkOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Validate all shown records?</DialogTitle>
+            <DialogDescription>
+              This signs off{' '}
+              <span className="font-medium text-foreground">
+                {remainingIds.length}
+              </span>{' '}
+              record{remainingIds.length === 1 ? '' : 's'} at{' '}
+              <span className="font-medium text-foreground">
+                {activeLocation?.name ?? 'this location'}
+              </span>{' '}
+              in one action, marking them validated under your name. Only the
+              records currently shown by your filter and search are affected.
+              You can reopen individual records afterward, but there is no single
+              undo for the whole batch.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmBulkOpen(false)}
+              disabled={pending}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={pending || remainingIds.length === 0}
+              onClick={() =>
+                run(async () => {
+                  if (!activeLocationId) return
+                  const res = await bulkSetValidated({
+                    locationId: activeLocationId,
+                    purchaseIds: remainingIds,
+                    validated: true,
+                  })
+                  setStatus(`Signed off ${res.count} record(s).`)
+                  setConfirmBulkOpen(false)
+                })
+              }
+            >
+              {pending ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <CheckCheck className="size-3.5" />
+              )}
+              Validate {remainingIds.length} record
+              {remainingIds.length === 1 ? '' : 's'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {status && (
         <p className="text-xs text-muted-foreground" role="status">
