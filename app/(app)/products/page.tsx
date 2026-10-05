@@ -1,4 +1,6 @@
+import { Download } from 'lucide-react'
 import { PageHeader } from '@/components/page-header'
+import { buttonVariants } from '@/components/ui/button'
 import { ProductsView } from '@/components/products-view'
 import { getProducts } from '@/app/actions/products'
 import { getMatchRows, getCanonicalItems } from '@/app/actions/canonical'
@@ -17,6 +19,16 @@ export default async function ProductsPage() {
       <PageHeader
         title="Products"
         description="Vendor-specific items you collect prices for. Match them to canonical items to compare across vendors."
+        action={
+          <a
+            href="/api/export/items"
+            download
+            className={buttonVariants({ variant: 'outline' })}
+          >
+            <Download aria-hidden="true" />
+            Export item database
+          </a>
+        }
       />
       <ProductsView
         canonicalItems={canonicalItems.map((c) => ({
