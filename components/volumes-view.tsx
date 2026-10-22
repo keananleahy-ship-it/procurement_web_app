@@ -40,6 +40,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { EmptyState } from '@/components/empty-state'
+import { RawVolumeUpload } from '@/components/raw-volume-upload'
 import { formatDate } from '@/lib/format'
 import { useCanEdit } from '@/components/role-provider'
 import {
@@ -275,7 +276,8 @@ export function VolumesView({
   return (
     <div className="p-6">
       {canEdit && (
-        <div className="mb-4 flex justify-end">
+        <div className="mb-4 flex flex-wrap items-center justify-end gap-3">
+          <RawVolumeUpload />
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger render={<Button />}>
               <Upload className="size-4" />
