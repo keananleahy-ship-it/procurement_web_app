@@ -173,6 +173,39 @@ export const purchaseVolumes = pgTable('purchase_volumes', {
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 
+// --- Warehouses (consolidated purchase history) -----------------------------
+// The consolidated purchasing export names sites by company + warehouse, not
+// by our main locations. Each warehouse rolls up to exactly one main location;
+// reassigning it re-derives the location-level purchase_volumes rows
+// (source='warehouse') from the per-warehouse detail in warehouse_volumes.
+export const warehouses = pgTable('warehouses', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  // BASE_LEVEL_1 in the export, e.g. 'LW', 'AEG', 'Grade A'
+  company: text('company').notNull(),
+  // WAREHOUSE_ID_ADJ as printed (blank becomes '(none)')
+  code: text('code').notNull(),
+  // BASE_LEVEL_2, e.g. 'Midwest', 'Southwest'
+  region: text('region'),
+  locationId: integer('locationId').notNull(),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
+// Per-warehouse, per-product purchase volume (base units, usually gallons) and
+// average cost paid, from the consolidated export.
+export const warehouseVolumes = pgTable('warehouse_volumes', {
+  id: serial('id').primaryKey(),
+  userId: text('userId').notNull(),
+  warehouseId: integer('warehouseId').notNull(),
+  productId: integer('productId').notNull(),
+  annualVolume: numeric('annualVolume', { precision: 14, scale: 2 }).notNull(),
+  totalCost: numeric('totalCost', { precision: 14, scale: 2 }),
+  baseUnit: text('baseUnit'),
+  period: text('period'),
+  lineCount: integer('lineCount').notNull().default(0),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
 // --- Catalog validation: site-champion assignments -------------------------
 // Which locations a user is the "site champion" for. A champion may review,
 // correct, and sign off catalog data for their assigned location(s) only.

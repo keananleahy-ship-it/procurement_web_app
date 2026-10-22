@@ -2,11 +2,14 @@ import { PageHeader } from '@/components/page-header'
 import { VolumesView } from '@/components/volumes-view'
 import { getVolumeImports } from '@/app/actions/volumes'
 import { getLocations } from '@/app/actions/locations'
+import { getWarehouses } from '@/app/actions/warehouses'
+import { WarehouseAssignments } from '@/components/warehouse-assignments'
 
 export default async function VolumesPage() {
-  const [volumeImports, locations] = await Promise.all([
+  const [volumeImports, locations, warehouses] = await Promise.all([
     getVolumeImports(),
     getLocations(),
+    getWarehouses(),
   ])
 
   const rows = volumeImports.map((imp) => ({
@@ -32,6 +35,12 @@ export default async function VolumesPage() {
         volumeImports={rows}
         locations={locations.map((l) => ({ id: l.id, name: l.name }))}
       />
+      <div className="px-6 pb-6">
+        <WarehouseAssignments
+          warehouses={warehouses}
+          locations={locations.map((l) => ({ id: l.id, name: l.name }))}
+        />
+      </div>
     </>
   )
 }
