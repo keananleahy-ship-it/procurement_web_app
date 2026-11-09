@@ -7,6 +7,7 @@ import {
   integer,
   numeric,
   date,
+  jsonb,
 } from 'drizzle-orm/pg-core'
 
 // --- Better Auth required tables -------------------------------------------
@@ -88,6 +89,17 @@ export const snowflakeConnection = pgTable('snowflake_connection', {
   lastTestedAt: timestamp('last_tested_at'),
   lastTestOk: boolean('last_test_ok'),
   lastTestMessage: text('last_test_message'),
+  // --- Purchasing source mapping -------------------------------------------
+  // The view/table purchase lines are read from, and which of its columns map
+  // to the fields a volume row needs. Column names are stored exactly as
+  // Snowflake reports them and are re-validated against the live column list
+  // before every query.
+  sourceTable: text('source_table'),
+  columnMap: jsonb('column_map').$type<Record<string, string>>(),
+  // Snowflake site value -> app location id. Unmapped site values are ignored.
+  siteMap: jsonb('site_map').$type<Record<string, number>>(),
+  lookbackMonths: integer('lookback_months').notNull().default(12),
+  lastPulledAt: timestamp('last_pulled_at'),
 })
 
 export const invitations = pgTable('invitations', {
@@ -429,7 +441,8 @@ export const volumeImports = pgTable('volume_imports', {
   locationId: integer('locationId').notNull(),
   fileName: text('fileName').notNull(),
   blobPathname: text('blobPathname').notNull(),
-  // 'xls' | 'pdf'
+  // 'xls' | 'pdf' | 'snowflake' (a Snowflake pull; blobPathname is empty
+  // because there is no uploaded file)
   fileType: text('fileType').notNull(),
   // Default period label applied to rows that don't specify their own, e.g.
   // 'TTM' or '2025'. Editable per row in review since periods can be mixed.

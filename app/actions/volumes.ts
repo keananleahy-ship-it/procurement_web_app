@@ -264,10 +264,12 @@ export async function discardVolumeImport(volumeImportId: number) {
     .where(eq(volumeImports.id, volumeImportId))
   if (!imp) throw new Error('Volume import not found')
 
-  try {
-    await del(imp.blobPathname)
-  } catch (err) {
-    console.error('[v0] blob delete failed:', err)
+  if (imp.blobPathname) {
+    try {
+      await del(imp.blobPathname)
+    } catch (err) {
+      console.error('blob delete failed:', err)
+    }
   }
   await db
     .delete(volumeImportRows)
@@ -283,6 +285,11 @@ export type CommitVolumeResult = {
   committed: number
   skipped: number
   unmatched: number
+  // Snowflake applies only: volumes removed at the location, and sign-offs
+  // that carried to the same product or were dropped because it's gone.
+  replaced?: number
+  signoffsCarried?: number
+  signoffsDropped?: number
 }
 
 // Delete any prior imported volume for the same item+location+period before
@@ -631,8 +638,29 @@ async function writeVolumesFromRows(opts: {
   volumeImportId: number
   locationId: number
   defaultPeriod: string | null
+  fileType: string
 }): Promise<CommitVolumeResult> {
-  const { userId, volumeImportId, locationId, defaultPeriod } = opts
+  const { userId, volumeImportId, locationId, defaultPeriod, fileType } = opts
+
+  if (fileType === 'snowflake') {
+    return writeSnowflakeVolumes({ userId, volumeImportId, locationId, defaultPeriod })
+  }
+
+  const [snowflakeRow] = await db
+    .select({ id: purchaseVolumes.id })
+    .from(purchaseVolumes)
+    .where(
+      and(
+        eq(purchaseVolumes.locationId, locationId),
+        eq(purchaseVolumes.source, 'snowflake'),
+      ),
+    )
+    .limit(1)
+  if (snowflakeRow) {
+    throw new Error(
+      'This location now uses Snowflake purchasing data, so spreadsheet volumes would double count. Pull from Snowflake instead.',
+    )
+  }
 
   // Resolve/create authoritative product identities first, so every eligible
   // row is confirmed against exactly one vendor code (or exact name) before the
@@ -679,6 +707,123 @@ async function writeVolumesFromRows(opts: {
   return { committed: summaries.length, skipped, unmatched }
 }
 
+// Sign-offs confirm a product's catalog attributes at a site, so they follow
+// the product (or the canonical item when no product is resolved).
+function signoffKey(v: { canonicalItemId: number | null; productId: number | null }) {
+  return v.productId !== null ? `p:${v.productId}` : `c:${v.canonicalItemId}`
+}
+
+// Applying a Snowflake pull replaces every spreadsheet and earlier Snowflake
+// volume at the location in one step, so the two sources never double count.
+// Hand-entered volumes are kept. Existing sign-offs carry over to the same
+// product; anything new or changed lands unsigned for the champion to review.
+async function writeSnowflakeVolumes(opts: {
+  userId: string
+  volumeImportId: number
+  locationId: number
+  defaultPeriod: string | null
+}): Promise<CommitVolumeResult> {
+  const { userId, volumeImportId, locationId, defaultPeriod } = opts
+  await ensureProductsForImport(volumeImportId, userId)
+  const { eligible, skipped, unmatched } = await collectEligibleRows(volumeImportId)
+  const summaries = aggregateVolumeRows(eligible, defaultPeriod)
+
+  const replaceable = and(
+    eq(purchaseVolumes.locationId, locationId),
+    inArray(purchaseVolumes.source, ['import', 'snowflake']),
+  )
+  const prior = await db
+    .select({
+      canonicalItemId: purchaseVolumes.canonicalItemId,
+      productId: purchaseVolumes.productId,
+      source: purchaseVolumes.source,
+      validatedAt: purchaseVolumes.validatedAt,
+      validatedByUserId: purchaseVolumes.validatedByUserId,
+      validatedByName: purchaseVolumes.validatedByName,
+    })
+    .from(purchaseVolumes)
+    .where(replaceable)
+
+  const signoffs = new Map<
+    string,
+    { validatedAt: Date; validatedByUserId: string | null; validatedByName: string | null }
+  >()
+  for (const p of prior) {
+    if (!p.validatedAt) continue
+    const key = signoffKey(p)
+    const current = signoffs.get(key)
+    if (!current || current.validatedAt < p.validatedAt) {
+      signoffs.set(key, {
+        validatedAt: p.validatedAt,
+        validatedByUserId: p.validatedByUserId,
+        validatedByName: p.validatedByName,
+      })
+    }
+  }
+
+  await db.delete(purchaseVolumes).where(replaceable)
+
+  let carried = 0
+  if (summaries.length > 0) {
+    await db.insert(purchaseVolumes).values(
+      summaries.map((s) => {
+        const signoff = signoffs.get(signoffKey(s))
+        if (signoff) carried++
+        return {
+          userId,
+          canonicalItemId: s.canonicalItemId,
+          productId: s.productId,
+          locationId,
+          annualVolume: s.annualVolume,
+          baseUnit: s.baseUnit,
+          baselineUnitCost: s.baselineUnitCost,
+          period: s.period,
+          source: 'snowflake',
+          ...signoff,
+        }
+      }),
+    )
+  }
+
+  return {
+    committed: summaries.length,
+    skipped,
+    unmatched,
+    replaced: prior.length,
+    signoffsCarried: carried,
+    signoffsDropped: [...signoffs.keys()].filter(
+      (k) => !summaries.some((s) => signoffKey(s) === k),
+    ).length,
+  }
+}
+
+export type SnowflakeReplacementPreview = {
+  spreadsheetRows: number
+  snowflakeRows: number
+  signedOff: number
+}
+
+// What applying a Snowflake pull at this location would replace.
+export async function getSnowflakeReplacementPreview(
+  locationId: number,
+): Promise<SnowflakeReplacementPreview> {
+  await requireUser()
+  const rows = await db
+    .select({ source: purchaseVolumes.source, validatedAt: purchaseVolumes.validatedAt })
+    .from(purchaseVolumes)
+    .where(
+      and(
+        eq(purchaseVolumes.locationId, locationId),
+        inArray(purchaseVolumes.source, ['import', 'snowflake']),
+      ),
+    )
+  return {
+    spreadsheetRows: rows.filter((r) => r.source === 'import').length,
+    snowflakeRows: rows.filter((r) => r.source === 'snowflake').length,
+    signedOff: rows.filter((r) => r.validatedAt).length,
+  }
+}
+
 export async function commitVolumeImport(
   volumeImportId: number,
 ): Promise<CommitVolumeResult> {
@@ -702,6 +847,7 @@ export async function commitVolumeImport(
     volumeImportId,
     locationId,
     defaultPeriod: imp.defaultPeriod,
+    fileType: imp.fileType,
   })
 
   await db
@@ -748,6 +894,7 @@ export async function resyncCommittedVolumeImport(
     volumeImportId,
     locationId,
     defaultPeriod: imp.defaultPeriod,
+    fileType: imp.fileType,
   })
 
   await db
@@ -915,6 +1062,11 @@ export async function reassignVolumeImportLocation(
   if (imp.status === 'discarded') {
     throw new Error('A discarded volume import cannot be reassigned')
   }
+  if (imp.fileType === 'snowflake') {
+    throw new Error(
+      'Snowflake pulls get their location from the site mapping. Change it on Data sources and pull again.',
+    )
+  }
 
   // The target must be one of this user's locations.
   const [loc] = await db
@@ -970,6 +1122,7 @@ export async function reassignVolumeImportLocation(
     volumeImportId,
     locationId: newLocationId,
     defaultPeriod: imp.defaultPeriod,
+    fileType: imp.fileType,
   })
 
   revalidatePath('/volumes')

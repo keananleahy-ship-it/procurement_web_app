@@ -4,6 +4,7 @@ import { VolumeImportReview } from '@/components/volume-import-review'
 import {
   getVolumeImportWithRows,
   getMatchTargets,
+  getSnowflakeReplacementPreview,
 } from '@/app/actions/volumes'
 
 export default async function VolumeReviewPage({
@@ -21,7 +22,13 @@ export default async function VolumeReviewPage({
   // Already-processed uploads have nothing to review.
   if (data.import.status !== 'pending') redirect('/volumes')
 
-  const targets = await getMatchTargets()
+  const isSnowflake = data.import.fileType === 'snowflake'
+  const [targets, replacement] = await Promise.all([
+    getMatchTargets(),
+    isSnowflake && data.import.locationId
+      ? getSnowflakeReplacementPreview(data.import.locationId)
+      : Promise.resolve(undefined),
+  ])
 
   return (
     <>
@@ -35,6 +42,7 @@ export default async function VolumeReviewPage({
           fileName: data.import.fileName,
           locationName: data.location?.name ?? null,
           defaultPeriod: data.import.defaultPeriod,
+          replacement,
         }}
         rows={data.rows.map((r) => ({
           id: r.id,

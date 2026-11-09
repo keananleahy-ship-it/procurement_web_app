@@ -60,6 +60,12 @@ type VolumeMeta = {
   fileName: string
   locationName: string | null
   defaultPeriod: string | null
+  // Present only for Snowflake pulls: what applying will replace.
+  replacement?: {
+    spreadsheetRows: number
+    snowflakeRows: number
+    signedOff: number
+  }
 }
 
 type MatchTarget = { id: number; name: string }
@@ -466,6 +472,23 @@ export function VolumeImportReview({
           </Button>
         </div>
       </div>
+
+      {meta.replacement && (
+        <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/50 p-4">
+          <AlertCircle className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          <p className="text-sm text-pretty text-muted-foreground">
+            Applying this Snowflake pull replaces{' '}
+            <span className="font-medium text-foreground">
+              {meta.replacement.spreadsheetRows} spreadsheet
+            </span>
+            {meta.replacement.snowflakeRows > 0 &&
+              ` and ${meta.replacement.snowflakeRows} earlier Snowflake`}{' '}
+            volumes at {meta.locationName ?? 'this location'}. Hand-entered volumes are
+            kept. {meta.replacement.signedOff} sign-offs carry over to the same product;
+            new or changed products need the site champion to sign off again.
+          </p>
+        </div>
+      )}
 
       {unmatchedCount > 0 && (
         <div className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 p-4">

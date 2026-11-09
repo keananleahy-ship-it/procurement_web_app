@@ -170,6 +170,23 @@ export async function querySnowflake<T = Record<string, unknown>>(
   return withConnection((conn) => execute<T>(conn, sqlText, binds))
 }
 
+// Column names of a table or view, read from result metadata so it also works
+// on an empty view. `table` must already be a validated, quoted identifier.
+export async function listSnowflakeColumns(table: string): Promise<string[]> {
+  return withConnection(
+    (conn) =>
+      new Promise<string[]>((resolve, reject) => {
+        conn.execute({
+          sqlText: `select * from ${table} limit 0`,
+          complete: (err, stmt) =>
+            err
+              ? reject(err)
+              : resolve((stmt.getColumns() ?? []).map((c) => c.getName())),
+        })
+      }),
+  )
+}
+
 export type SnowflakeSessionInfo = {
   user: string
   role: string | null
