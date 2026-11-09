@@ -69,6 +69,27 @@ export const verification = pgTable('verification', {
 // and an account can only be created by accepting a valid invite. Only a hash
 // of the token is stored — the raw token exists solely in the link handed to
 // the admin, so a database leak can't be used to accept invites.
+// Single-row table holding the Snowflake key-pair connection. The private key
+// is stored AES-256-GCM sealed (see lib/secret-box.ts) and never sent to the
+// client; only its public-key fingerprint is displayed.
+export const snowflakeConnection = pgTable('snowflake_connection', {
+  id: integer('id').primaryKey().default(1),
+  account: text('account').notNull(),
+  username: text('username').notNull(),
+  role: text('role'),
+  warehouse: text('warehouse'),
+  database: text('database'),
+  schema: text('schema'),
+  privateKeySealed: text('private_key_sealed').notNull(),
+  publicKeyFingerprint: text('public_key_fingerprint').notNull(),
+  publicKeyPem: text('public_key_pem').notNull(),
+  updatedBy: text('updated_by'),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  lastTestedAt: timestamp('last_tested_at'),
+  lastTestOk: boolean('last_test_ok'),
+  lastTestMessage: text('last_test_message'),
+})
+
 export const invitations = pgTable('invitations', {
   id: text('id').primaryKey(),
   // The email the invite is locked to (lowercased). The recipient must

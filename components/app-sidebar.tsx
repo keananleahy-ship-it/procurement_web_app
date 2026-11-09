@@ -20,6 +20,7 @@ import {
   BarChart3,
   PiggyBank,
   ClipboardCheck,
+  Database,
 } from 'lucide-react'
 import { type Role, ROLE_LABELS, isValidationOnly } from '@/lib/roles-shared'
 
@@ -113,6 +114,20 @@ export function AppSidebar({
           >
             <Users className="size-4" />
             User Management
+          </Link>
+        )}
+        {role === 'admin' && (
+          <Link
+            href="/data-sources"
+            className={cn(
+              'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+              pathname.startsWith('/data-sources')
+                ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground',
+            )}
+          >
+            <Database className="size-4" />
+            Data Sources
           </Link>
         )}
       </nav>
