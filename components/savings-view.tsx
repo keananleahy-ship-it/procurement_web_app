@@ -565,7 +565,7 @@ function SummaryBar({ totals }: { totals: SavingsResult['totals'] }) {
 }
 
 function ItemCard({ item }: { item: SavingsItem }) {
-  const [open, setOpen] = useState(true)
+  const [open, setOpen] = useState(false)
   const unit = unitAbbr(item.baseUnit)
   const grade = item.viscosity?.replace(/^ISO\s*VG\s*/i, 'ISO ') ?? null
 
