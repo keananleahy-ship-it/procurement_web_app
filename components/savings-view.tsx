@@ -169,7 +169,7 @@ export function SavingsView({ result }: { result: SavingsResult }) {
             )}
           >
             {items.map((item) => (
-              <ItemCard key={item.canonicalItemId} item={item} />
+              <ItemCard key={item.groupKey} item={item} />
             ))}
           </div>
         </>

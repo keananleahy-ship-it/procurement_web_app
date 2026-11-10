@@ -58,7 +58,6 @@ export default async function VolumeReviewPage({
           matchStatus: r.matchStatus,
           include: r.include,
         }))}
-        canonicalItems={targets.canonicalItems}
         products={targets.products}
       />
     </>

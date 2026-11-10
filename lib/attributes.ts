@@ -17,6 +17,7 @@ export type AttributeKey =
   | 'subcategory'
   | 'viscosity'
   | 'packageType'
+  | 'performanceSpec'
 
 export type AttributeDef = {
   key: AttributeKey
@@ -40,6 +41,7 @@ export const ALL_ATTRIBUTES: AttributeDef[] = [
   { key: 'subcategory', label: 'Formulation' },
   { key: 'viscosity', label: 'Viscosity' },
   { key: 'packageType', label: 'Package size' },
+  { key: 'performanceSpec', label: 'Performance spec' },
 ]
 
 // Attributes available on the Products screen. Each product has exactly one
@@ -63,16 +65,6 @@ export const COMPARE_ATTRIBUTES: AttributeDef[] = ALL_ATTRIBUTES.filter(
     a.key !== 'supplier' && a.key !== 'packageType' && a.key !== 'brand',
 )
 
-// A canonical item spans vendors, brands, and pack sizes, so it only carries
-// the item-intrinsic attributes.
-export const CANONICAL_ATTRIBUTES: AttributeDef[] = ALL_ATTRIBUTES.filter(
-  (a) =>
-    a.key === 'category' ||
-    a.key === 'application' ||
-    a.key === 'subcategory' ||
-    a.key === 'viscosity',
-)
-
 // Label shown for items missing a value for the grouping attribute.
 export function emptyLabelFor(key: AttributeKey): string {
   switch (key) {
@@ -90,6 +82,8 @@ export function emptyLabelFor(key: AttributeKey): string {
       return 'No viscosity'
     case 'packageType':
       return 'No package size'
+    case 'performanceSpec':
+      return 'No spec'
   }
 }
 
@@ -353,7 +347,9 @@ export const PACKAGE_LABELS: string[] = PACKAGE_PATTERNS.map((p) => p.label)
 // screen. Vendor code (sku) and description (name) identify the product and are
 // read-only there. Defined here (not in the server action) so client and server
 // share one list.
-export const VALIDATION_ATTRIBUTE_KEYS: AttributeKey[] = [
+export type ValidationAttributeKey = Exclude<AttributeKey, 'performanceSpec'>
+
+export const VALIDATION_ATTRIBUTE_KEYS: ValidationAttributeKey[] = [
   'supplier',
   'category',
   'application',
@@ -384,6 +380,7 @@ export function vocabularyFor(
       return KNOWN_BRAND_LABELS
     case 'viscosity':
     case 'supplier':
+    case 'performanceSpec':
       return null
   }
 }

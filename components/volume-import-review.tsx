@@ -70,37 +70,22 @@ type VolumeMeta = {
 
 type MatchTarget = { id: number; name: string }
 
-// A searchable item picker: canonical items first (preferred), then standalone
-// products, with a filter box. Used per row to confirm or fix the match.
+// A searchable product picker with a filter box. Used per row to confirm or fix the match.
 function ItemMatchPicker({
   value,
   matched,
-  canonicalItems,
   products,
   onPick,
   onClear,
 }: {
   value: string | null
   matched: boolean
-  canonicalItems: MatchTarget[]
   products: MatchTarget[]
-  onPick: (
-    target:
-      | { kind: 'canonical'; id: number; name: string }
-      | { kind: 'product'; id: number; name: string },
-  ) => void
+  onPick: (target: { kind: 'product'; id: number; name: string }) => void
   onClear: () => void
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
-
-  const filteredCanonical = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    const list = q
-      ? canonicalItems.filter((c) => c.name.toLowerCase().includes(q))
-      : canonicalItems
-    return list.slice(0, 30)
-  }, [query, canonicalItems])
 
   const filteredProducts = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -158,25 +143,6 @@ function ItemMatchPicker({
               Clear match
             </button>
           )}
-          {filteredCanonical.length > 0 && (
-            <div className="px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              Canonical items
-            </div>
-          )}
-          {filteredCanonical.map((c) => (
-            <button
-              key={`c-${c.id}`}
-              type="button"
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent"
-              onClick={() => {
-                onPick({ kind: 'canonical', id: c.id, name: c.name })
-                setOpen(false)
-              }}
-            >
-              <Layers />
-              <span className="truncate">{c.name}</span>
-            </button>
-          ))}
           {filteredProducts.length > 0 && (
             <div className="px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
               Products
@@ -196,8 +162,7 @@ function ItemMatchPicker({
               <span className="truncate">{p.name}</span>
             </button>
           ))}
-          {filteredCanonical.length === 0 &&
-            filteredProducts.length === 0 && (
+          {filteredProducts.length === 0 && (
               <p className="px-3 py-4 text-center text-sm text-muted-foreground">
                 No matching items.
               </p>
@@ -209,9 +174,6 @@ function ItemMatchPicker({
 }
 
 // Small inline icons (avoid extra imports cluttering the row logic).
-function Layers() {
-  return <span className="size-3.5 shrink-0 rounded-sm bg-primary/20" aria-hidden />
-}
 function Package() {
   return (
     <span className="size-3.5 shrink-0 rounded-sm bg-muted-foreground/20" aria-hidden />
@@ -221,12 +183,10 @@ function Package() {
 export function VolumeImportReview({
   meta,
   rows: initialRows,
-  canonicalItems,
   products,
 }: {
   meta: VolumeMeta
   rows: VolumeStagingRow[]
-  canonicalItems: MatchTarget[]
   products: MatchTarget[]
 }) {
   const router = useRouter()
@@ -260,13 +220,11 @@ export function VolumeImportReview({
 
   function handlePickMatch(
     id: number,
-    target:
-      | { kind: 'canonical'; id: number; name: string }
-      | { kind: 'product'; id: number; name: string },
+    target: { kind: 'product'; id: number; name: string },
   ) {
     patchRow(id, {
-      canonicalItemId: target.kind === 'canonical' ? target.id : null,
-      productId: target.kind === 'product' ? target.id : null,
+      canonicalItemId: null,
+      productId: target.id,
       matchName: target.name,
       matchStatus: 'confirmed',
     })
@@ -498,7 +456,7 @@ export function VolumeImportReview({
             matched to an existing item. When you apply, each will be added as a
             new product under its own vendor code (code-less rows use their exact
             name), so no volume is dropped. Use the item picker to instead link a
-            row to an existing canonical item or product before applying.
+            row to an existing product before applying.
           </p>
         </div>
       )}
@@ -576,7 +534,6 @@ export function VolumeImportReview({
                     <ItemMatchPicker
                       value={r.matchName}
                       matched={matched}
-                      canonicalItems={canonicalItems}
                       products={products}
                       onPick={(t) => handlePickMatch(r.id, t)}
                       onClear={() => handleClearMatch(r.id)}

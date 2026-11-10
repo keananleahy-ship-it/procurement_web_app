@@ -297,6 +297,9 @@ export const products = pgTable('products', {
   subcategory: text('subcategory'),
   viscosity: text('viscosity'),
   packageType: text('packageType'),
+  // Normalized performance spec set parsed from the name (e.g. "CK-4 / SN",
+  // "GL-5", "AW"). Null when the name states no recognizable spec.
+  performanceSpec: text('performanceSpec'),
   supplier: text('supplier'),
   attributesEdited: boolean('attributesEdited').notNull().default(false),
   sku: text('sku'),

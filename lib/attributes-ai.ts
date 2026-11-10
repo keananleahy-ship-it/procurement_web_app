@@ -141,7 +141,7 @@ ${productBlocks}`,
     if (!target) continue
     const key = s.attribute as AttributeKey
     // Must be a validation attribute the product actually asked to fill.
-    if (!VALIDATION_ATTRIBUTE_KEYS.includes(key)) continue
+    if (!(VALIDATION_ATTRIBUTE_KEYS as AttributeKey[]).includes(key)) continue
     if (!target.missing.includes(key)) continue
     const value = (s.value ?? '').trim()
     if (!value) continue

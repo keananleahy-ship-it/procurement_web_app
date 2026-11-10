@@ -5,7 +5,6 @@ import {
   volumeImports,
   volumeImportRows,
   purchaseVolumes,
-  canonicalItems,
   products,
   locations,
 } from '@/lib/db/schema'
@@ -67,28 +66,15 @@ export async function getVolumeImportWithRows(volumeImportId: number) {
   return { import: imp, location: loc ?? null, rows }
 }
 
-// The pickable match targets for the review dropdown. Canonical items are
-// listed first (and preferred) because volume attached to a canonical item
-// applies to every vendor offer for that product; standalone products are the
-// fallback for items that were never rolled up into a canonical item.
+// The pickable match targets for the review dropdown: products only.
 export async function getMatchTargets() {
   const { id: userId } = await requireUser()
-  const [canon, prods] = await Promise.all([
-    db
-      .select({ id: canonicalItems.id, name: canonicalItems.name })
-      .from(canonicalItems)
-      .where(eq(canonicalItems.userId, userId))
-      .orderBy(canonicalItems.name),
-    db
-      .select({ id: products.id, name: products.name })
-      .from(products)
-      .where(eq(products.userId, userId))
-      .orderBy(products.name),
-  ])
-  return {
-    canonicalItems: canon,
-    products: prods,
-  }
+  const prods = await db
+    .select({ id: products.id, name: products.name })
+    .from(products)
+    .where(eq(products.userId, userId))
+    .orderBy(products.name)
+  return { products: prods }
 }
 
 export type RematchResult = {
@@ -118,16 +104,7 @@ export async function rematchVolumeImport(
     throw new Error('A committed volume import cannot be re-matched')
   }
 
-  const [canon, prods] = await Promise.all([
-    db
-      .select({
-        id: canonicalItems.id,
-        name: canonicalItems.name,
-        category: canonicalItems.category,
-      })
-      .from(canonicalItems)
-      .where(eq(canonicalItems.userId, userId)),
-    db
+  const prods = await db
       .select({
         id: products.id,
         name: products.name,
@@ -136,9 +113,8 @@ export async function rematchVolumeImport(
         canonicalItemId: products.canonicalItemId,
       })
       .from(products)
-      .where(eq(products.userId, userId)),
-  ])
-  const index = buildMatchIndex(canon, prods)
+      .where(eq(products.userId, userId))
+  const index = buildMatchIndex(prods)
 
   const rows = await db
     .select()
@@ -215,15 +191,11 @@ export async function updateVolumeImportRow(
   revalidatePath('/volumes')
 }
 
-// Assign a row's match target. Passing kind 'canonical' or 'product' sets that
-// id (and clears the other); passing 'none' unmatches the row. Confirmed
+// Assign a row's product match; passing 'none' unmatches the row. Confirmed
 // matches survive at commit; 'unmatched' rows are skipped.
 export async function setVolumeRowMatch(
   rowId: number,
-  target:
-    | { kind: 'canonical'; id: number; name: string }
-    | { kind: 'product'; id: number; name: string }
-    | { kind: 'none' },
+  target: { kind: 'product'; id: number; name: string } | { kind: 'none' },
 ) {
   await requireEditor()
   if (target.kind === 'none') {
@@ -240,8 +212,8 @@ export async function setVolumeRowMatch(
     await db
       .update(volumeImportRows)
       .set({
-        canonicalItemId: target.kind === 'canonical' ? target.id : null,
-        productId: target.kind === 'product' ? target.id : null,
+        canonicalItemId: null,
+        productId: target.id,
         matchName: target.name,
         matchStatus: 'confirmed',
       })
@@ -464,16 +436,7 @@ async function ensureProductsForImport(
     .from(volumeImportRows)
     .where(eq(volumeImportRows.volumeImportId, volumeImportId))
 
-  const [canon, prods] = await Promise.all([
-    db
-      .select({
-        id: canonicalItems.id,
-        name: canonicalItems.name,
-        category: canonicalItems.category,
-      })
-      .from(canonicalItems)
-      .where(eq(canonicalItems.userId, userId)),
-    db
+  const prods = await db
       .select({
         id: products.id,
         name: products.name,
@@ -482,9 +445,8 @@ async function ensureProductsForImport(
         canonicalItemId: products.canonicalItemId,
       })
       .from(products)
-      .where(eq(products.userId, userId)),
-  ])
-  const index: MatchIndex = buildMatchIndex(canon, prods)
+      .where(eq(products.userId, userId))
+  const index: MatchIndex = buildMatchIndex(prods)
 
   // Identity key -> resolved ids, seeded as rows are handled so two rows with
   // the same code/name (or a code newly created earlier in this run) collapse
@@ -527,8 +489,8 @@ async function ensureProductsForImport(
       if (hit) {
         target = {
           canonicalItemId:
-            hit.target.kind === 'canonical' ? hit.target.canonicalItemId : null,
-          productId: hit.target.kind === 'product' ? hit.target.productId : null,
+            null,
+          productId: hit.target.productId,
         }
       } else {
         // No exact identity in the catalog -> create a standalone product for

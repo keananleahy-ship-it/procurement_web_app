@@ -41,6 +41,7 @@ import {
   VALIDATION_ATTRIBUTE_KEYS,
   vocabularyFor,
   type AttributeKey,
+  type ValidationAttributeKey,
 } from '@/lib/attributes'
 import {
   setRecordValidated,
@@ -64,11 +65,11 @@ const ADD_NEW = '__add_new__'
 // draws from a different vocabulary depending on the item's category — base-oil
 // types for engine oils, additive chemistry for hydraulics — so its saved values
 // must stay scoped per category or the two vocabularies would bleed together.
-function savedValueBucket(key: AttributeKey, category: string | null): string {
+function savedValueBucket(key: ValidationAttributeKey, category: string | null): string {
   return key === 'subcategory' ? `subcategory::${category ?? ''}` : key
 }
 
-const EDITABLE_COLUMNS: { key: AttributeKey; label: string }[] = [
+const EDITABLE_COLUMNS: { key: ValidationAttributeKey; label: string }[] = [
   { key: 'category', label: 'Category' },
   { key: 'application', label: 'Application' },
   { key: 'subcategory', label: 'Formulation' },
@@ -587,7 +588,7 @@ function AttrCell({
   savedValues,
 }: {
   record: ValidationRecord
-  attrKey: AttributeKey
+  attrKey: ValidationAttributeKey
   disabled: boolean
   onChange: (value: string | null) => void
   onAccept: () => void

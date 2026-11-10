@@ -6,13 +6,11 @@ import { bestMatch } from '@/lib/match'
 // app/actions/volumes.ts). Keeping it in one place means the upload and the
 // re-match can never drift apart.
 
-export type CanonTarget = { id: number; name: string; category: string | null }
 export type ProdTarget = {
   id: number
   name: string
   category: string | null
   sku: string | null
-  canonicalItemId: number | null
 }
 
 // The minimal shape the matcher needs from a row: the item label and, when the
@@ -56,53 +54,20 @@ export function looseSkuKey(s: string): string | null {
   return n.replace(/^0+/, '') || '0'
 }
 
-// The catalog routinely holds several product rows for the same SKU — the same
-// item reimported from successive price sheets with slightly different name
-// formatting, sometimes one copy linked to a canonical item and its duplicates
-// not. So a SKU key maps to a *group* of products, which we resolve to a single
-// target: the canonical item when the group points to exactly one, otherwise a
-// representative product. Only when a group spans two genuinely different
-// canonical items is it ambiguous (null) and left for manual review.
-export type ResolvedTarget =
-  | { kind: 'canonical'; canonicalItemId: number; name: string }
-  | { kind: 'product'; productId: number; name: string }
+// The catalog routinely holds several product rows for the same SKU (the same
+// item reimported from successive price sheets). Those are duplicate records of
+// one item, so a SKU key resolves to the first product in its group.
+export type ResolvedTarget = { kind: 'product'; productId: number; name: string }
 
-function resolveGroup(
-  group: ProdTarget[],
-  canonById: Map<number, CanonTarget>,
-): ResolvedTarget | null {
-  const distinctCanon = [
-    ...new Set(
-      group
-        .filter((p) => p.canonicalItemId !== null)
-        .map((p) => p.canonicalItemId as number),
-    ),
-  ]
-  if (distinctCanon.length === 1) {
-    const id = distinctCanon[0]
-    return {
-      kind: 'canonical',
-      canonicalItemId: id,
-      name: canonById.get(id)?.name ?? group[0].name,
-    }
-  }
-  if (distinctCanon.length === 0) {
-    // All copies are standalone (no canonical link) — duplicate records of the
-    // same item, so attach to the first. (In the compare view standalone
-    // products don't merge across vendors anyway.)
-    const p = group[0]
-    return { kind: 'product', productId: p.id, name: p.name }
-  }
-  // Two or more distinct canonical items share this code: genuinely ambiguous.
-  return null
+function resolveGroup(group: ProdTarget[]): ResolvedTarget | null {
+  const p = group[0]
+  return p ? { kind: 'product', productId: p.id, name: p.name } : null
 }
 
 // Precomputed lookup structures so matching a whole import is O(rows), not
 // O(rows x products). Build once, pass to resolveMatch for every row.
 export type MatchIndex = {
-  canon: CanonTarget[]
   prods: ProdTarget[]
-  canonById: Map<number, CanonTarget>
   // Exact normalized SKU key -> resolved target (null when ambiguous).
   skuTargets: Map<string, ResolvedTarget | null>
   // Leading-zero-stripped numeric SKU key -> resolved target (null when
@@ -113,12 +78,7 @@ export type MatchIndex = {
   nameTargets: Map<string, ResolvedTarget | null>
 }
 
-export function buildMatchIndex(
-  canon: CanonTarget[],
-  prods: ProdTarget[],
-): MatchIndex {
-  const canonById = new Map(canon.map((c) => [c.id, c]))
-
+export function buildMatchIndex(prods: ProdTarget[]): MatchIndex {
   // Group products by each key, then resolve each group to a single target.
   const bySkuGroup = new Map<string, ProdTarget[]>()
   const byLooseGroup = new Map<string, ProdTarget[]>()
@@ -147,21 +107,19 @@ export function buildMatchIndex(
 
   const skuTargets = new Map<string, ResolvedTarget | null>()
   for (const [k, group] of bySkuGroup) {
-    skuTargets.set(k, resolveGroup(group, canonById))
+    skuTargets.set(k, resolveGroup(group))
   }
   const looseSkuTargets = new Map<string, ResolvedTarget | null>()
   for (const [k, group] of byLooseGroup) {
-    looseSkuTargets.set(k, resolveGroup(group, canonById))
+    looseSkuTargets.set(k, resolveGroup(group))
   }
   const nameTargets = new Map<string, ResolvedTarget | null>()
   for (const [k, group] of byNameGroup) {
-    nameTargets.set(k, resolveGroup(group, canonById))
+    nameTargets.set(k, resolveGroup(group))
   }
 
   return {
-    canon,
     prods,
-    canonById,
     skuTargets,
     looseSkuTargets,
     nameTargets,
@@ -222,18 +180,8 @@ export function resolveExactIdentity(
 
 // Turn a resolved SKU target into a match result. A SKU hit is 'confirmed'
 // because an exact vendor code is a deterministic identification that needs no
-// human judgement; canonical targets let the volume span every vendor offering
-// that item.
+// human judgement.
 function fromTarget(target: ResolvedTarget): VolumeMatchResult {
-  if (target.kind === 'canonical') {
-    return {
-      canonicalItemId: target.canonicalItemId,
-      productId: null,
-      matchName: target.name,
-      matchStatus: 'confirmed',
-      matchScore: 1,
-    }
-  }
   return {
     canonicalItemId: null,
     productId: target.productId,
@@ -293,7 +241,7 @@ export function resolveMatch(
     }
   }
 
-  // 2. Fuzzy name match, canonical items first (only meaningful when the item
+  // 2. Fuzzy name match (only meaningful when the item
   // label is an actual description). Surfaced as 'suggested' purely as an
   // ADVISORY hint for the review UI — it deliberately does NOT set
   // canonicalItemId/productId, so a fuzzy guess can never silently attach a row
@@ -301,17 +249,6 @@ export function resolveMatch(
   // must explicitly confirm it (which sets the ids), or the commit will create
   // a standalone product for the row's own code/name.
   const product = { name: row.itemName, category: null as string | null }
-  const canonHit = bestMatch(product, index.canon, 0.5)
-  if (canonHit) {
-    const hit = index.canonById.get(canonHit.canonicalItemId)
-    return {
-      canonicalItemId: null,
-      productId: null,
-      matchName: hit?.name ?? null,
-      matchStatus: 'suggested',
-      matchScore: canonHit.score,
-    }
-  }
   const prodHit = bestMatch(product, index.prods, 0.5)
   if (prodHit) {
     const hit = index.prods.find((p) => p.id === prodHit.canonicalItemId)

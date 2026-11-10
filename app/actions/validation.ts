@@ -459,6 +459,7 @@ export async function suggestAttributesForLocation(
       subcategory: r.subcategory,
       viscosity: r.viscosity,
       packageType: r.packageType,
+      performanceSpec: null,
     }
     const missing = VALIDATION_ATTRIBUTE_KEYS.filter((k) => !current[k])
     if (missing.length === 0) continue

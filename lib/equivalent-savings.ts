@@ -69,7 +69,7 @@ export type EquivalentLine = {
 }
 
 export type EquivalentSavings = {
-  canonicalItemId: number
+  groupKey: string
   displayName: string
   totalSavings: number
   // volume that could be priced vs volume with no credible price basis
@@ -93,8 +93,8 @@ export function computeEquivalentSavings(
   // own location (its FOB origin), or be a network-wide offer.
   sourcing: 'cross-site' | 'within-site' = 'cross-site',
 ): EquivalentSavings | null {
-  if (!group.isCanonical || group.canonicalItemId === null) return null
-  const byProd = volumes.byCanonicalProduct.get(group.canonicalItemId)
+  if (!group.isGroup) return null
+  const byProd = volumes.byGroupProduct.get(group.groupKey)
   if (!byProd || byProd.size === 0) return null
 
   // Best credible current price per pack family within this group (network-wide,
@@ -266,7 +266,7 @@ export function computeEquivalentSavings(
         : 'high'
 
   return {
-    canonicalItemId: group.canonicalItemId,
+    groupKey: group.groupKey,
     displayName: group.displayName,
     totalSavings,
     pricedVolume,

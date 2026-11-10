@@ -5,7 +5,6 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { db } from '@/lib/db'
 import {
-  canonicalItems,
   locations,
   products,
   snowflakeConnection,
@@ -281,13 +280,11 @@ export async function saveSourceMapping(
   return { ok: true, message: 'Mapping saved.' }
 }
 
-type CanonTarget = Parameters<typeof buildMatchIndex>[0][number]
-type ProdTarget = Parameters<typeof buildMatchIndex>[1][number]
+type ProdTarget = Parameters<typeof buildMatchIndex>[0][number]
 
 // One match index per mapped app vendor, holding only the products on that
 // vendor's price sheets, so a part number is resolved within its own vendor.
 function buildVendorIndexes(
-  canon: CanonTarget[],
   prods: ProdTarget[],
   priced: { productId: number; vendorId: number }[],
   vendorIds: Set<number>,
@@ -302,7 +299,7 @@ function buildVendorIndexes(
     byVendor.set(vendorId, list)
   }
   return new Map(
-    [...byVendor].map(([vendorId, list]) => [vendorId, buildMatchIndex(canon, list)]),
+    [...byVendor].map(([vendorId, list]) => [vendorId, buildMatchIndex(list)]),
   )
 }
 
@@ -390,15 +387,7 @@ export async function pullSnowflakeVolumes(): Promise<
     .where(inArray(locations.id, rollupIds))
   const locName = new Map(locRows.map((l) => [l.id, l.name]))
 
-  const [canon, prods, priced] = await Promise.all([
-    db
-      .select({
-        id: canonicalItems.id,
-        name: canonicalItems.name,
-        category: canonicalItems.category,
-      })
-      .from(canonicalItems)
-      .where(eq(canonicalItems.userId, admin.id)),
+  const [prods, priced] = await Promise.all([
     db
       .select({
         id: products.id,
@@ -414,9 +403,8 @@ export async function pullSnowflakeVolumes(): Promise<
       .from(vendorPrices)
       .where(eq(vendorPrices.userId, admin.id)),
   ])
-  const matchIndex = buildMatchIndex(canon, prods)
+  const matchIndex = buildMatchIndex(prods)
   const vendorIndex = buildVendorIndexes(
-    canon,
     prods,
     priced,
     new Set(Object.values(mapping.pullOptions.vendorMap)),
