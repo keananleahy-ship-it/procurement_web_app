@@ -16,12 +16,19 @@ import { requireAdmin } from '@/lib/roles'
 import { listSnowflakeColumns, querySnowflake } from '@/lib/snowflake'
 import {
   type ColumnMap,
+  EXCLUDE,
+  type HierarchyRow,
   type PulledRow,
   SOURCE_FIELDS,
+  type SiteRollup,
+  buildHierarchyQuery,
   buildPullQuery,
+  emptyRollup,
+  mergePulledRows,
   parseTableName,
   periodLabel,
-  quoteColumn,
+  resolveSite,
+  rollupLocationIds,
   toStagedVolume,
   validateColumnMap,
 } from '@/lib/snowflake-source'
@@ -30,9 +37,18 @@ import { buildMatchIndex, resolveMatch } from '@/lib/volume-match'
 export type SourceMapping = {
   sourceTable: string
   columnMap: ColumnMap
-  siteMap: Record<string, number>
+  siteRollup: SiteRollup
   lookbackMonths: number
   lastPulledAt: string | null
+}
+
+export type SiteHierarchyEntry = {
+  region: string | null
+  businessUnit: string | null
+  site: string
+  lines: number
+  qty: number
+  lastDate: string | null
 }
 
 type Result<T> = ({ ok: true } & T) | { ok: false; message: string }
@@ -47,7 +63,7 @@ export async function getSourceMapping(): Promise<SourceMapping | null> {
     .select({
       sourceTable: snowflakeConnection.sourceTable,
       columnMap: snowflakeConnection.columnMap,
-      siteMap: snowflakeConnection.siteMap,
+      siteRollup: snowflakeConnection.siteRollup,
       lookbackMonths: snowflakeConnection.lookbackMonths,
       lastPulledAt: snowflakeConnection.lastPulledAt,
     })
@@ -58,7 +74,7 @@ export async function getSourceMapping(): Promise<SourceMapping | null> {
   return {
     sourceTable: row.sourceTable ?? '',
     columnMap: (row.columnMap ?? {}) as ColumnMap,
-    siteMap: row.siteMap ?? {},
+    siteRollup: { ...emptyRollup(), ...(row.siteRollup ?? {}) },
     lookbackMonths: row.lookbackMonths,
     lastPulledAt: row.lastPulledAt?.toISOString() ?? null,
   }
@@ -76,33 +92,48 @@ export async function loadSourceColumns(
   }
 }
 
-// Distinct site values so each can be paired with an app location.
-export async function loadSiteValues(
-  table: string,
-  siteColumn: string,
-): Promise<Result<{ values: string[] }>> {
+// Every region / business unit / warehouse combination with its volume over
+// the window, so each can be rolled up to a platform location.
+export async function loadSiteHierarchy(input: {
+  table: string
+  columnMap: ColumnMap
+  lookbackMonths: number
+}): Promise<Result<{ entries: SiteHierarchyEntry[] }>> {
   await requireAdmin()
   try {
-    const safeTable = parseTableName(table)
-    const columns = await listSnowflakeColumns(safeTable)
-    if (!columns.includes(siteColumn)) {
-      return { ok: false, message: `Column ${siteColumn} is not in the view.` }
-    }
-    const site = quoteColumn(siteColumn)
-    const rows = await querySnowflake<{ v: string }>(
-      `select distinct to_varchar(${site}) as "v" from ${safeTable}
-       where ${site} is not null order by 1 limit 500`,
+    const table = parseTableName(input.table)
+    const problem = validateColumnMap(input.columnMap, await listSnowflakeColumns(table))
+    if (problem) return { ok: false, message: problem }
+    const months = Math.min(36, Math.max(1, Math.trunc(input.lookbackMonths) || 12))
+    const rows = await querySnowflake<HierarchyRow>(
+      buildHierarchyQuery({ table, map: input.columnMap }),
+      [months, months],
     )
-    return { ok: true, values: rows.map((r) => r.v) }
+    const entries = rows.map((r) => ({
+      region: r.region?.trim() || null,
+      businessUnit: r.businessUnit?.trim() || null,
+      site: r.site ?? '',
+      lines: Number(r.lines) || 0,
+      qty: Number(r.qty) || 0,
+      lastDate: r.lastDate ? new Date(r.lastDate).toISOString().slice(0, 10) : null,
+    }))
+    return { ok: true, entries }
   } catch (err) {
-    return { ok: false, message: errorMessage(err, 'Could not read site values.') }
+    return { ok: false, message: errorMessage(err, 'Could not read warehouses.') }
   }
 }
+
+const rollupTarget = z.union([z.number().int().positive(), z.literal(EXCLUDE)])
+const rollupLevel = z.record(z.string().max(500), rollupTarget)
 
 const mappingSchema = z.object({
   sourceTable: z.string().trim().min(1, 'Enter the view to read from.').max(800),
   columnMap: z.record(z.string(), z.string().max(255)),
-  siteMap: z.record(z.string().max(500), z.number().int().positive()),
+  siteRollup: z.object({
+    region: rollupLevel,
+    businessUnit: rollupLevel,
+    site: rollupLevel,
+  }),
   lookbackMonths: z.number().int().min(1).max(36),
 })
 
@@ -114,7 +145,7 @@ export async function saveSourceMapping(
   if (!parsed.success) {
     return { ok: false, message: parsed.error.issues[0]?.message ?? 'Invalid mapping.' }
   }
-  const { sourceTable, siteMap, lookbackMonths } = parsed.data
+  const { sourceTable, siteRollup, lookbackMonths } = parsed.data
   const allowed = new Set<string>(SOURCE_FIELDS.map((f) => f.key))
   const columnMap: ColumnMap = Object.fromEntries(
     Object.entries(parsed.data.columnMap).filter(([k, v]) => allowed.has(k) && v),
@@ -128,7 +159,7 @@ export async function saveSourceMapping(
     return { ok: false, message: errorMessage(err, 'Could not verify the view.') }
   }
 
-  const locIds = [...new Set(Object.values(siteMap))]
+  const locIds = rollupLocationIds(siteRollup)
   if (locIds.length > 0) {
     const found = await db
       .select({ id: locations.id })
@@ -141,7 +172,7 @@ export async function saveSourceMapping(
 
   await db
     .update(snowflakeConnection)
-    .set({ sourceTable, columnMap, siteMap, lookbackMonths })
+    .set({ sourceTable, columnMap, siteRollup, lookbackMonths })
     .where(eq(snowflakeConnection.id, 1))
   revalidatePath('/data-sources')
   return { ok: true, message: 'Mapping saved.' }
@@ -164,9 +195,9 @@ export async function pullSnowflakeVolumes(): Promise<
   if (!mapping?.sourceTable) {
     return { ok: false, message: 'Save a source mapping first.' }
   }
-  const siteEntries = Object.entries(mapping.siteMap)
-  if (siteEntries.length === 0) {
-    return { ok: false, message: 'Map at least one site value to a location.' }
+  const rollupIds = rollupLocationIds(mapping.siteRollup)
+  if (rollupIds.length === 0) {
+    return { ok: false, message: 'Roll at least one warehouse up to a location.' }
   }
 
   let pulled: PulledRow[]
@@ -178,8 +209,8 @@ export async function pullSnowflakeVolumes(): Promise<
     )
     if (problem) return { ok: false, message: problem }
     pulled = await querySnowflake<PulledRow>(
-      buildPullQuery({ table, map: mapping.columnMap, siteCount: siteEntries.length }),
-      [...siteEntries.map(([site]) => site), mapping.lookbackMonths],
+      buildPullQuery({ table, map: mapping.columnMap }),
+      [mapping.lookbackMonths],
     )
   } catch (err) {
     return { ok: false, message: errorMessage(err, 'Snowflake query failed.') }
@@ -188,7 +219,7 @@ export async function pullSnowflakeVolumes(): Promise<
   const locRows = await db
     .select({ id: locations.id, name: locations.name })
     .from(locations)
-    .where(inArray(locations.id, [...new Set(siteEntries.map(([, id]) => id))]))
+    .where(inArray(locations.id, rollupIds))
   const locName = new Map(locRows.map((l) => [l.id, l.name]))
 
   const [canon, prods] = await Promise.all([
@@ -215,20 +246,27 @@ export async function pullSnowflakeVolumes(): Promise<
   const period = periodLabel(mapping.lookbackMonths)
   const table = mapping.sourceTable
 
-  // Several site values can point at one location; group by location.
+  // Many warehouses roll up to one location; group by the resolved location.
   const byLocation = new Map<number, PulledRow[]>()
   for (const row of pulled) {
-    const locationId = mapping.siteMap[row.site]
-    if (!locationId || !locName.has(locationId)) continue
-    const list = byLocation.get(locationId) ?? []
+    const { target } = resolveSite(
+      {
+        region: row.region?.trim() || null,
+        businessUnit: row.businessUnit?.trim() || null,
+        site: row.site ?? '',
+      },
+      mapping.siteRollup,
+    )
+    if (typeof target !== 'number' || !locName.has(target)) continue
+    const list = byLocation.get(target) ?? []
     list.push(row)
-    byLocation.set(locationId, list)
+    byLocation.set(target, list)
   }
 
   const imports: PullSummary[] = []
   const skipped: string[] = []
   for (const [locationId, name] of locName) {
-    const rows = byLocation.get(locationId) ?? []
+    const rows = mergePulledRows(byLocation.get(locationId) ?? [])
     const staged = rows
       .map((r) => toStagedVolume(r, mapping.lookbackMonths))
       .filter((r) => r !== null)

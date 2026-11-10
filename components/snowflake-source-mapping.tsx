@@ -5,13 +5,21 @@ import { useState, useTransition } from 'react'
 import { ArrowRight, DatabaseZap, RefreshCw } from 'lucide-react'
 import {
   type PullSummary,
+  type SiteHierarchyEntry,
   type SourceMapping,
-  loadSiteValues,
+  loadSiteHierarchy,
   loadSourceColumns,
   pullSnowflakeVolumes,
   saveSourceMapping,
 } from '@/app/actions/snowflake-source'
-import { SOURCE_FIELDS, type ColumnMap } from '@/lib/snowflake-source'
+import {
+  SOURCE_FIELDS,
+  type ColumnMap,
+  type SiteRollup,
+  emptyRollup,
+  rollupLocationIds,
+} from '@/lib/snowflake-source'
+import { SnowflakeSiteRollup } from '@/components/snowflake-site-rollup'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -32,7 +40,6 @@ import {
 import { cn } from '@/lib/utils'
 
 const NONE = '__none'
-const UNMAPPED = '__unmapped'
 
 type Notice = { ok: boolean; text: string } | null
 
@@ -50,10 +57,8 @@ export function SnowflakeSourceMapping({
     () => Object.values(mapping?.columnMap ?? {}).filter(Boolean) as string[],
   )
   const [columnMap, setColumnMap] = useState<ColumnMap>(mapping?.columnMap ?? {})
-  const [siteValues, setSiteValues] = useState<string[]>(
-    Object.keys(mapping?.siteMap ?? {}),
-  )
-  const [siteMap, setSiteMap] = useState<Record<string, number>>(mapping?.siteMap ?? {})
+  const [hierarchy, setHierarchy] = useState<SiteHierarchyEntry[]>([])
+  const [rollup, setRollup] = useState<SiteRollup>(mapping?.siteRollup ?? emptyRollup())
   const [lookback, setLookback] = useState(String(mapping?.lookbackMonths ?? 12))
   const [notice, setNotice] = useState<Notice>(null)
   const [pulled, setPulled] = useState<{ imports: PullSummary[]; skipped: string[] } | null>(
@@ -62,10 +67,6 @@ export function SnowflakeSourceMapping({
   const [pending, startTransition] = useTransition()
 
   const columnItems = Object.fromEntries([[NONE, 'Not mapped'], ...columns.map((c) => [c, c])])
-  const locationItems = Object.fromEntries([
-    [UNMAPPED, 'Ignore this site'],
-    ...locations.map((l) => [String(l.id), l.name]),
-  ])
 
   function run(task: () => Promise<void>) {
     setNotice(null)
@@ -85,13 +86,14 @@ export function SnowflakeSourceMapping({
 
   const loadSites = () =>
     run(async () => {
-      if (!columnMap.site) {
-        return setNotice({ ok: false, text: 'Choose the site column first.' })
-      }
-      const res = await loadSiteValues(table, columnMap.site)
+      const res = await loadSiteHierarchy({
+        table,
+        columnMap,
+        lookbackMonths: Number(lookback),
+      })
       if (!res.ok) return setNotice({ ok: false, text: res.message })
-      setSiteValues(res.values)
-      setNotice({ ok: true, text: `Found ${res.values.length} distinct sites.` })
+      setHierarchy(res.entries)
+      setNotice({ ok: true, text: `Found ${res.entries.length} warehouses.` })
     })
 
   const save = () =>
@@ -99,7 +101,7 @@ export function SnowflakeSourceMapping({
       const res = await saveSourceMapping({
         sourceTable: table,
         columnMap,
-        siteMap,
+        siteRollup: rollup,
         lookbackMonths: Number(lookback),
       })
       setNotice({ ok: res.ok, text: res.message })
@@ -112,7 +114,8 @@ export function SnowflakeSourceMapping({
       setPulled({ imports: res.imports, skipped: res.skipped })
     })
 
-  const mappedSites = Object.keys(siteMap).length
+  const mappedSites = rollupLocationIds(rollup).length
+  const canLoadSites = Boolean(columnMap.site && columnMap.quantity && columnMap.date)
 
   return (
     <Card>
@@ -214,57 +217,33 @@ export function SnowflakeSourceMapping({
         <section className="flex flex-col gap-3" aria-labelledby="sf-sites-heading">
           <div className="flex items-center justify-between gap-4">
             <h3 id="sf-sites-heading" className="text-sm font-medium">
-              3. Sites
+              3. Location rollup
             </h3>
             <Button
               variant="outline"
               size="sm"
               onClick={loadSites}
-              disabled={!connected || pending || !columnMap.site}
+              disabled={!connected || pending || !canLoadSites}
             >
               <RefreshCw className="size-4" aria-hidden="true" />
-              Load sites
+              Load warehouses
             </Button>
           </div>
-          {siteValues.length === 0 ? (
+          {hierarchy.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              Choose the site column, then load the distinct sites in the view.
+              {canLoadSites
+                ? 'Load the warehouses in the view to roll them up to locations.'
+                : 'Map the warehouse, quantity, and date columns first. Map business unit and region to assign whole groups at once.'}
+              {mappedSites > 0 && ` ${mappedSites} location(s) already have saved rules.`}
             </p>
           ) : (
-            <ul className="flex flex-col divide-y rounded-md border">
-              {siteValues.map((site) => (
-                <li
-                  key={site}
-                  className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
-                >
-                  <span className="font-mono text-sm">{site}</span>
-                  <Select
-                    value={siteMap[site] ? String(siteMap[site]) : UNMAPPED}
-                    items={locationItems}
-                    onValueChange={(v) =>
-                      setSiteMap((prev) => {
-                        const next = { ...prev }
-                        if (!v || v === UNMAPPED) delete next[site]
-                        else next[site] = Number(v)
-                        return next
-                      })
-                    }
-                  >
-                    <SelectTrigger aria-label={`Location for ${site}`} className="sm:w-64">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={UNMAPPED}>Ignore this site</SelectItem>
-                      {locations.map((l) => (
-                        <SelectItem key={l.id} value={String(l.id)}>
-                          {l.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </li>
-              ))}
-            </ul>
+            <SnowflakeSiteRollup
+              entries={hierarchy}
+              rollup={rollup}
+              onChange={setRollup}
+              locations={locations}
+              lookbackMonths={Number(lookback) || 12}
+            />
           )}
         </section>
 

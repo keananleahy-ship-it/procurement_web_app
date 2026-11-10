@@ -96,8 +96,12 @@ export const snowflakeConnection = pgTable('snowflake_connection', {
   // before every query.
   sourceTable: text('source_table'),
   columnMap: jsonb('column_map').$type<Record<string, string>>(),
-  // Snowflake site value -> app location id. Unmapped site values are ignored.
-  siteMap: jsonb('site_map').$type<Record<string, number>>(),
+  // Rollup rules per level (region / business unit / warehouse value) ->
+  // app location id or 'exclude'. The most specific level wins; warehouses
+  // with no rule at any level are left out of pulls.
+  siteRollup: jsonb('site_rollup').$type<
+    Record<'region' | 'businessUnit' | 'site', Record<string, number | 'exclude'>>
+  >(),
   lookbackMonths: integer('lookback_months').notNull().default(12),
   lastPulledAt: timestamp('last_pulled_at'),
 })

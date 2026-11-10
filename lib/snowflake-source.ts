@@ -2,7 +2,9 @@
 // Kept free of server-only imports so the SQL they build can be unit-checked.
 
 export const SOURCE_FIELDS = [
-  { key: 'site', label: 'Site / location', required: true },
+  { key: 'site', label: 'Warehouse / site', required: true },
+  { key: 'businessUnit', label: 'Business unit (rollup)', required: false },
+  { key: 'region', label: 'Region (rollup)', required: false },
   { key: 'date', label: 'Purchase date', required: true },
   { key: 'itemName', label: 'Item name', required: true },
   { key: 'quantity', label: 'Quantity', required: true },
@@ -54,30 +56,97 @@ export function validateColumnMap(map: ColumnMap, liveColumns: string[]): string
   return null
 }
 
-// One aggregated row per site + item + code + unit over the lookback window.
+// --- Location rollup ---------------------------------------------------------
+// Warehouses roll up to platform locations through up to three levels:
+// region -> business unit -> warehouse. The most specific rule wins, so a
+// whole business unit can be assigned once and single warehouses overridden.
+
+export const EXCLUDE = 'exclude' as const
+export type RollupTarget = number | typeof EXCLUDE
+export type RollupLevel = 'region' | 'businessUnit' | 'site'
+export type SiteRollup = Record<RollupLevel, Record<string, RollupTarget>>
+
+export const ROLLUP_LEVELS: { key: RollupLevel; label: string }[] = [
+  { key: 'site', label: 'Warehouse' },
+  { key: 'businessUnit', label: 'Business unit' },
+  { key: 'region', label: 'Region' },
+]
+
+export function emptyRollup(): SiteRollup {
+  return { region: {}, businessUnit: {}, site: {} }
+}
+
+export type SiteKey = { region: string | null; businessUnit: string | null; site: string }
+
+export type Resolution = { target: RollupTarget | null; level: RollupLevel | null }
+
+export function resolveSite(key: SiteKey, rollup: SiteRollup): Resolution {
+  for (const { key: level } of ROLLUP_LEVELS) {
+    const value = key[level]
+    if (value === null) continue
+    const target = rollup[level]?.[value]
+    if (target !== undefined) return { target, level }
+  }
+  return { target: null, level: null }
+}
+
+// Every location id any rule points at.
+export function rollupLocationIds(rollup: SiteRollup): number[] {
+  const ids = new Set<number>()
+  for (const level of Object.values(rollup)) {
+    for (const t of Object.values(level)) if (typeof t === 'number') ids.add(t)
+  }
+  return [...ids]
+}
+
+const col = (map: ColumnMap, k: SourceFieldKey) => (map[k] ? quoteColumn(map[k]!) : null)
+const text = (c: string | null) => (c ? `to_varchar(${c})` : 'null')
+
+// One row per region + business unit + warehouse with its volume in the
+// window, so the rollup screen can show what each assignment carries.
+export function buildHierarchyQuery(opts: { table: string; map: ColumnMap }): string {
+  const { table, map } = opts
+  const qty = col(map, 'quantity')!
+  const date = col(map, 'date')!
+  return `select ${text(col(map, 'region'))} as "region",
+       ${text(col(map, 'businessUnit'))} as "businessUnit",
+       ${text(col(map, 'site'))} as "site",
+       count_if(${date} >= dateadd(month, -?, current_date())) as "lines",
+       sum(iff(${date} >= dateadd(month, -?, current_date()), ${qty}, 0)) as "qty",
+       max(${date}) as "lastDate"
+from ${table}
+group by 1, 2, 3
+order by 1, 2, 3
+limit 5000`
+}
+
+export type HierarchyRow = {
+  region: string | null
+  businessUnit: string | null
+  site: string | null
+  lines: number | string
+  qty: number | string | null
+  lastDate: Date | string | null
+}
+
+// One aggregated row per warehouse + item + code + unit over the lookback
+// window. Rollup to locations happens in the app so rules stay editable.
 // Spend is weighted only over lines that carry a cost, so blank costs don't
 // pull the average toward zero.
-export function buildPullQuery(opts: {
-  table: string
-  map: ColumnMap
-  siteCount: number
-}): string {
-  const { table, map, siteCount } = opts
-  const col = (k: SourceFieldKey) => (map[k] ? quoteColumn(map[k]!) : null)
-  const site = col('site')!
-  const qty = col('quantity')!
-  const date = col('date')!
-  const text = (c: string | null) => (c ? `to_varchar(${c})` : 'null')
-  const spend = col('unitCost')
-    ? `${qty} * ${col('unitCost')}`
-    : col('extendedCost')
-  const costed = col('unitCost') ?? col('extendedCost')
+export function buildPullQuery(opts: { table: string; map: ColumnMap }): string {
+  const { table, map } = opts
+  const qty = col(map, 'quantity')!
+  const date = col(map, 'date')!
+  const unitCost = col(map, 'unitCost')
+  const spend = unitCost ? `${qty} * ${unitCost}` : col(map, 'extendedCost')
+  const costed = unitCost ?? col(map, 'extendedCost')
 
-  const placeholders = Array.from({ length: siteCount }, () => '?').join(', ')
-  return `select ${text(site)} as "site",
-       ${text(col('itemName'))} as "item",
-       ${text(col('sku'))} as "sku",
-       ${text(col('unit'))} as "unit",
+  return `select ${text(col(map, 'region'))} as "region",
+       ${text(col(map, 'businessUnit'))} as "businessUnit",
+       ${text(col(map, 'site'))} as "site",
+       ${text(col(map, 'itemName'))} as "item",
+       ${text(col(map, 'sku'))} as "sku",
+       ${text(col(map, 'unit'))} as "unit",
        sum(${qty}) as "qty",
        ${spend ? `sum(${spend})` : 'null'} as "spend",
        ${costed ? `sum(case when ${costed} is not null then ${qty} end)` : 'null'} as "costedQty",
@@ -85,14 +154,46 @@ export function buildPullQuery(opts: {
        min(${date}) as "firstDate",
        max(${date}) as "lastDate"
 from ${table}
-where ${text(site)} in (${placeholders})
-  and ${date} >= dateadd(month, -?, current_date())
+where ${date} >= dateadd(month, -?, current_date())
   and ${qty} is not null
-group by 1, 2, 3, 4`
+group by 1, 2, 3, 4, 5, 6`
+}
+
+// Several warehouses roll into one location, so the same item can arrive in
+// several rows; combine them before staging so each item appears once.
+export function mergePulledRows(rows: PulledRow[]): PulledRow[] {
+  const merged = new Map<string, PulledRow>()
+  const add = (a: PulledRow['qty'], b: PulledRow['qty']) =>
+    a === null && b === null ? null : Number(a ?? 0) + Number(b ?? 0)
+  const earliest = (a: PulledRow['firstDate'], b: PulledRow['firstDate']) =>
+    !a ? b : !b ? a : new Date(a) <= new Date(b) ? a : b
+  const latest = (a: PulledRow['lastDate'], b: PulledRow['lastDate']) =>
+    !a ? b : !b ? a : new Date(a) >= new Date(b) ? a : b
+  for (const row of rows) {
+    const key = JSON.stringify([
+      (row.item ?? '').trim().toLowerCase(),
+      (row.sku ?? '').trim().toLowerCase(),
+      (row.unit ?? '').trim().toLowerCase(),
+    ])
+    const prev = merged.get(key)
+    if (!prev) {
+      merged.set(key, { ...row })
+      continue
+    }
+    prev.qty = add(prev.qty, row.qty)
+    prev.spend = add(prev.spend, row.spend)
+    prev.costedQty = add(prev.costedQty, row.costedQty)
+    prev.lines = Number(prev.lines) + Number(row.lines)
+    prev.firstDate = earliest(prev.firstDate, row.firstDate)
+    prev.lastDate = latest(prev.lastDate, row.lastDate)
+  }
+  return [...merged.values()]
 }
 
 export type PulledRow = {
-  site: string
+  region: string | null
+  businessUnit: string | null
+  site: string | null
   item: string | null
   sku: string | null
   unit: string | null
