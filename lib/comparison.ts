@@ -10,7 +10,9 @@ import {
 } from '@/lib/db/schema'
 import {
   comparisonKey,
+  decodeTightness,
   DEFAULT_TIGHTNESS,
+  encodeTightness,
   groupLabel,
   type ProductTraits,
   type Tightness,
@@ -24,6 +26,7 @@ import {
   pricePerUnitFactor,
 } from '@/lib/uom'
 import { eq } from 'drizzle-orm'
+import { cache } from 'react'
 
 export type PriceRow = {
   priceId: number
@@ -159,7 +162,11 @@ export function groupKeyFor(
 }
 
 // Shared workspace: not filtered by userId.
-export async function getAllRows(): Promise<
+// Pages call several loaders that each need the same rows; cache() dedupes
+// them to one query per request.
+export const getAllRows = cache(loadAllRows)
+
+async function loadAllRows(): Promise<
   (PriceRow & { traits: ProductTraits })[]
 > {
   const rows = await db
@@ -311,8 +318,18 @@ function accumulate(
   })
 }
 
-export async function loadVolumeMaps(
+const loadVolumeMapsCached = cache((key: string) =>
+  loadVolumeMapsUncached(decodeTightness(key)),
+)
+
+export function loadVolumeMaps(
   tightness: Tightness = DEFAULT_TIGHTNESS,
+): Promise<VolumeMaps> {
+  return loadVolumeMapsCached(encodeTightness(tightness))
+}
+
+async function loadVolumeMapsUncached(
+  tightness: Tightness,
 ): Promise<VolumeMaps> {
   const rows = await db
     .select({
@@ -444,8 +461,18 @@ function stripTraits<T extends { traits: ProductTraits }>(
   return rest
 }
 
-export async function buildComparisons(
+const buildComparisonsCached = cache((key: string) =>
+  buildComparisonsUncached(decodeTightness(key)),
+)
+
+export function buildComparisons(
   tightness: Tightness = DEFAULT_TIGHTNESS,
+): Promise<ProductComparison[]> {
+  return buildComparisonsCached(encodeTightness(tightness))
+}
+
+async function buildComparisonsUncached(
+  tightness: Tightness,
 ): Promise<ProductComparison[]> {
   const [rows, volumes] = await Promise.all([
     getAllRows(),

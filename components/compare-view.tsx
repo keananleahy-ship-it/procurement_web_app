@@ -1,6 +1,12 @@
 'use client'
 
-import { useCallback, useMemo, useState, useTransition } from 'react'
+import {
+  useCallback,
+  useDeferredValue,
+  useMemo,
+  useState,
+  useTransition,
+} from 'react'
 import type { ProductComparison, PriceRow } from '@/app/actions/comparisons'
 import { setFreightEstimate } from '@/app/actions/prices'
 import { Badge } from '@/components/ui/badge'
@@ -129,8 +135,11 @@ export function CompareView({
       .sort((a, b) => a.name.localeCompare(b.name))
   }, [comparisons])
 
+  // Filtering 2,000+ cards on every keystroke blocks typing; let React render
+  // the input first and catch the list up afterwards.
+  const deferredQuery = useDeferredValue(query)
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
+    const q = deferredQuery.trim().toLowerCase()
     const result: ProductComparison[] = []
     for (const c of comparisons) {
       // Text filter first (matches product, category, or any vendor name).
@@ -179,7 +188,7 @@ export function CompareView({
       })
     }
     return result
-  }, [comparisons, query, families, vendors])
+  }, [comparisons, deferredQuery, families, vendors])
 
   function toggleFamily(id: PackFamilyId) {
     setFamilies((prev) => {
