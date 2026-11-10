@@ -7,6 +7,7 @@ import {
   type PullSummary,
   type SiteHierarchyEntry,
   type SourceMapping,
+  loadPullFacets,
   loadSiteHierarchy,
   loadSourceColumns,
   pullSnowflakeVolumes,
@@ -15,10 +16,12 @@ import {
 import {
   SOURCE_FIELDS,
   type ColumnMap,
+  type PullOptions,
   type SiteRollup,
   emptyRollup,
   rollupLocationIds,
 } from '@/lib/snowflake-source'
+import { type PullFacets, SnowflakePullFilters } from '@/components/snowflake-pull-filters'
 import { SnowflakeSiteRollup } from '@/components/snowflake-site-rollup'
 import { Button } from '@/components/ui/button'
 import {
@@ -59,6 +62,10 @@ export function SnowflakeSourceMapping({
   const [columnMap, setColumnMap] = useState<ColumnMap>(mapping?.columnMap ?? {})
   const [hierarchy, setHierarchy] = useState<SiteHierarchyEntry[]>([])
   const [rollup, setRollup] = useState<SiteRollup>(mapping?.siteRollup ?? emptyRollup())
+  const [pullOptions, setPullOptions] = useState<PullOptions>(
+    mapping?.pullOptions ?? { excludedCategories: [], vendorMap: {} },
+  )
+  const [facets, setFacets] = useState<PullFacets | null>(null)
   const [lookback, setLookback] = useState(String(mapping?.lookbackMonths ?? 12))
   const [notice, setNotice] = useState<Notice>(null)
   const [pulled, setPulled] = useState<{ imports: PullSummary[]; skipped: string[] } | null>(
@@ -96,12 +103,33 @@ export function SnowflakeSourceMapping({
       setNotice({ ok: true, text: `Found ${res.entries.length} warehouses.` })
     })
 
+  const loadFacets = () =>
+    run(async () => {
+      const res = await loadPullFacets({
+        table,
+        columnMap,
+        lookbackMonths: Number(lookback),
+        excludedCategories: [],
+      })
+      if (!res.ok) return setNotice({ ok: false, text: res.message })
+      setFacets({
+        categories: res.categories,
+        vendors: res.vendors,
+        appVendors: res.appVendors,
+      })
+      setNotice({
+        ok: true,
+        text: `Found ${res.categories.length} categories and ${res.vendors.length} vendors.`,
+      })
+    })
+
   const save = () =>
     run(async () => {
       const res = await saveSourceMapping({
         sourceTable: table,
         columnMap,
         siteRollup: rollup,
+        pullOptions,
         lookbackMonths: Number(lookback),
       })
       setNotice({ ok: res.ok, text: res.message })
@@ -247,9 +275,41 @@ export function SnowflakeSourceMapping({
           )}
         </section>
 
+        <section className="flex flex-col gap-3" aria-labelledby="sf-filters-heading">
+          <div className="flex items-center justify-between gap-4">
+            <h3 id="sf-filters-heading" className="text-sm font-medium">
+              4. Categories &amp; vendors
+            </h3>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={loadFacets}
+              disabled={!connected || pending || !canLoadSites}
+            >
+              <RefreshCw className="size-4" aria-hidden="true" />
+              Load categories &amp; vendors
+            </Button>
+          </div>
+          {facets ? (
+            <SnowflakePullFilters
+              facets={facets}
+              options={pullOptions}
+              onChange={setPullOptions}
+            />
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Load the view&apos;s categories and vendors to leave categories out of pulls and
+              match part numbers per vendor.
+              {(pullOptions.excludedCategories.length > 0 ||
+                Object.keys(pullOptions.vendorMap).length > 0) &&
+                ` Saved: ${pullOptions.excludedCategories.length} excluded categor${pullOptions.excludedCategories.length === 1 ? 'y' : 'ies'}, ${Object.keys(pullOptions.vendorMap).length} mapped vendor(s).`}
+            </p>
+          )}
+        </section>
+
         <section className="flex flex-col gap-3" aria-labelledby="sf-window-heading">
           <h3 id="sf-window-heading" className="text-sm font-medium">
-            4. Window
+            5. Window
           </h3>
           <div className="flex max-w-48 flex-col gap-2">
             <Label htmlFor="sf-lookback">Months of purchases</Label>

@@ -243,6 +243,27 @@ function fromTarget(target: ResolvedTarget): VolumeMatchResult {
   }
 }
 
+// Exact code match only (no item-name or fuzzy fallback). Codes are tried in
+// order, so a purchasing system's own part number can be preferred over a
+// secondary vendor part number. Returns the matched code with the result so
+// the caller can store the code that identified the row.
+export function matchByCode(
+  codes: (string | null | undefined)[],
+  index: MatchIndex,
+): { result: VolumeMatchResult; code: string } | null {
+  const present = codes.map((c) => c?.trim()).filter((c): c is string => Boolean(c))
+  for (const code of present) {
+    const t = index.skuTargets.get(normalizeSku(code))
+    if (t) return { result: fromTarget(t), code }
+  }
+  for (const code of present) {
+    const lk = looseSkuKey(code)
+    const t = lk ? index.looseSkuTargets.get(lk) : undefined
+    if (t) return { result: fromTarget(t), code }
+  }
+  return null
+}
+
 export function resolveMatch(
   row: VolumeMatchInput,
   index: MatchIndex,

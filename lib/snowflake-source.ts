@@ -8,7 +8,10 @@ export const SOURCE_FIELDS = [
   { key: 'date', label: 'Purchase date', required: true },
   { key: 'itemName', label: 'Item name', required: true },
   { key: 'quantity', label: 'Quantity', required: true },
-  { key: 'sku', label: 'Item code / SKU', required: false },
+  { key: 'sku', label: 'Part number (matched first)', required: false },
+  { key: 'vendorPartNumber', label: 'Vendor part number (fallback match)', required: false },
+  { key: 'vendor', label: 'Vendor', required: false },
+  { key: 'category', label: 'Product category (filter)', required: false },
   { key: 'unit', label: 'Unit of measure', required: false },
   { key: 'unitCost', label: 'Unit cost', required: false },
   { key: 'extendedCost', label: 'Line total cost', required: false },
@@ -197,8 +200,72 @@ export function mergeSiteVariants(
   }))
 }
 
+// --- Pull options ------------------------------------------------------------
+// Which product categories are left out of pulls (e.g. fuel) and which app
+// vendor each Snowflake vendor is, so part numbers are matched against that
+// vendor's price sheets first. Keys are normalized so case and punctuation
+// variants ("Oil lubricants" / "Oil Lubricants", "SOPUS" / "Sopus") agree.
+export type PullOptions = {
+  excludedCategories: string[]
+  vendorMap: Record<string, number>
+}
+
+export function normalizePullOptions(raw: Partial<PullOptions> | null | undefined): PullOptions {
+  return {
+    excludedCategories: [...new Set((raw?.excludedCategories ?? []).map(normalizeName))].filter(
+      Boolean,
+    ),
+    vendorMap: Object.fromEntries(
+      Object.entries(raw?.vendorMap ?? {})
+        .map(([k, v]) => [normalizeName(k), v] as const)
+        .filter(([k, v]) => k && Number.isInteger(v) && v > 0),
+    ),
+  }
+}
+
 const col = (map: ColumnMap, k: SourceFieldKey) => (map[k] ? quoteColumn(map[k]!) : null)
 const text = (c: string | null) => (c ? `to_varchar(${c})` : 'null')
+// Matches normalizeName() so the filter agrees with the keys saved in the app.
+const normalizedSql = (c: string) => `regexp_replace(lower(to_varchar(${c})), '[^a-z0-9]', '')`
+
+function categoryFilter(map: ColumnMap, excluded: string[]): { sql: string; binds: string[] } {
+  const cat = col(map, 'category')
+  if (!cat || excluded.length === 0) return { sql: '', binds: [] }
+  return {
+    sql: `\n  and (${cat} is null or ${normalizedSql(cat)} not in (${excluded.map(() => '?').join(', ')}))`,
+    binds: excluded,
+  }
+}
+
+export type FacetRow = { value: string | null; lines: number | string; qty: number | string | null }
+
+// Distinct categories or vendors with their volume over the window, so the
+// filter and vendor map can be set from what the view actually contains.
+// Vendors are listed after the category filter, so excluded fuel suppliers
+// don't crowd the list.
+export function buildFacetQuery(opts: {
+  table: string
+  map: ColumnMap
+  facet: 'category' | 'vendor'
+  excludedCategories: string[]
+}): { sql: string; binds: (string | number)[] } | null {
+  const { table, map, facet } = opts
+  const facetCol = col(map, facet)
+  if (!facetCol) return null
+  const date = col(map, 'date')!
+  const qty = col(map, 'quantity')!
+  const filter =
+    facet === 'vendor' ? categoryFilter(map, opts.excludedCategories) : { sql: '', binds: [] }
+  return {
+    sql: `select ${text(facetCol)} as "value", count(*) as "lines", sum(${qty}) as "qty"
+from ${table}
+where ${date} >= dateadd(month, -?, current_date())${filter.sql}
+group by 1
+order by 2 desc
+limit 500`,
+    binds: filter.binds,
+  }
+}
 
 // One row per region + business unit + warehouse with its volume in the
 // window, so the rollup screen can show what each assignment carries.
@@ -231,19 +298,27 @@ export type HierarchyRow = {
 // window. Rollup to locations happens in the app so rules stay editable.
 // Spend is weighted only over lines that carry a cost, so blank costs don't
 // pull the average toward zero.
-export function buildPullQuery(opts: { table: string; map: ColumnMap }): string {
+export function buildPullQuery(opts: {
+  table: string
+  map: ColumnMap
+  lookbackMonths: number
+  excludedCategories: string[]
+}): { sql: string; binds: (string | number)[] } {
   const { table, map } = opts
   const qty = col(map, 'quantity')!
   const date = col(map, 'date')!
   const unitCost = col(map, 'unitCost')
   const spend = unitCost ? `${qty} * ${unitCost}` : col(map, 'extendedCost')
   const costed = unitCost ?? col(map, 'extendedCost')
+  const filter = categoryFilter(map, opts.excludedCategories)
 
-  return `select ${text(col(map, 'region'))} as "region",
+  const sql = `select ${text(col(map, 'region'))} as "region",
        ${text(col(map, 'businessUnit'))} as "businessUnit",
        ${text(col(map, 'site'))} as "site",
        ${text(col(map, 'itemName'))} as "item",
        ${text(col(map, 'sku'))} as "sku",
+       ${text(col(map, 'vendorPartNumber'))} as "vendorPartNumber",
+       ${text(col(map, 'vendor'))} as "vendor",
        ${text(col(map, 'unit'))} as "unit",
        sum(${qty}) as "qty",
        ${spend ? `sum(${spend})` : 'null'} as "spend",
@@ -253,8 +328,9 @@ export function buildPullQuery(opts: { table: string; map: ColumnMap }): string 
        max(${date}) as "lastDate"
 from ${table}
 where ${date} >= dateadd(month, -?, current_date())
-  and ${qty} is not null
-group by 1, 2, 3, 4, 5, 6`
+  and ${qty} is not null${filter.sql}
+group by 1, 2, 3, 4, 5, 6, 7, 8`
+  return { sql, binds: [opts.lookbackMonths, ...filter.binds] }
 }
 
 // Several warehouses roll into one location, so the same item can arrive in
@@ -271,6 +347,8 @@ export function mergePulledRows(rows: PulledRow[]): PulledRow[] {
     const key = JSON.stringify([
       (row.item ?? '').trim().toLowerCase(),
       (row.sku ?? '').trim().toLowerCase(),
+      (row.vendorPartNumber ?? '').trim().toLowerCase(),
+      normalizeName(row.vendor),
       (row.unit ?? '').trim().toLowerCase(),
     ])
     const prev = merged.get(key)
@@ -294,6 +372,8 @@ export type PulledRow = {
   site: string | null
   item: string | null
   sku: string | null
+  vendorPartNumber: string | null
+  vendor: string | null
   unit: string | null
   qty: number | string | null
   spend: number | string | null

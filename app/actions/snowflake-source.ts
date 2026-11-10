@@ -9,6 +9,8 @@ import {
   locations,
   products,
   snowflakeConnection,
+  vendorPrices,
+  vendors,
   volumeImportRows,
   volumeImports,
 } from '@/lib/db/schema'
@@ -17,15 +19,20 @@ import { listSnowflakeColumns, querySnowflake } from '@/lib/snowflake'
 import {
   type ColumnMap,
   EXCLUDE,
+  type FacetRow,
   type HierarchyRow,
+  type PullOptions,
   type PulledRow,
   SOURCE_FIELDS,
   type SiteRollup,
+  buildFacetQuery,
   buildHierarchyQuery,
   buildPullQuery,
   type HierarchyEntry,
   mergePulledRows,
   mergeSiteVariants,
+  normalizeName,
+  normalizePullOptions,
   normalizeRollup,
   parseTableName,
   periodLabel,
@@ -34,12 +41,19 @@ import {
   toStagedVolume,
   validateColumnMap,
 } from '@/lib/snowflake-source'
-import { buildMatchIndex, resolveMatch } from '@/lib/volume-match'
+import {
+  type MatchIndex,
+  type VolumeMatchResult,
+  buildMatchIndex,
+  matchByCode,
+  resolveMatch,
+} from '@/lib/volume-match'
 
 export type SourceMapping = {
   sourceTable: string
   columnMap: ColumnMap
   siteRollup: SiteRollup
+  pullOptions: PullOptions
   lookbackMonths: number
   lastPulledAt: string | null
 }
@@ -59,6 +73,7 @@ export async function getSourceMapping(): Promise<SourceMapping | null> {
       sourceTable: snowflakeConnection.sourceTable,
       columnMap: snowflakeConnection.columnMap,
       siteRollup: snowflakeConnection.siteRollup,
+      pullOptions: snowflakeConnection.pullOptions,
       lookbackMonths: snowflakeConnection.lookbackMonths,
       lastPulledAt: snowflakeConnection.lastPulledAt,
     })
@@ -70,6 +85,7 @@ export async function getSourceMapping(): Promise<SourceMapping | null> {
     sourceTable: row.sourceTable ?? '',
     columnMap: (row.columnMap ?? {}) as ColumnMap,
     siteRollup: normalizeRollup(row.siteRollup),
+    pullOptions: normalizePullOptions(row.pullOptions),
     lookbackMonths: row.lookbackMonths,
     lastPulledAt: row.lastPulledAt?.toISOString() ?? null,
   }
@@ -120,6 +136,73 @@ export async function loadSiteHierarchy(input: {
   }
 }
 
+export type Facet = { key: string; label: string; lines: number; qty: number }
+
+// Folds case/punctuation variants of one value into a single entry, labelled
+// with its most common spelling.
+function mergeFacet(rows: FacetRow[]): Facet[] {
+  const byKey = new Map<string, Facet & { best: number }>()
+  for (const r of rows) {
+    const label = r.value?.trim() ?? ''
+    const key = normalizeName(label)
+    if (!key) continue
+    const lines = Number(r.lines) || 0
+    const qty = Number(r.qty) || 0
+    const cur = byKey.get(key)
+    if (!cur) byKey.set(key, { key, label, lines, qty, best: lines })
+    else {
+      if (lines > cur.best) Object.assign(cur, { label, best: lines })
+      cur.lines += lines
+      cur.qty += qty
+    }
+  }
+  return [...byKey.values()]
+    .map(({ best: _best, ...f }) => f)
+    .sort((a, b) => b.qty - a.qty)
+}
+
+// Product categories and vendors present in the view over the window, plus
+// the app's vendors, for the category filter and vendor map.
+export async function loadPullFacets(input: {
+  table: string
+  columnMap: ColumnMap
+  lookbackMonths: number
+  excludedCategories: string[]
+}): Promise<
+  Result<{
+    categories: Facet[]
+    vendors: Facet[]
+    appVendors: { id: number; name: string }[]
+  }>
+> {
+  const admin = await requireAdmin()
+  try {
+    const table = parseTableName(input.table)
+    const problem = validateColumnMap(input.columnMap, await listSnowflakeColumns(table))
+    if (problem) return { ok: false, message: problem }
+    const months = Math.min(36, Math.max(1, Math.trunc(input.lookbackMonths) || 12))
+    const excludedCategories = normalizePullOptions({
+      excludedCategories: input.excludedCategories,
+    }).excludedCategories
+    const run = async (facet: 'category' | 'vendor') => {
+      const q = buildFacetQuery({ table, map: input.columnMap, facet, excludedCategories })
+      return q ? mergeFacet(await querySnowflake<FacetRow>(q.sql, [months, ...q.binds])) : []
+    }
+    const [categories, vendorFacets, appVendors] = await Promise.all([
+      run('category'),
+      run('vendor'),
+      db
+        .select({ id: vendors.id, name: vendors.name })
+        .from(vendors)
+        .where(eq(vendors.userId, admin.id))
+        .orderBy(vendors.name),
+    ])
+    return { ok: true, categories, vendors: vendorFacets, appVendors }
+  } catch (err) {
+    return { ok: false, message: errorMessage(err, 'Could not read categories and vendors.') }
+  }
+}
+
 const rollupTarget = z.union([z.number().int().positive(), z.literal(EXCLUDE)])
 const rollupLevel = z.record(z.string().max(500), rollupTarget)
 
@@ -136,13 +219,19 @@ const mappingSchema = z.object({
       .default({})
       .refine((g) => Object.keys(g).length <= 50, 'Too many platform groups.'),
   }),
+  pullOptions: z
+    .object({
+      excludedCategories: z.array(z.string().max(200)).max(200).default([]),
+      vendorMap: z.record(z.string().max(300), z.number().int().positive()).default({}),
+    })
+    .default({ excludedCategories: [], vendorMap: {} }),
   lookbackMonths: z.number().int().min(1).max(36),
 })
 
 export async function saveSourceMapping(
   input: z.input<typeof mappingSchema>,
 ): Promise<Result<{ message: string }>> {
-  await requireAdmin()
+  const admin = await requireAdmin()
   const parsed = mappingSchema.safeParse(input)
   if (!parsed.success) {
     return { ok: false, message: parsed.error.issues[0]?.message ?? 'Invalid mapping.' }
@@ -172,12 +261,86 @@ export async function saveSourceMapping(
     }
   }
 
+  const pullOptions = normalizePullOptions(parsed.data.pullOptions)
+  const vendorIds = [...new Set(Object.values(pullOptions.vendorMap))]
+  if (vendorIds.length > 0) {
+    const found = await db
+      .select({ id: vendors.id })
+      .from(vendors)
+      .where(and(eq(vendors.userId, admin.id), inArray(vendors.id, vendorIds)))
+    if (found.length !== vendorIds.length) {
+      return { ok: false, message: 'One of the chosen vendors no longer exists.' }
+    }
+  }
+
   await db
     .update(snowflakeConnection)
-    .set({ sourceTable, columnMap, siteRollup, lookbackMonths })
+    .set({ sourceTable, columnMap, siteRollup, pullOptions, lookbackMonths })
     .where(eq(snowflakeConnection.id, 1))
   revalidatePath('/data-sources')
   return { ok: true, message: 'Mapping saved.' }
+}
+
+type CanonTarget = Parameters<typeof buildMatchIndex>[0][number]
+type ProdTarget = Parameters<typeof buildMatchIndex>[1][number]
+
+// One match index per mapped app vendor, holding only the products on that
+// vendor's price sheets, so a part number is resolved within its own vendor.
+function buildVendorIndexes(
+  canon: CanonTarget[],
+  prods: ProdTarget[],
+  priced: { productId: number; vendorId: number }[],
+  vendorIds: Set<number>,
+): Map<number, MatchIndex> {
+  const prodById = new Map(prods.map((p) => [p.id, p]))
+  const byVendor = new Map<number, ProdTarget[]>()
+  for (const { productId, vendorId } of priced) {
+    const p = prodById.get(productId)
+    if (!p || !vendorIds.has(vendorId)) continue
+    const list = byVendor.get(vendorId) ?? []
+    list.push(p)
+    byVendor.set(vendorId, list)
+  }
+  return new Map(
+    [...byVendor].map(([vendorId, list]) => [vendorId, buildMatchIndex(canon, list)]),
+  )
+}
+
+// Part number first, vendor part number second:
+//   1. code on the mapped vendor's own sheets -> confirmed
+//   2. code on another vendor's sheets -> confirmed if the row's vendor isn't
+//      mapped; if it is, only suggested, since it may be a cross-vendor
+//      collision (the reviewer decides)
+//   3. otherwise the usual item-name / fuzzy suggestion
+// Returns the code that matched so re-matching later reproduces it.
+function matchPulledRow(
+  row: PulledRow,
+  staged: { itemName: string; sku: string | null },
+  vendorMap: Record<string, number>,
+  vendorIndex: Map<number, MatchIndex>,
+  globalIndex: MatchIndex,
+): { result: VolumeMatchResult; code: string | null } {
+  const codes = [row.sku, row.vendorPartNumber]
+  const vendorId = vendorMap[normalizeName(row.vendor)]
+  const own = vendorId ? vendorIndex.get(vendorId) : undefined
+  const ownHit = own ? matchByCode(codes, own) : null
+  if (ownHit) return { result: ownHit.result, code: ownHit.code }
+
+  const anyHit = matchByCode(codes, globalIndex)
+  if (anyHit && !vendorId) return { result: anyHit.result, code: anyHit.code }
+  if (anyHit) {
+    return {
+      result: {
+        canonicalItemId: null,
+        productId: null,
+        matchName: anyHit.result.matchName,
+        matchStatus: 'suggested',
+        matchScore: 0.9,
+      },
+      code: anyHit.code,
+    }
+  }
+  return { result: resolveMatch(staged, globalIndex), code: null }
 }
 
 export type PullSummary = {
@@ -210,10 +373,13 @@ export async function pullSnowflakeVolumes(): Promise<
       await listSnowflakeColumns(table),
     )
     if (problem) return { ok: false, message: problem }
-    pulled = await querySnowflake<PulledRow>(
-      buildPullQuery({ table, map: mapping.columnMap }),
-      [mapping.lookbackMonths],
-    )
+    const q = buildPullQuery({
+      table,
+      map: mapping.columnMap,
+      lookbackMonths: mapping.lookbackMonths,
+      excludedCategories: mapping.pullOptions.excludedCategories,
+    })
+    pulled = await querySnowflake<PulledRow>(q.sql, q.binds)
   } catch (err) {
     return { ok: false, message: errorMessage(err, 'Snowflake query failed.') }
   }
@@ -224,7 +390,7 @@ export async function pullSnowflakeVolumes(): Promise<
     .where(inArray(locations.id, rollupIds))
   const locName = new Map(locRows.map((l) => [l.id, l.name]))
 
-  const [canon, prods] = await Promise.all([
+  const [canon, prods, priced] = await Promise.all([
     db
       .select({
         id: canonicalItems.id,
@@ -243,8 +409,20 @@ export async function pullSnowflakeVolumes(): Promise<
       })
       .from(products)
       .where(eq(products.userId, admin.id)),
+    db
+      .selectDistinct({ productId: vendorPrices.productId, vendorId: vendorPrices.vendorId })
+      .from(vendorPrices)
+      .where(eq(vendorPrices.userId, admin.id)),
   ])
   const matchIndex = buildMatchIndex(canon, prods)
+  const vendorIndex = buildVendorIndexes(
+    canon,
+    prods,
+    priced,
+    new Set(Object.values(mapping.pullOptions.vendorMap)),
+  )
+  const match = (r: PulledRow, staged: { itemName: string; sku: string | null }) =>
+    matchPulledRow(r, staged, mapping.pullOptions.vendorMap, vendorIndex, matchIndex)
   const period = periodLabel(mapping.lookbackMonths)
   const table = mapping.sourceTable
 
@@ -269,9 +447,12 @@ export async function pullSnowflakeVolumes(): Promise<
   const skipped: string[] = []
   for (const [locationId, name] of locName) {
     const rows = mergePulledRows(byLocation.get(locationId) ?? [])
-    const staged = rows
-      .map((r) => toStagedVolume(r, mapping.lookbackMonths))
-      .filter((r) => r !== null)
+    const staged = rows.flatMap((r) => {
+      const s = toStagedVolume(r, mapping.lookbackMonths)
+      if (!s) return []
+      const m = match(r, s)
+      return [{ ...s, sku: m.code ?? s.sku, match: m.result }]
+    })
     if (staged.length === 0) {
       skipped.push(name)
       continue
@@ -319,8 +500,7 @@ export async function pullSnowflakeVolumes(): Promise<
       .returning({ id: volumeImports.id })
 
     await db.insert(volumeImportRows).values(
-      staged.map((r) => {
-        const match = resolveMatch({ itemName: r.itemName, sku: r.sku }, matchIndex)
+      staged.map(({ match, ...r }) => {
         return {
           userId: admin.id,
           volumeImportId: created.id,

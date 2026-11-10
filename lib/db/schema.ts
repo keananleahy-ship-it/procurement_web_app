@@ -106,6 +106,12 @@ export const snowflakeConnection = pgTable('snowflake_connection', {
       groups?: Record<string, string[]>
     }
   >(),
+  // Normalized product categories left out of pulls (e.g. fuel), and
+  // normalized Snowflake vendor name -> app vendor id for part-number matching.
+  pullOptions: jsonb('pull_options').$type<{
+    excludedCategories?: string[]
+    vendorMap?: Record<string, number>
+  }>(),
   lookbackMonths: integer('lookback_months').notNull().default(12),
   lastPulledAt: timestamp('last_pulled_at'),
 })
