@@ -105,7 +105,13 @@ export function normalizeName(value: string | null | undefined): string {
 // be a different operation in another unit (e.g. AEG-Hugoton in AEG and in
 // Brown Dupree).
 export function siteRuleKey(businessUnit: string | null, site: string): string {
-  return `${normalizeName(businessUnit)}::${normalizeName(site)}`
+  return `${normalizeName(businessUnit)}::${normalizeName(parentSite(site))}`
+}
+
+// "LW-East Chicago : GATX037884" is a railcar held at East Chicago, so
+// anything after " : " is a sub-location of the warehouse before it.
+export function parentSite(site: string): string {
+  return site.split(/\s+:\s+/)[0].trim()
 }
 
 export function groupOf(rollup: SiteRollup, businessUnit: string | null): string | null {
@@ -171,13 +177,14 @@ export function mergeSiteVariants(
   for (const r of rows) {
     const key = `${normalizeName(r.region)}|${siteRuleKey(r.businessUnit, r.site)}`
     const prev = merged.get(key)
+    const label = parentSite(r.site)
     if (!prev) {
-      merged.set(key, { ...r, variants: [r.site], topLines: r.lines })
+      merged.set(key, { ...r, site: label, variants: [r.site], topLines: r.lines })
       continue
     }
     prev.variants.push(r.site)
     if (r.lines > prev.topLines) {
-      prev.site = r.site
+      prev.site = label
       prev.topLines = r.lines
     }
     prev.lines += r.lines
