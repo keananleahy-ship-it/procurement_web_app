@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState, useTransition } from 'react'
+import { useRef, useState, useSyncExternalStore, useTransition } from 'react'
 import {
   CheckCircle2,
   Copy,
@@ -87,11 +87,26 @@ const FIELD_DEFS: {
   },
 ]
 
-function formatDate(iso: string) {
-  return new Date(iso).toLocaleString(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  })
+const subscribeNoop = () => () => {}
+
+// The server renders in UTC while the browser uses the viewer's timezone, so
+// local formatting only happens after hydration to avoid a text mismatch.
+function LocalDateTime({ iso }: { iso: string }) {
+  const isClient = useSyncExternalStore(
+    subscribeNoop,
+    () => true,
+    () => false,
+  )
+  const date = new Date(iso)
+  const text = isClient
+    ? date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+    : date.toLocaleString('en-US', {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        timeZone: 'UTC',
+        timeZoneName: 'short',
+      })
+  return <time dateTime={iso}>{text}</time>
 }
 
 export function SnowflakeConnectionForm({
@@ -368,9 +383,9 @@ export function SnowflakeConnectionForm({
               </Button>
               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
                 <dt className="text-muted-foreground">Saved</dt>
-                <dd>{formatDate(settings.updatedAt)}</dd>
+                  <dd><LocalDateTime iso={settings.updatedAt} /></dd>
                 <dt className="text-muted-foreground">Last test</dt>
-                <dd>{settings.lastTestedAt ? formatDate(settings.lastTestedAt) : 'Never'}</dd>
+                <dd>{settings.lastTestedAt ? <LocalDateTime iso={settings.lastTestedAt} /> : 'Never'}</dd>
               </dl>
               {settings.lastTestMessage && (
                 <p
