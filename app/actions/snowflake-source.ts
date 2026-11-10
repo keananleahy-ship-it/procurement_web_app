@@ -23,8 +23,10 @@ import {
   type SiteRollup,
   buildHierarchyQuery,
   buildPullQuery,
-  emptyRollup,
+  type HierarchyEntry,
   mergePulledRows,
+  mergeSiteVariants,
+  normalizeRollup,
   parseTableName,
   periodLabel,
   resolveSite,
@@ -42,14 +44,7 @@ export type SourceMapping = {
   lastPulledAt: string | null
 }
 
-export type SiteHierarchyEntry = {
-  region: string | null
-  businessUnit: string | null
-  site: string
-  lines: number
-  qty: number
-  lastDate: string | null
-}
+export type SiteHierarchyEntry = HierarchyEntry
 
 type Result<T> = ({ ok: true } & T) | { ok: false; message: string }
 
@@ -74,7 +69,7 @@ export async function getSourceMapping(): Promise<SourceMapping | null> {
   return {
     sourceTable: row.sourceTable ?? '',
     columnMap: (row.columnMap ?? {}) as ColumnMap,
-    siteRollup: { ...emptyRollup(), ...(row.siteRollup ?? {}) },
+    siteRollup: normalizeRollup(row.siteRollup),
     lookbackMonths: row.lookbackMonths,
     lastPulledAt: row.lastPulledAt?.toISOString() ?? null,
   }
@@ -109,14 +104,16 @@ export async function loadSiteHierarchy(input: {
       buildHierarchyQuery({ table, map: input.columnMap }),
       [months, months],
     )
-    const entries = rows.map((r) => ({
-      region: r.region?.trim() || null,
-      businessUnit: r.businessUnit?.trim() || null,
-      site: r.site ?? '',
-      lines: Number(r.lines) || 0,
-      qty: Number(r.qty) || 0,
-      lastDate: r.lastDate ? new Date(r.lastDate).toISOString().slice(0, 10) : null,
-    }))
+    const entries = mergeSiteVariants(
+      rows.map((r) => ({
+        region: r.region?.trim() || null,
+        businessUnit: r.businessUnit?.trim() || null,
+        site: r.site ?? '',
+        lines: Number(r.lines) || 0,
+        qty: Number(r.qty) || 0,
+        lastDate: r.lastDate ? new Date(r.lastDate).toISOString().slice(0, 10) : null,
+      })),
+    )
     return { ok: true, entries }
   } catch (err) {
     return { ok: false, message: errorMessage(err, 'Could not read warehouses.') }
@@ -131,8 +128,13 @@ const mappingSchema = z.object({
   columnMap: z.record(z.string(), z.string().max(255)),
   siteRollup: z.object({
     region: rollupLevel,
+    group: rollupLevel.default({}),
     businessUnit: rollupLevel,
     site: rollupLevel,
+    groups: z
+      .record(z.string().trim().min(1).max(100), z.array(z.string().max(500)).max(200))
+      .default({})
+      .refine((g) => Object.keys(g).length <= 50, 'Too many platform groups.'),
   }),
   lookbackMonths: z.number().int().min(1).max(36),
 })

@@ -57,34 +57,87 @@ export function validateColumnMap(map: ColumnMap, liveColumns: string[]): string
 }
 
 // --- Location rollup ---------------------------------------------------------
-// Warehouses roll up to platform locations through up to three levels:
-// region -> business unit -> warehouse. The most specific rule wins, so a
-// whole business unit can be assigned once and single warehouses overridden.
+// Warehouses roll up to platform locations through four levels:
+// region -> platform group -> business unit -> warehouse. Regions and business
+// units come from the view; platform groups are defined in the app and collect
+// business units. The most specific rule wins, so a whole group can be
+// assigned once and single business units or warehouses overridden.
 
 export const EXCLUDE = 'exclude' as const
 export type RollupTarget = number | typeof EXCLUDE
-export type RollupLevel = 'region' | 'businessUnit' | 'site'
-export type SiteRollup = Record<RollupLevel, Record<string, RollupTarget>>
+export type RollupLevel = 'region' | 'group' | 'businessUnit' | 'site'
+export type RuleMap = Record<string, RollupTarget>
+export type SiteRollup = Record<RollupLevel, RuleMap> & {
+  // Platform group name -> business unit names it collects.
+  groups: Record<string, string[]>
+}
 
 export const ROLLUP_LEVELS: { key: RollupLevel; label: string }[] = [
   { key: 'site', label: 'Warehouse' },
   { key: 'businessUnit', label: 'Business unit' },
+  { key: 'group', label: 'Platform group' },
   { key: 'region', label: 'Region' },
 ]
 
 export function emptyRollup(): SiteRollup {
-  return { region: {}, businessUnit: {}, site: {} }
+  return { region: {}, group: {}, businessUnit: {}, site: {}, groups: {} }
+}
+
+export function normalizeRollup(raw: Partial<SiteRollup> | null | undefined): SiteRollup {
+  const base = emptyRollup()
+  if (!raw) return base
+  return {
+    region: { ...(raw.region ?? {}) },
+    group: { ...(raw.group ?? {}) },
+    businessUnit: { ...(raw.businessUnit ?? {}) },
+    site: { ...(raw.site ?? {}) },
+    groups: { ...(raw.groups ?? {}) },
+  }
+}
+
+// Case, spacing and punctuation are ignored, so "AEG-AMARILLO",
+// "AEG-Amarillo" and "AEG - amarillo" are one warehouse.
+export function normalizeName(value: string | null | undefined): string {
+  return (value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+// Warehouses are only merged inside one business unit: the same town name can
+// be a different operation in another unit (e.g. AEG-Hugoton in AEG and in
+// Brown Dupree).
+export function siteRuleKey(businessUnit: string | null, site: string): string {
+  return `${normalizeName(businessUnit)}::${normalizeName(site)}`
+}
+
+export function groupOf(rollup: SiteRollup, businessUnit: string | null): string | null {
+  if (!businessUnit) return null
+  const unit = normalizeName(businessUnit)
+  for (const [name, units] of Object.entries(rollup.groups)) {
+    if (units.some((u) => normalizeName(u) === unit)) return name
+  }
+  return null
 }
 
 export type SiteKey = { region: string | null; businessUnit: string | null; site: string }
 
 export type Resolution = { target: RollupTarget | null; level: RollupLevel | null }
 
-export function resolveSite(key: SiteKey, rollup: SiteRollup): Resolution {
-  for (const { key: level } of ROLLUP_LEVELS) {
-    const value = key[level]
-    if (value === null) continue
-    const target = rollup[level]?.[value]
+// `from` skips the more specific levels, which is how a row shows what it
+// would inherit from its parent.
+export function resolveSite(
+  key: SiteKey,
+  rollup: SiteRollup,
+  from: RollupLevel = 'site',
+): Resolution {
+  const start = ROLLUP_LEVELS.findIndex((l) => l.key === from)
+  for (const { key: level } of ROLLUP_LEVELS.slice(start)) {
+    const ruleKey =
+      level === 'site'
+        ? siteRuleKey(key.businessUnit, key.site)
+        : level === 'group'
+          ? groupOf(rollup, key.businessUnit)
+          : key[level]
+    if (ruleKey === null) continue
+    const target = rollup[level]?.[ruleKey]
     if (target !== undefined) return { target, level }
   }
   return { target: null, level: null }
@@ -93,10 +146,48 @@ export function resolveSite(key: SiteKey, rollup: SiteRollup): Resolution {
 // Every location id any rule points at.
 export function rollupLocationIds(rollup: SiteRollup): number[] {
   const ids = new Set<number>()
-  for (const level of Object.values(rollup)) {
-    for (const t of Object.values(level)) if (typeof t === 'number') ids.add(t)
+  for (const { key } of ROLLUP_LEVELS) {
+    for (const t of Object.values(rollup[key] ?? {})) if (typeof t === 'number') ids.add(t)
   }
   return [...ids]
+}
+
+export type HierarchyEntry = {
+  region: string | null
+  businessUnit: string | null
+  site: string
+  variants: string[]
+  lines: number
+  qty: number
+  lastDate: string | null
+}
+
+// Folds spelling and punctuation variants of one warehouse into a single
+// entry, labelled with the variant that carries the most lines.
+export function mergeSiteVariants(
+  rows: Omit<HierarchyEntry, 'variants'>[],
+): HierarchyEntry[] {
+  const merged = new Map<string, HierarchyEntry & { topLines: number }>()
+  for (const r of rows) {
+    const key = `${normalizeName(r.region)}|${siteRuleKey(r.businessUnit, r.site)}`
+    const prev = merged.get(key)
+    if (!prev) {
+      merged.set(key, { ...r, variants: [r.site], topLines: r.lines })
+      continue
+    }
+    prev.variants.push(r.site)
+    if (r.lines > prev.topLines) {
+      prev.site = r.site
+      prev.topLines = r.lines
+    }
+    prev.lines += r.lines
+    prev.qty += r.qty
+    if (r.lastDate && (!prev.lastDate || r.lastDate > prev.lastDate)) prev.lastDate = r.lastDate
+  }
+  return [...merged.values()].map(({ topLines: _, ...e }) => ({
+    ...e,
+    variants: [...e.variants].sort((a, z) => (a === e.site ? -1 : z === e.site ? 1 : 0)),
+  }))
 }
 
 const col = (map: ColumnMap, k: SourceFieldKey) => (map[k] ? quoteColumn(map[k]!) : null)

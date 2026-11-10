@@ -99,8 +99,12 @@ export const snowflakeConnection = pgTable('snowflake_connection', {
   // Rollup rules per level (region / business unit / warehouse value) ->
   // app location id or 'exclude'. The most specific level wins; warehouses
   // with no rule at any level are left out of pulls.
+  // Platform groups (name -> business units) sit between region and business
+  // unit. Warehouse rules are keyed by normalized business unit + name.
   siteRollup: jsonb('site_rollup').$type<
-    Record<'region' | 'businessUnit' | 'site', Record<string, number | 'exclude'>>
+    Record<'region' | 'group' | 'businessUnit' | 'site', Record<string, number | 'exclude'>> & {
+      groups?: Record<string, string[]>
+    }
   >(),
   lookbackMonths: integer('lookback_months').notNull().default(12),
   lastPulledAt: timestamp('last_pulled_at'),
