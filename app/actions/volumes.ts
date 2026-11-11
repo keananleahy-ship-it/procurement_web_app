@@ -17,6 +17,12 @@ import {
   normalizeName,
   type MatchIndex,
 } from '@/lib/volume-match'
+import {
+  loadCrosswalk,
+  lookupCrosswalk,
+  removeCrosswalk,
+  saveCrosswalk,
+} from '@/lib/crosswalk'
 import { normalizeUom } from '@/lib/uom'
 import { deriveAttributes } from '@/lib/attributes'
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
@@ -115,6 +121,8 @@ export async function rematchVolumeImport(
       .from(products)
       .where(eq(products.userId, userId))
   const index = buildMatchIndex(prods)
+  const prodName = new Map(prods.map((p) => [p.id, p.name]))
+  const crosswalk = await loadCrosswalk(imp.userId)
 
   const rows = await db
     .select()
@@ -135,7 +143,18 @@ export async function rematchVolumeImport(
       result.confirmed++
       continue
     }
-    const match = resolveMatch({ itemName: r.itemName, sku: r.sku }, index)
+    const linked = lookupCrosswalk(crosswalk, r.sourceVendor, [r.sku])
+    const linkedName = linked ? prodName.get(linked.productId) : undefined
+    const match =
+      linked && linkedName
+        ? {
+            canonicalItemId: null,
+            productId: linked.productId,
+            matchName: linkedName,
+            matchStatus: 'confirmed' as const,
+            matchScore: 1,
+          }
+        : resolveMatch({ itemName: r.itemName, sku: r.sku }, index)
     if (match.matchStatus === 'confirmed') result.confirmed++
     else if (match.matchStatus === 'suggested') result.suggested++
     else result.unmatched++
@@ -197,7 +216,26 @@ export async function setVolumeRowMatch(
   rowId: number,
   target: { kind: 'product'; id: number; name: string } | { kind: 'none' },
 ) {
-  await requireEditor()
+  const editor = await requireEditor()
+  const [row] = await db
+    .select({
+      userId: volumeImportRows.userId,
+      sku: volumeImportRows.sku,
+      sourceVendor: volumeImportRows.sourceVendor,
+    })
+    .from(volumeImportRows)
+    .where(eq(volumeImportRows.id, rowId))
+  if (row?.sourceVendor && row.sku) {
+    if (target.kind === 'none') {
+      await removeCrosswalk(row.userId, row.sourceVendor, [row.sku])
+    } else {
+      await saveCrosswalk(
+        row.userId,
+        [{ vendor: row.sourceVendor, code: row.sku, productId: target.id }],
+        editor.id,
+      )
+    }
+  }
   if (target.kind === 'none') {
     await db
       .update(volumeImportRows)

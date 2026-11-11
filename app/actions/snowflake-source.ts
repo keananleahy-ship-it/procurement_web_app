@@ -45,8 +45,16 @@ import {
   type VolumeMatchResult,
   buildMatchIndex,
   matchByCode,
+  normalizeSku,
   resolveMatch,
 } from '@/lib/volume-match'
+import {
+  type CrosswalkEntry,
+  type CrosswalkMap,
+  loadCrosswalk,
+  lookupCrosswalk,
+  saveCrosswalk,
+} from '@/lib/crosswalk'
 
 export type SourceMapping = {
   sourceTable: string
@@ -304,6 +312,7 @@ function buildVendorIndexes(
 }
 
 // Part number first, vendor part number second:
+//   0. a reviewer-confirmed crosswalk entry for (vendor, code) -> confirmed
 //   1. code on the mapped vendor's own sheets -> confirmed
 //   2. code on another vendor's sheets -> confirmed if the row's vendor isn't
 //      mapped; if it is, only suggested, since it may be a cross-vendor
@@ -316,8 +325,23 @@ function matchPulledRow(
   vendorMap: Record<string, number>,
   vendorIndex: Map<number, MatchIndex>,
   globalIndex: MatchIndex,
+  crosswalk: CrosswalkMap,
+  prodName: Map<number, string>,
 ): { result: VolumeMatchResult; code: string | null } {
   const codes = [row.sku, row.vendorPartNumber]
+  const linked = lookupCrosswalk(crosswalk, row.vendor, codes)
+  if (linked && prodName.has(linked.productId)) {
+    return {
+      result: {
+        canonicalItemId: null,
+        productId: linked.productId,
+        matchName: prodName.get(linked.productId) ?? null,
+        matchStatus: 'confirmed',
+        matchScore: 1,
+      },
+      code: linked.code,
+    }
+  }
   const vendorId = vendorMap[normalizeName(row.vendor)]
   const own = vendorId ? vendorIndex.get(vendorId) : undefined
   const ownHit = own ? matchByCode(codes, own) : null
@@ -409,8 +433,67 @@ export async function pullSnowflakeVolumes(): Promise<
     priced,
     new Set(Object.values(mapping.pullOptions.vendorMap)),
   )
-  const match = (r: PulledRow, staged: { itemName: string; sku: string | null }) =>
-    matchPulledRow(r, staged, mapping.pullOptions.vendorMap, vendorIndex, matchIndex)
+  const prodName = new Map(prods.map((p) => [p.id, p.name]))
+
+  // Reviewer picks on the pending pulls this one replaces. Any that a plain
+  // code match wouldn't reproduce are saved to the crosswalk so a re-pull
+  // never throws away review work.
+  const stalePicks = new Map<string, number>()
+  const staleRows = await db
+    .select({
+      locationId: volumeImports.locationId,
+      sku: volumeImportRows.sku,
+      productId: volumeImportRows.productId,
+    })
+    .from(volumeImportRows)
+    .innerJoin(volumeImports, eq(volumeImports.id, volumeImportRows.volumeImportId))
+    .where(
+      and(
+        inArray(volumeImports.locationId, rollupIds),
+        eq(volumeImports.fileType, 'snowflake'),
+        eq(volumeImports.status, 'pending'),
+        eq(volumeImportRows.matchStatus, 'confirmed'),
+      ),
+    )
+  for (const s of staleRows) {
+    if (!s.sku?.trim() || !s.productId || !prodName.has(s.productId)) continue
+    stalePicks.set(`${s.locationId}|${normalizeSku(s.sku)}`, s.productId)
+  }
+
+  const crosswalk = await loadCrosswalk(admin.id)
+  const carried: CrosswalkEntry[] = []
+  const match = (
+    r: PulledRow,
+    staged: { itemName: string; sku: string | null },
+    locationId: number,
+  ) => {
+    const m = matchPulledRow(
+      r,
+      staged,
+      mapping.pullOptions.vendorMap,
+      vendorIndex,
+      matchIndex,
+      crosswalk,
+      prodName,
+    )
+    const pickCode = [r.sku, r.vendorPartNumber, staged.sku].find(
+      (c) => c?.trim() && stalePicks.has(`${locationId}|${normalizeSku(c)}`),
+    )
+    const pick = pickCode ? stalePicks.get(`${locationId}|${normalizeSku(pickCode)}`) : undefined
+    if (!pick || !pickCode) return m
+    if (m.result.matchStatus === 'confirmed' && m.result.productId === pick) return m
+    if (r.vendor?.trim()) carried.push({ vendor: r.vendor, code: pickCode, productId: pick })
+    return {
+      result: {
+        canonicalItemId: null,
+        productId: pick,
+        matchName: prodName.get(pick) ?? null,
+        matchStatus: 'confirmed' as const,
+        matchScore: 1,
+      },
+      code: pickCode,
+    }
+  }
   const period = periodLabel(mapping.lookbackMonths)
   const table = mapping.sourceTable
 
@@ -438,8 +521,15 @@ export async function pullSnowflakeVolumes(): Promise<
     const staged = rows.flatMap((r) => {
       const s = toStagedVolume(r, mapping.lookbackMonths)
       if (!s) return []
-      const m = match(r, s)
-      return [{ ...s, sku: m.code ?? s.sku, match: m.result }]
+      const m = match(r, s, locationId)
+      return [
+        {
+          ...s,
+          sku: m.code ?? s.sku,
+          sourceVendor: r.vendor?.trim() || null,
+          match: m.result,
+        },
+      ]
     })
     if (staged.length === 0) {
       skipped.push(name)
@@ -505,6 +595,8 @@ export async function pullSnowflakeVolumes(): Promise<
     )
     imports.push({ volumeImportId: created.id, locationName: name, rowCount: staged.length, coverage })
   }
+
+  await saveCrosswalk(admin.id, carried, admin.id)
 
   await db
     .update(snowflakeConnection)
