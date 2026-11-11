@@ -204,6 +204,10 @@ export const purchaseVolumes = pgTable('purchase_volumes', {
   // (baselineUnitCost - best available price) instead of the vendor-to-vendor
   // price-sheet spread, so savings reflect what you pay today vs. the best quote.
   baselineUnitCost: numeric('baselineUnitCost', { precision: 12, scale: 4 }),
+  // Unit cost (per base unit) and invoice date of the most recent costed
+  // purchase. Only line-level sources (Snowflake) can supply these.
+  lastUnitCost: numeric('lastUnitCost', { precision: 12, scale: 4 }),
+  lastPurchaseDate: date('lastPurchaseDate'),
   // human label for the period the volume covers, e.g. 'TTM' or '2025'
   period: text('period'),
   // 'manual' | 'import' | 'snowflake'
@@ -489,6 +493,8 @@ export const volumeImportRows = pgTable('volume_import_rows', {
   baseUnit: text('baseUnit'),
   // Average unit cost paid, per base unit (e.g. $/gallon). Null if not present.
   baselineUnitCost: numeric('baselineUnitCost', { precision: 12, scale: 4 }),
+  lastUnitCost: numeric('lastUnitCost', { precision: 12, scale: 4 }),
+  lastPurchaseDate: date('lastPurchaseDate'),
   // Period this row's volume covers; falls back to the import's defaultPeriod.
   period: text('period'),
   // Resolved match target. Exactly one of these is set once confirmed.
