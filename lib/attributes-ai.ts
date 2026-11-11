@@ -6,6 +6,7 @@ import {
   VALIDATION_ATTRIBUTE_KEYS,
   vocabularyFor,
 } from './attributes'
+import { normalizeViscosity } from './viscosity'
 
 // Direct OpenAI provider (same rationale as lib/match-ai.ts): the AI Gateway's
 // zero-config tier is rate-limited, so use the account's paid OpenAI quota.
@@ -70,7 +71,7 @@ function attributeGuide(category: string | null): string {
       lines.push(`- ${key}: choose EXACTLY one of [${vocab.join(' | ')}]`)
     } else if (key === 'viscosity') {
       lines.push(
-        `- viscosity: the SAE/ISO grade exactly as it would be written (e.g. "15W-40", "ISO 68", "80W-90"), or omit if not applicable`,
+        `- viscosity: the grade in standard form — "SAE 15W-40" (multigrade), "SAE 10W" (winter grade), "SAE 30" (straight grade, never "30W"), "ISO VG 68", or "NLGI 2" for greases. Omit if the name gives no grade`,
       )
     } else if (key === 'supplier') {
       lines.push(
@@ -143,7 +144,8 @@ ${productBlocks}`,
     // Must be a validation attribute the product actually asked to fill.
     if (!(VALIDATION_ATTRIBUTE_KEYS as AttributeKey[]).includes(key)) continue
     if (!target.missing.includes(key)) continue
-    const value = (s.value ?? '').trim()
+    const rawValue = (s.value ?? '').trim()
+    const value = key === 'viscosity' ? (normalizeViscosity(rawValue) ?? '') : rawValue
     if (!value) continue
     // Enforce the controlled vocabulary for select attributes, scoped to the
     // product's own (possibly just-suggested) category is out of scope here —

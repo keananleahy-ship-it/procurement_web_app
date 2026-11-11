@@ -28,6 +28,7 @@ import {
   ATTRIBUTE_FILL_MODEL,
   type AttributeFillInput,
 } from '@/lib/attributes-ai'
+import { canonicalViscosityOrThrow, normalizeViscosity } from '@/lib/viscosity'
 import { isMeasureUom } from '@/lib/uom'
 import { resolveOrCreateVendor } from '@/lib/vendors-registry'
 
@@ -249,7 +250,7 @@ export async function getValidationRecords(locationId: number): Promise<{
       !r.category ||
       !r.application ||
       !r.subcategory ||
-      !r.viscosity ||
+      !normalizeViscosity(r.viscosity) ||
       !r.packageType
     const unitIssue = detectUnitIssue(r.baseUnit, r.packageType)
     return {
@@ -312,7 +313,7 @@ export async function updateValidationAttribute(input: {
   // vendors are matched ignoring case and punctuation, and the canonical name
   // is what gets stored, so "PHILLIPS 66" resolves to the existing
   // "Phillips66" instead of introducing a third spelling.
-  let stored = clean
+  let stored = input.key === 'viscosity' ? canonicalViscosityOrThrow(clean) : clean
   if (input.key === 'supplier' && clean) {
     const resolved = await resolveOrCreateVendor(u.id, clean)
     if (resolved) stored = resolved.name
@@ -551,7 +552,8 @@ export async function acceptSuggestion(input: {
 
   // Accepting an AI-suggested supplier registers a vendor too, so the two
   // write paths can't disagree about what counts as a known vendor.
-  let suggested = sugg.value
+  let suggested =
+    input.key === 'viscosity' ? canonicalViscosityOrThrow(sugg.value) : sugg.value
   if (input.key === 'supplier' && suggested) {
     const resolved = await resolveOrCreateVendor(u.id, suggested)
     if (resolved) suggested = resolved.name

@@ -246,8 +246,9 @@ const ISO_BANDS: [number, number, string][] = [
 function viscosityClose(v: string): string {
   const multi = v.match(/(\d+)W-(\d+)/)
   if (multi) return `SAE *-${multi[2]}`
-  const mono = v.match(/SAE (\d+)W$/)
-  if (mono && Number(mono[1]) >= 30) return `SAE *-${mono[1]}`
+  // A straight "SAE 30" shares its hot grade with every xW-30 multigrade.
+  const mono = v.match(/^SAE (\d+)$/)
+  if (mono) return `SAE *-${mono[1]}`
   const iso = v.match(/ISO VG (\d+)/)
   if (iso) {
     const n = Number(iso[1])

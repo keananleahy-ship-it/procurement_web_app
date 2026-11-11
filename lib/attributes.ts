@@ -91,12 +91,7 @@ export function emptyLabelFor(key: AttributeKey): string {
 // Derivation
 // ---------------------------------------------------------------------------
 
-// Known ISO VG viscosity grades (the standard ISO 3448 ladder). Used to tell a
-// real viscosity grade apart from an incidental number (pack size, product
-// code, coolant ratio, etc.).
-const ISO_VG_GRADES = [
-  2, 3, 5, 7, 10, 15, 22, 32, 46, 68, 100, 150, 220, 320, 460, 680, 1000, 1500,
-]
+import { viscosityFromName } from './viscosity'
 
 // Package descriptors, checked in priority order (most specific first). The
 // label is the normalized bucket; the test matches against the UPPERCASED name.
@@ -441,45 +436,7 @@ export function sameFoodGradeSegment(
 }
 
 export function deriveViscosity(name: string): string | null {
-  const upper = name.toUpperCase()
-  // Coolant blend ratios like 50/50 are not a viscosity grade.
-  const withoutRatios = upper.replace(/\d{2}\/\d{2}/g, ' ')
-  // SAE multigrade, e.g. 15W-40, 5W30, 80W-90. Suppliers write the same grade
-  // with or without the hyphen ("10W30" vs "10W-30"), and often glue it to
-  // surrounding text with a product code that ends in digits
-  // ("RotellaT610W30CK4" = T6 + 10W-30). Anchoring the winter number to the
-  // real SAE winter grades (engine 0..25, gear 70..85) lets us split the grade
-  // off the product code without a \d lookbehind, while the trailing (?!\d)
-  // still prevents slicing a longer number. Always emit the canonical
-  // hyphenated form so every spelling collapses to one value.
-  // Winter number is anchored to real SAE winter grades (engine 0..25, gear
-  // 70..85). Second number is 1-3 digits to also catch newer thin grades like
-  // 0W-8 / 0W-16, with (?!\d) so a longer number isn't sliced.
-  const sae = withoutRatios.match(
-    /(0|5|10|15|20|25|70|75|80|85)W\s*-?\s*(\d{1,3})(?!\d)/,
-  )
-  if (sae) return `SAE ${sae[1]}W-${sae[2]}`
-  // A single "W" grade, e.g. 10W or 30W (straight-grade transmission / rock
-  // drill oils). Includes summer monogrades 30..60 that some products still
-  // suffix with a W. Runs after the multigrade match above.
-  const saeSingle = withoutRatios.match(
-    /(0|5|10|15|20|25|30|40|50|60|70|75|80|85)W(?![\d-]|\s*\d)/,
-  )
-  if (saeSingle) return `SAE ${saeSingle[1]}W`
-  // ISO VG: find any standalone number that is a known grade, skipping numbers
-  // immediately followed by a unit (205L, 20 KG) which are pack sizes. The tiny
-  // grades (2/3/5/7) collide with grease NLGI numbers and product-code suffixes
-  // (e.g. "Gadus S2 V220 2"), so only accept them when the name explicitly says
-  // ISO/VG; otherwise require a common bare industrial grade (>= 22).
-  const hasIsoContext = /\b(ISO\s*VG|ISO|VG)\b/.test(withoutRatios)
-  const numbers = withoutRatios.matchAll(/\b(\d{1,4})\b(?!\s*(L|ML|KG|USG|X))/g)
-  for (const m of numbers) {
-    const n = Number(m[1])
-    if (!ISO_VG_GRADES.includes(n)) continue
-    if (n < 22 && !hasIsoContext) continue
-    return 'ISO VG ' + n
-  }
-  return null
+  return viscosityFromName(name)
 }
 
 // Product categories that are inherently industrial-plant lubricants. When a

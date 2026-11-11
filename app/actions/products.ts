@@ -9,6 +9,7 @@ import {
   PRODUCT_ATTRIBUTES,
   type AttributeKey,
 } from '@/lib/attributes'
+import { canonicalViscosityOrThrow } from '@/lib/viscosity'
 
 export async function getProducts() {
   await requireUser()
@@ -52,7 +53,9 @@ export async function updateProductAttribute(
   if (!PRODUCT_ATTR_KEYS.has(key)) {
     throw new Error(`Attribute "${key}" is not editable on products`)
   }
-  const clean = value?.trim() ? value.trim() : null
+  const trimmed = value?.trim() ? value.trim() : null
+  const clean =
+    key === 'viscosity' ? canonicalViscosityOrThrow(trimmed) : trimmed
   await db
     .update(products)
     .set({ [key]: clean, attributesEdited: true })
