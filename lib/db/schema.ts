@@ -8,6 +8,7 @@ import {
   numeric,
   date,
   jsonb,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core'
 
 // --- Better Auth required tables -------------------------------------------
@@ -488,6 +489,9 @@ export const volumeImportRows = pgTable('volume_import_rows', {
   // The item name exactly as printed in the uploaded sheet.
   itemName: text('itemName').notNull(),
   sku: text('sku'),
+  // Vendor as the source system names it (Snowflake VENDOR_ID). Together with
+  // sku it keys item_crosswalk, so a reviewer's match is reused next pull.
+  sourceVendor: text('sourceVendor'),
   // Annual quantity in base units (e.g. gallons/year).
   annualVolume: numeric('annualVolume', { precision: 14, scale: 2 }),
   baseUnit: text('baseUnit'),
@@ -508,3 +512,23 @@ export const volumeImportRows = pgTable('volume_import_rows', {
   include: boolean('include').notNull().default(true),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
+
+// Reviewer-confirmed mapping from a purchasing system's (vendor, part number)
+// to a catalog product. Purchasing codes often differ from price-sheet SKUs
+// (e.g. LW's mnemonics vs P66 material numbers), so once a person links one,
+// every later pull matches it automatically. Keys are stored normalized.
+export const itemCrosswalk = pgTable(
+  'item_crosswalk',
+  {
+    id: serial('id').primaryKey(),
+    userId: text('userId').notNull(),
+    vendorKey: text('vendorKey').notNull(),
+    codeKey: text('codeKey').notNull(),
+    productId: integer('productId').notNull(),
+    vendorLabel: text('vendorLabel'),
+    code: text('code'),
+    createdBy: text('createdBy'),
+    updatedAt: timestamp('updatedAt').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('item_crosswalk_key').on(t.userId, t.vendorKey, t.codeKey)],
+)
