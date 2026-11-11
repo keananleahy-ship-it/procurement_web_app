@@ -34,7 +34,7 @@ export default async function VolumeReviewPage({
     <>
       <PageHeader
         title="Review purchase volumes"
-        description="Check the extracted quantities and costs, match each item to a canonical item or product, then apply. Nothing changes your comparisons until you confirm."
+        description="Check the extracted quantities and costs, match each item to a product, then apply. Nothing changes your comparisons until you confirm."
       />
       <VolumeImportReview
         meta={{

@@ -429,7 +429,7 @@ function ComparisonCard({
                       className="gap-1 border-primary/30 text-primary"
                     >
                       <Layers className="size-3" />
-                      Canonical
+                      {`${c.productCount} like products`}
                     </Badge>
                   )}
                   {c.category && (
