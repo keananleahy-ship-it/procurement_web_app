@@ -391,18 +391,10 @@ function ProductRow({ row: r, canEdit }: { row: ProductListRow; canEdit: boolean
             </div>
             <div className="text-xs text-muted-foreground">{formatDate(r.lastPaidDate)}</div>
           </div>
-        ) : r.paidPerBaseUnit != null ? (
-          <div title="Average paid over the volume period; no dated purchase on file">
-            <div>
-              {money.format(r.paidPerBaseUnit)}
-              {unit && <span className="text-xs text-muted-foreground">/{unit}</span>}
-            </div>
-            <div className="text-xs text-muted-foreground">
-              avg{r.volumePeriod ? `, ${r.volumePeriod}` : ''}
-            </div>
-          </div>
         ) : (
-          <span className="text-muted-foreground">—</span>
+          <span className="text-muted-foreground" title="No dated purchase on file">
+            —
+          </span>
         )}
       </TableCell>
       {canEdit && (
