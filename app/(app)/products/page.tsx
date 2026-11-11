@@ -2,10 +2,12 @@ import { Download } from 'lucide-react'
 import { PageHeader } from '@/components/page-header'
 import { buttonVariants } from '@/components/ui/button'
 import { ProductsView } from '@/components/products-view'
-import { getProducts } from '@/app/actions/products'
+import { requireUser } from '@/lib/roles'
+import { buildProductList } from '@/lib/product-list'
 
 export default async function ProductsPage() {
-  const products = await getProducts()
+  await requireUser()
+  const rows = await buildProductList()
 
   return (
     <>
@@ -23,22 +25,7 @@ export default async function ProductsPage() {
           </a>
         }
       />
-      <ProductsView
-        products={products.map((p) => ({
-          id: p.id,
-          name: p.name,
-          brand: p.brand,
-          category: p.category,
-          application: p.application,
-          subcategory: p.subcategory,
-          viscosity: p.viscosity,
-          packageType: p.packageType,
-          performanceSpec: p.performanceSpec,
-          supplier: p.supplier,
-          sku: p.sku,
-          unit: p.unit,
-        }))}
-      />
+      <ProductsView rows={rows} />
     </>
   )
 }
