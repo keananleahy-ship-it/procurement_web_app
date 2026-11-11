@@ -63,7 +63,7 @@ const DEFAULT_FILTERS: ActiveFilter[] = [
 const STORAGE_KEY = 'products-filters:v1'
 const PAGE_SIZE = 100
 
-type SortKey = 'name' | 'location' | 'volume' | 'price'
+type SortKey = 'name' | 'location' | 'volume' | 'price' | 'paid'
 type Sort = { key: SortKey; dir: 'asc' | 'desc' }
 
 const valueOf = (row: ProductListRow, key: string): string | null => {
@@ -77,6 +77,19 @@ const money = new Intl.NumberFormat('en-US', {
   minimumFractionDigits: 2,
 })
 const qty = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
+
+const dateFmt = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  timeZone: 'UTC',
+})
+
+function formatDate(d: string | null): string {
+  if (!d) return 'No date'
+  const t = new Date(d.length === 10 ? `${d}T00:00:00Z` : d)
+  return Number.isFinite(t.getTime()) ? dateFmt.format(t) : d
+}
 
 function matches(
   row: ProductListRow,
@@ -94,8 +107,9 @@ function matches(
 
 function compareRows(a: ProductListRow, b: ProductListRow, sort: Sort) {
   const dir = sort.dir === 'asc' ? 1 : -1
-  if (sort.key === 'volume' || sort.key === 'price') {
-    const field = sort.key === 'volume' ? 'volume' : 'pricePerBaseUnit'
+  if (sort.key === 'volume' || sort.key === 'price' || sort.key === 'paid') {
+    const field =
+      sort.key === 'volume' ? 'volume' : sort.key === 'price' ? 'pricePerBaseUnit' : 'lastPaid'
     const av = a[field]
     const bv = b[field]
     // Missing values always sink to the bottom.
@@ -259,7 +273,8 @@ export function ProductsView({ rows }: { rows: ProductListRow[] }) {
                     <SortHead label="Product" k="name" sort={sort} onSort={toggleSort} />
                     <SortHead label="Location" k="location" sort={sort} onSort={toggleSort} />
                     <SortHead label="R12 volume" k="volume" sort={sort} onSort={toggleSort} align="right" />
-                    <SortHead label="Price" k="price" sort={sort} onSort={toggleSort} align="right" />
+                    <SortHead label="Quoted" k="price" sort={sort} onSort={toggleSort} align="right" />
+                    <SortHead label="Last paid" k="paid" sort={sort} onSort={toggleSort} align="right" />
                     {canEdit && <TableHead className="w-20 text-right">Edit</TableHead>}
                   </TableRow>
                 </TableHeader>
@@ -350,7 +365,7 @@ function ProductRow({ row: r, canEdit }: { row: ProductListRow; canEdit: boolean
       </TableCell>
       <TableCell className="text-right tabular-nums">
         {r.pricePerBaseUnit != null ? (
-          <div title={r.priceDate ? `Effective ${r.priceDate}` : undefined}>
+          <div>
             <div>
               {money.format(r.pricePerBaseUnit)}
               {unit && <span className="text-xs text-muted-foreground">/{unit}</span>}
@@ -361,12 +376,30 @@ function ProductRow({ row: r, canEdit }: { row: ProductListRow; canEdit: boolean
                 {r.unit ? ` / ${r.unit}` : ' / pack'}
               </div>
             )}
+            <div className="text-xs text-muted-foreground">{formatDate(r.priceDate)}</div>
+          </div>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </TableCell>
+      <TableCell className="text-right tabular-nums">
+        {r.lastPaid != null ? (
+          <div>
+            <div>
+              {money.format(r.lastPaid)}
+              {unit && <span className="text-xs text-muted-foreground">/{unit}</span>}
+            </div>
+            <div className="text-xs text-muted-foreground">{formatDate(r.lastPaidDate)}</div>
           </div>
         ) : r.paidPerBaseUnit != null ? (
-          <div className="text-muted-foreground">
-            {money.format(r.paidPerBaseUnit)}
-            {unit && <span className="text-xs">/{unit}</span>}
-            <div className="text-xs">paid, no quote</div>
+          <div title="Average paid over the volume period; no dated purchase on file">
+            <div>
+              {money.format(r.paidPerBaseUnit)}
+              {unit && <span className="text-xs text-muted-foreground">/{unit}</span>}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              avg{r.volumePeriod ? `, ${r.volumePeriod}` : ''}
+            </div>
           </div>
         ) : (
           <span className="text-muted-foreground">—</span>

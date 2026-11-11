@@ -301,6 +301,8 @@ type AggregatableRow = {
   baseUnit: string | null
   baselineUnitCost: string | null
   period: string | null
+  lastUnitCost: string | null
+  lastPurchaseDate: string | null
 }
 
 type AggregatedVolume = {
@@ -310,6 +312,8 @@ type AggregatedVolume = {
   baseUnit: string | null
   baselineUnitCost: string | null
   period: string | null
+  lastUnitCost: string | null
+  lastPurchaseDate: string | null
   // How many detailed rows collapsed into this summary.
   sourceRowCount: number
 }
@@ -341,6 +345,8 @@ function aggregateVolumeRows(
       costWeightedNum: number
       costWeightedDen: number
       count: number
+      lastUnitCost: string | null
+      lastPurchaseDate: string | null
     }
   >()
 
@@ -376,8 +382,18 @@ function aggregateVolumeRows(
         costWeightedNum: 0,
         costWeightedDen: 0,
         count: 0,
+        lastUnitCost: null,
+        lastPurchaseDate: null,
       }
       groups.set(key, g)
+    }
+    if (
+      r.lastUnitCost !== null &&
+      r.lastPurchaseDate &&
+      (!g.lastPurchaseDate || r.lastPurchaseDate > g.lastPurchaseDate)
+    ) {
+      g.lastUnitCost = r.lastUnitCost
+      g.lastPurchaseDate = r.lastPurchaseDate
     }
 
     g.totalVolume += vol
@@ -403,6 +419,8 @@ function aggregateVolumeRows(
         ? (g.costWeightedNum / g.costWeightedDen).toFixed(4)
         : null,
     period: g.period,
+    lastUnitCost: g.lastUnitCost,
+    lastPurchaseDate: g.lastPurchaseDate,
     sourceRowCount: g.count,
   }))
 }
@@ -585,6 +603,8 @@ async function collectEligibleRows(volumeImportId: number): Promise<{
       baseUnit: r.baseUnit,
       baselineUnitCost: r.baselineUnitCost,
       period: r.period,
+      lastUnitCost: r.lastUnitCost,
+      lastPurchaseDate: r.lastPurchaseDate,
     })
   }
 
@@ -662,6 +682,8 @@ async function writeVolumesFromRows(opts: {
       baseUnit: s.baseUnit,
       baselineUnitCost: s.baselineUnitCost,
       period: s.period,
+      lastUnitCost: s.lastUnitCost,
+      lastPurchaseDate: s.lastPurchaseDate,
       source: 'import',
     })
   }
@@ -738,9 +760,11 @@ async function writeSnowflakeVolumes(opts: {
           locationId,
           annualVolume: s.annualVolume,
           baseUnit: s.baseUnit,
-          baselineUnitCost: s.baselineUnitCost,
-          period: s.period,
-          source: 'snowflake',
+      baselineUnitCost: s.baselineUnitCost,
+      period: s.period,
+      lastUnitCost: s.lastUnitCost,
+      lastPurchaseDate: s.lastPurchaseDate,
+      source: 'snowflake',
           ...signoff,
         }
       }),

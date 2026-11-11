@@ -26,6 +26,8 @@ export type ProductListRow = {
   volumeUnit: string | null
   volumePeriod: string | null
   paidPerBaseUnit: number | null
+  lastPaid: number | null
+  lastPaidDate: string | null
   price: number | null
   pricePerBaseUnit: number | null
   priceDate: string | null
@@ -38,6 +40,7 @@ type LocAgg = {
   paidVolume: number
   volumeUnit: string | null
   periods: Set<string>
+  lastPaid: { cost: number; date: string } | null
   price: { landed: number; perBase: number; date: string | null } | null
 }
 
@@ -54,6 +57,8 @@ export async function buildProductList(): Promise<ProductListRow[]> {
         baselineUnitCost: purchaseVolumes.baselineUnitCost,
         baseUnit: purchaseVolumes.baseUnit,
         period: purchaseVolumes.period,
+        lastUnitCost: purchaseVolumes.lastUnitCost,
+        lastPurchaseDate: purchaseVolumes.lastPurchaseDate,
       })
       .from(purchaseVolumes)
       .leftJoin(locations, eq(locations.id, purchaseVolumes.locationId)),
@@ -72,6 +77,7 @@ export async function buildProductList(): Promise<ProductListRow[]> {
         paidVolume: 0,
         volumeUnit: null,
         periods: new Set(),
+        lastPaid: null,
         price: null,
       }
       perLoc.set(locationId, agg)
@@ -91,6 +97,11 @@ export async function buildProductList(): Promise<ProductListRow[]> {
     if (Number.isFinite(paid) && paid > 0) {
       agg.paidWeighted += paid * vol
       agg.paidVolume += vol
+    }
+    const last = v.lastUnitCost != null ? Number(v.lastUnitCost) : NaN
+    const lastDate = v.lastPurchaseDate ? String(v.lastPurchaseDate).slice(0, 10) : null
+    if (Number.isFinite(last) && last > 0 && lastDate && (!agg.lastPaid || lastDate > agg.lastPaid.date)) {
+      agg.lastPaid = { cost: last, date: lastDate }
     }
   }
 
@@ -135,6 +146,8 @@ export async function buildProductList(): Promise<ProductListRow[]> {
         volumeUnit: null,
         volumePeriod: null,
         paidPerBaseUnit: null,
+        lastPaid: null,
+        lastPaidDate: null,
         price: null,
         pricePerBaseUnit: null,
         priceDate: null,
@@ -150,6 +163,8 @@ export async function buildProductList(): Promise<ProductListRow[]> {
         volumeUnit: a.volumeUnit ?? base.baseUnit,
         volumePeriod: a.periods.size ? Array.from(a.periods).join(', ') : null,
         paidPerBaseUnit: a.paidVolume > 0 ? a.paidWeighted / a.paidVolume : null,
+        lastPaid: a.lastPaid?.cost ?? null,
+        lastPaidDate: a.lastPaid?.date ?? null,
         price: a.price?.landed ?? null,
         pricePerBaseUnit: a.price?.perBase ?? null,
         priceDate: a.price?.date ?? null,

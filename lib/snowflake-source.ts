@@ -310,7 +310,13 @@ export function buildPullQuery(opts: {
   const unitCost = col(map, 'unitCost')
   const spend = unitCost ? `${qty} * ${unitCost}` : col(map, 'extendedCost')
   const costed = unitCost ?? col(map, 'extendedCost')
+  const extended = col(map, 'extendedCost')
+  const lineCost = unitCost ?? (extended ? `${extended} / nullif(${qty}, 0)` : null)
   const filter = categoryFilter(map, opts.excludedCategories)
+  const lastCost = lineCost
+    ? `max_by(${lineCost}, iff(${lineCost} is not null, ${date}, null))`
+    : 'null'
+  const lastCostDate = lineCost ? `max(iff(${lineCost} is not null, ${date}, null))` : 'null'
 
   const sql = `select ${text(col(map, 'region'))} as "region",
        ${text(col(map, 'businessUnit'))} as "businessUnit",
@@ -325,7 +331,9 @@ export function buildPullQuery(opts: {
        ${costed ? `sum(case when ${costed} is not null then ${qty} end)` : 'null'} as "costedQty",
        count(*) as "lines",
        min(${date}) as "firstDate",
-       max(${date}) as "lastDate"
+       max(${date}) as "lastDate",
+       ${lastCost} as "lastUnitCost",
+       ${lastCostDate} as "lastCostDate"
 from ${table}
 where ${date} >= dateadd(month, -?, current_date())
   and ${qty} is not null${filter.sql}
@@ -362,6 +370,10 @@ export function mergePulledRows(rows: PulledRow[]): PulledRow[] {
     prev.lines = Number(prev.lines) + Number(row.lines)
     prev.firstDate = earliest(prev.firstDate, row.firstDate)
     prev.lastDate = latest(prev.lastDate, row.lastDate)
+    if (row.lastCostDate && latest(prev.lastCostDate, row.lastCostDate) === row.lastCostDate) {
+      prev.lastCostDate = row.lastCostDate
+      prev.lastUnitCost = row.lastUnitCost
+    }
   }
   return [...merged.values()]
 }
@@ -381,6 +393,8 @@ export type PulledRow = {
   lines: number | string
   firstDate: Date | string | null
   lastDate: Date | string | null
+  lastUnitCost: number | string | null
+  lastCostDate: Date | string | null
 }
 
 export type StagedVolume = {
@@ -389,6 +403,14 @@ export type StagedVolume = {
   baseUnit: string | null
   annualVolume: string
   baselineUnitCost: string | null
+  lastUnitCost: string | null
+  lastPurchaseDate: string | null
+}
+
+function toIsoDate(d: Date | string | null): string | null {
+  if (!d) return null
+  const t = new Date(d)
+  return Number.isFinite(t.getTime()) ? t.toISOString().slice(0, 10) : null
 }
 
 // Annualizes the window total and derives the volume-weighted unit cost.
@@ -408,7 +430,15 @@ export function toStagedVolume(row: PulledRow, lookbackMonths: number): StagedVo
     baseUnit: row.unit?.trim() || null,
     annualVolume: ((qty * 12) / lookbackMonths).toFixed(2),
     baselineUnitCost: unitCost !== null ? unitCost.toFixed(4) : null,
+    ...lastPaid(row),
   }
+}
+
+function lastPaid(row: PulledRow): Pick<StagedVolume, 'lastUnitCost' | 'lastPurchaseDate'> {
+  const cost = row.lastUnitCost === null ? NaN : Number(row.lastUnitCost)
+  const date = toIsoDate(row.lastCostDate)
+  if (!Number.isFinite(cost) || !date) return { lastUnitCost: null, lastPurchaseDate: null }
+  return { lastUnitCost: cost.toFixed(4), lastPurchaseDate: date }
 }
 
 export function periodLabel(lookbackMonths: number): string {
