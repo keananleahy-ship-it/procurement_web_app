@@ -24,24 +24,35 @@ export const auth = betterAuth({
     disableSignUp: true,
   },
   trustedOrigins: [
-    // v0 preview iframes are served from rotating *.vusercontent.net origins,
-    // which won't match V0_RUNTIME_URL exactly. Trust the whole domain so the
-    // sign-in POST isn't rejected with "Invalid origin".
-    'https://*.vusercontent.net',
-    // The v0 sandbox dev preview is served from rotating *.vercel.run origins;
-    // trust the whole domain so preview sign-in isn't rejected either.
-    'https://*.vercel.run',
     // Production custom domain. Without these, sign-in requests coming from the
     // custom domain are rejected as "Invalid origin" once DNS is pointed here.
     'https://leahywolf.net',
     'https://www.leahywolf.net',
-    ...(process.env.V0_RUNTIME_URL ? [process.env.V0_RUNTIME_URL] : []),
     ...(process.env.VERCEL_URL ? [`https://${process.env.VERCEL_URL}`] : []),
+    // Preview deployments are also reachable at a stable per-branch alias
+    // (…-git-<branch>-….vercel.app), which differs from VERCEL_URL. Without it,
+    // signing in from the branch preview address fails with "Invalid origin".
+    ...(process.env.VERCEL_BRANCH_URL
+      ? [`https://${process.env.VERCEL_BRANCH_URL}`]
+      : []),
     ...(process.env.VERCEL_PROJECT_PRODUCTION_URL
       ? [`https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`]
       : []),
     ...(process.env.NODE_ENV === 'development'
-      ? ['http://localhost:3000', 'http://127.0.0.1:3000']
+      ? [
+          'http://localhost:3000',
+          'http://127.0.0.1:3000',
+          ...[
+            process.env.V0_RUNTIME_URL,
+            process.env.V0_DEV_APP_URL,
+            process.env.V0_BUILD_URL,
+            process.env.V0_SANDBOX_URL,
+          ].filter((url): url is string => Boolean(url)),
+          // v0 preview iframes can also be served from rotating hostnames on
+          // these domains. Dev-only, so deployed builds never trust them.
+          'https://*.vusercontent.net',
+          'https://*.vercel.run',
+        ]
       : []),
   ],
   session: {
