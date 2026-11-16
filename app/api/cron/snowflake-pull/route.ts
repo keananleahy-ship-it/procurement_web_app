@@ -5,6 +5,8 @@ import { snowflakeConnection, user } from '@/lib/db/schema'
 import { type Role, canAdmin } from '@/lib/roles-shared'
 import { isAutoPullDue, normalizeFrequency } from '@/lib/auto-pull-schedule'
 import { runSnowflakePull } from '@/lib/snowflake-pull'
+import { applyVolumeImport } from '@/lib/volume-commit'
+import { revalidatePath } from 'next/cache'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300
@@ -77,13 +79,35 @@ export async function GET(request: NextRequest) {
       await finish(false, result.message, false)
       return NextResponse.json({ ran: true, ok: false, message: result.message })
     }
-    const rows = result.imports.reduce((n, i) => n + i.rowCount, 0)
+    // Apply each location separately so one bad location doesn't block the
+    // rest; a failed one stays pending on the Volumes page.
+    let volumes = 0
+    let unmatched = 0
+    const failed: string[] = []
+    for (const imp of result.imports) {
+      try {
+        const applied = await applyVolumeImport(imp.volumeImportId, ownerId!)
+        volumes += applied.committed
+        unmatched += applied.unmatched
+      } catch (err) {
+        console.error('[snowflake-cron] apply failed', imp.locationName, err)
+        failed.push(imp.locationName)
+      }
+    }
+    revalidatePath('/volumes')
+    revalidatePath('/compare')
+    revalidatePath('/')
+
+    const appliedCount = result.imports.length - failed.length
     const message =
-      `Staged ${result.imports.length} import${result.imports.length === 1 ? '' : 's'} ` +
-      `(${rows.toLocaleString()} rows) for review` +
-      (result.skipped.length ? `; no data for ${result.skipped.join(', ')}.` : '.')
-    await finish(true, message, true)
-    return NextResponse.json({ ran: true, ok: true, message })
+      `Applied ${appliedCount} location${appliedCount === 1 ? '' : 's'} ` +
+      `(${volumes.toLocaleString()} volumes)` +
+      (unmatched ? `; ${unmatched.toLocaleString()} unmatched rows left out` : '') +
+      (failed.length ? `; failed to apply ${failed.join(', ')} (left pending)` : '') +
+      (result.skipped.length ? `; no data for ${result.skipped.join(', ')}` : '') +
+      '.'
+    await finish(failed.length === 0, message, true)
+    return NextResponse.json({ ran: true, ok: failed.length === 0, message })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Scheduled pull failed.'
     console.error('[snowflake-cron] pull failed', err)

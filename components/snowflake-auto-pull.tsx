@@ -79,8 +79,8 @@ export function SnowflakeAutoPull({
         </CardTitle>
         <CardDescription>
           Runs the same pull as the button above on a schedule, using the saved mapping, filters,
-          and site rollup. Results are staged as volume imports for review; nothing is applied
-          automatically.
+          and site rollup, then applies the volumes automatically. Earlier match picks and
+          exclusions carry forward; rows without a confirmed match are left out.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-6">

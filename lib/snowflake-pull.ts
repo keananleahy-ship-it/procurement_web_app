@@ -171,7 +171,7 @@ export type PullSummary = {
 }
 
 // Reads the mapped view and stages one pending volume import per location.
-// Nothing reaches purchase volumes until someone reviews and applies it.
+// The manual Pull leaves them for review; the scheduled run applies them.
 // `ownerId` is the admin whose catalog, price sheets, and crosswalk are used.
 export async function runSnowflakePull(
   ownerId: string,
@@ -239,9 +239,28 @@ export async function runSnowflakePull(
   // code match wouldn't reproduce are saved to the crosswalk so a re-pull
   // never throws away review work. Rows a reviewer excluded stay excluded too,
   // which matters once scheduled pulls replace pending ones unattended.
+  // Daily pulls auto-apply, so the latest import per location is usually a
+  // committed one; carry decisions from it as well as from any pending pull.
+  const priorImports = await db
+    .select({ id: volumeImports.id, locationId: volumeImports.locationId })
+    .from(volumeImports)
+    .where(
+      and(
+        inArray(volumeImports.locationId, rollupIds),
+        eq(volumeImports.fileType, 'snowflake'),
+        inArray(volumeImports.status, ['pending', 'committed']),
+      ),
+    )
+  const latestByLocation = new Map<number, number>()
+  for (const p of priorImports) {
+    if (p.locationId === null) continue
+    latestByLocation.set(p.locationId, Math.max(latestByLocation.get(p.locationId) ?? 0, p.id))
+  }
+  const sourceImportIds = [...latestByLocation.values()]
+
   const stalePicks = new Map<string, number>()
   const staleExcluded = new Set<string>()
-  const staleRows = await db
+  const staleRows = sourceImportIds.length === 0 ? [] : await db
     .select({
       locationId: volumeImports.locationId,
       sku: volumeImportRows.sku,
@@ -253,9 +272,7 @@ export async function runSnowflakePull(
     .innerJoin(volumeImports, eq(volumeImports.id, volumeImportRows.volumeImportId))
     .where(
       and(
-        inArray(volumeImports.locationId, rollupIds),
-        eq(volumeImports.fileType, 'snowflake'),
-        eq(volumeImports.status, 'pending'),
+        inArray(volumeImports.id, sourceImportIds),
         or(eq(volumeImportRows.matchStatus, 'confirmed'), eq(volumeImportRows.include, false)),
       ),
     )
