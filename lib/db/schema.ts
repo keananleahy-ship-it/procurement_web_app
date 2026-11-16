@@ -115,7 +115,17 @@ export const snowflakeConnection = pgTable('snowflake_connection', {
   }>(),
   lookbackMonths: integer('lookback_months').notNull().default(12),
   lastPulledAt: timestamp('last_pulled_at'),
-})
+  // Scheduled pull: 'off' | 'daily' | 'weekly' | 'monthly'. Weekday is 0=Sun.
+  autoPullFrequency: text('auto_pull_frequency').notNull().default('off'),
+  autoPullWeekday: integer('auto_pull_weekday').notNull().default(1),
+  autoPullMonthDay: integer('auto_pull_month_day').notNull().default(1),
+  // Admin whose catalog and crosswalk scheduled pulls run against.
+  autoPullUserId: text('auto_pull_user_id'),
+  autoPullStartedAt: timestamp('auto_pull_started_at'),
+  lastAutoPullAt: timestamp('last_auto_pull_at'),
+  lastAutoPullOk: boolean('last_auto_pull_ok'),
+  lastAutoPullMessage: text('last_auto_pull_message'),
+  })
 
 export const invitations = pgTable('invitations', {
   id: text('id').primaryKey(),
