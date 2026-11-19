@@ -76,6 +76,10 @@ export type MatchIndex = {
   // Exact normalized item NAME -> resolved target (null when ambiguous). Used
   // as the authoritative identity for rows that carry no vendor code.
   nameTargets: Map<string, ResolvedTarget | null>
+  // Exact normalized item NAME -> target, restricted to catalog products that
+  // carry NO code. Lets a coded row adopt a code-less catalog entry by name
+  // without ever borrowing an item that already has a different code.
+  codelessNameTargets: Map<string, ResolvedTarget | null>
 }
 
 export function buildMatchIndex(prods: ProdTarget[]): MatchIndex {
@@ -83,6 +87,7 @@ export function buildMatchIndex(prods: ProdTarget[]): MatchIndex {
   const bySkuGroup = new Map<string, ProdTarget[]>()
   const byLooseGroup = new Map<string, ProdTarget[]>()
   const byNameGroup = new Map<string, ProdTarget[]>()
+  const byCodelessNameGroup = new Map<string, ProdTarget[]>()
   for (const p of prods) {
     const nk = normalizeName(p.name)
     if (nk) {
@@ -90,7 +95,14 @@ export function buildMatchIndex(prods: ProdTarget[]): MatchIndex {
       if (g) g.push(p)
       else byNameGroup.set(nk, [p])
     }
-    if (!p.sku || !p.sku.trim()) continue
+    if (!p.sku || !p.sku.trim()) {
+      if (nk) {
+        const g = byCodelessNameGroup.get(nk)
+        if (g) g.push(p)
+        else byCodelessNameGroup.set(nk, [p])
+      }
+      continue
+    }
     const k = normalizeSku(p.sku)
     if (k) {
       const g = bySkuGroup.get(k)
@@ -117,12 +129,17 @@ export function buildMatchIndex(prods: ProdTarget[]): MatchIndex {
   for (const [k, group] of byNameGroup) {
     nameTargets.set(k, resolveGroup(group))
   }
+  const codelessNameTargets = new Map<string, ResolvedTarget | null>()
+  for (const [k, group] of byCodelessNameGroup) {
+    codelessNameTargets.set(k, resolveGroup(group))
+  }
 
   return {
     prods,
     skuTargets,
     looseSkuTargets,
     nameTargets,
+    codelessNameTargets,
   }
 }
 
@@ -163,16 +180,15 @@ export function resolveExactIdentity(
     }
   }
 
-  // Exact-name identity only for rows that genuinely have no vendor code. A
-  // row WITH a code whose code isn't in the catalog is a distinct item to be
-  // created under that code — it must not borrow another item's identity by
-  // name.
-  if (!hasCode) {
-    const nk = row.itemName?.trim() ? normalizeName(row.itemName) : ''
-    if (nk && index.nameTargets.has(nk)) {
-      const t = index.nameTargets.get(nk)
-      if (t) return { target: t, method: 'name' }
-    }
+  // Exact-name identity. A code-less row may match any product by name. A row
+  // WITH a code not in the catalog may only adopt a catalog product that has
+  // no code of its own (e.g. a location whose catalog came from a code-less
+  // spreadsheet); it must never borrow an item that carries a different code.
+  const nk = row.itemName?.trim() ? normalizeName(row.itemName) : ''
+  const nameIndex = hasCode ? index.codelessNameTargets : index.nameTargets
+  if (nk && nameIndex.has(nk)) {
+    const t = nameIndex.get(nk)
+    if (t) return { target: t, method: 'name' }
   }
 
   return null
