@@ -2,6 +2,7 @@
 
 import { getProductComparisons, loadVolumeMaps } from '@/app/actions/comparisons'
 import type { PriceRow } from '@/app/actions/comparisons'
+import { DEFAULT_TIGHTNESS, type Tightness } from '@/lib/traits'
 import {
   computeEquivalentSavings,
   type EquivalentSavings,
@@ -149,7 +150,7 @@ export type PackagingOpportunity = {
 }
 
 export type SavingsItem = {
-  canonicalItemId: number
+  groupKey: string
   name: string
   viscosity: string | null
   baseUnit: string | null
@@ -254,6 +255,7 @@ export async function getSavingsAnalyses(
     // null/undefined = every category (resp. every subcategory)
     category?: string | null
     subcategory?: string | null
+    tightness?: Tightness
   },
 ): Promise<SavingsResult> {
   await requireUser()
@@ -261,14 +263,15 @@ export async function getSavingsAnalyses(
   const equivalentSourcing = opts?.equivalentSourcing ?? 'cross-site'
   const packagingBasis = opts?.packagingBasis ?? 'equivalent'
 
+  const tightness = opts?.tightness ?? DEFAULT_TIGHTNESS
   const [comparisons, volumes] = await Promise.all([
-    getProductComparisons(),
-    loadVolumeMaps(),
+    getProductComparisons(tightness),
+    loadVolumeMaps(tightness),
   ])
 
-  const canonicalGroups = comparisons.filter(
-    (c) => c.isCanonical && c.canonicalItemId !== null,
-  )
+  // Only real trait groups (several products sharing a key) are analyzable;
+  // single-product fallbacks have nothing to compare against.
+  const canonicalGroups = comparisons.filter((c) => c.isGroup)
 
   // Selector options, built from the FULL canonical roster so the list of
   // categories never shrinks as a result of the currently active filter.
@@ -345,9 +348,9 @@ export async function getSavingsAnalyses(
             offers: rawGroup.offers.filter((o) => !excludedSet.has(o.vendorId)),
           }
         : rawGroup
-    const canonicalItemId = c.canonicalItemId as number
-    const byProd = volumes.byCanonicalProduct.get(canonicalItemId)
-    const perLoc = volumes.byCanonical.get(canonicalItemId)
+    const groupKey = c.groupKey
+    const byProd = volumes.byGroupProduct.get(groupKey)
+    const perLoc = volumes.byGroup.get(groupKey)
 
     // ---- Lens 1: BY LOCATION (current price a site pays vs best in the line) -
     // Group offers and purchased volume by PRODUCT LINE (same brand + spec,
@@ -993,7 +996,7 @@ export async function getSavingsAnalyses(
     }
 
     items.push({
-      canonicalItemId,
+      groupKey,
       name: c.displayName,
       viscosity: c.viscosity,
       baseUnit: c.baseUnit,

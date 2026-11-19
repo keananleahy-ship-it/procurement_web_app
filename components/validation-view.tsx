@@ -1,6 +1,13 @@
 'use client'
 
-import { useEffect, useMemo, useState, useTransition } from 'react'
+import {
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from 'react'
 import { useRouter } from 'next/navigation'
 import {
   MapPin,
@@ -41,6 +48,7 @@ import {
   VALIDATION_ATTRIBUTE_KEYS,
   vocabularyFor,
   type AttributeKey,
+  type ValidationAttributeKey,
 } from '@/lib/attributes'
 import {
   setRecordValidated,
@@ -64,11 +72,11 @@ const ADD_NEW = '__add_new__'
 // draws from a different vocabulary depending on the item's category — base-oil
 // types for engine oils, additive chemistry for hydraulics — so its saved values
 // must stay scoped per category or the two vocabularies would bleed together.
-function savedValueBucket(key: AttributeKey, category: string | null): string {
+function savedValueBucket(key: ValidationAttributeKey, category: string | null): string {
   return key === 'subcategory' ? `subcategory::${category ?? ''}` : key
 }
 
-const EDITABLE_COLUMNS: { key: AttributeKey; label: string }[] = [
+const EDITABLE_COLUMNS: { key: ValidationAttributeKey; label: string }[] = [
   { key: 'category', label: 'Category' },
   { key: 'application', label: 'Application' },
   { key: 'subcategory', label: 'Formulation' },
@@ -77,6 +85,11 @@ const EDITABLE_COLUMNS: { key: AttributeKey; label: string }[] = [
 ]
 
 type Filter = 'all' | 'needs' | 'unvalidated' | 'validated'
+
+// Rows are mounted in pages. Each row carries ~6 interactive editors, so
+// mounting a large site's full list at once (1,800+ rows ≈ 11k controls) made
+// typing, filtering and every edit re-render all of them.
+const PAGE_SIZE = 100
 
 export function ValidationView({
   locations,
@@ -94,9 +107,23 @@ export function ValidationView({
   // Separate transition for the AI pass so a long model call shows its own
   // spinner without freezing the per-cell edit affordances.
   const [aiPending, startAi] = useTransition()
-  const [filter, setFilter] = useState<Filter>('all')
-  const [query, setQuery] = useState('')
+  const [filter, setFilterState] = useState<Filter>('all')
+  const [query, setQueryState] = useState('')
+  const deferredQuery = useDeferredValue(query)
   const [status, setStatus] = useState<string | null>(null)
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const sentinelRef = useRef<HTMLTableRowElement>(null)
+
+  function setFilter(next: Filter) {
+    setFilterState(next)
+    setVisibleCount(PAGE_SIZE)
+    scrollRef.current?.scrollTo({ top: 0 })
+  }
+  function setQuery(next: string) {
+    setQueryState(next)
+    setVisibleCount(PAGE_SIZE)
+  }
 
   function run(fn: () => Promise<void>) {
     startTransition(async () => {
@@ -122,7 +149,7 @@ export function ValidationView({
   }
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
+    const q = deferredQuery.trim().toLowerCase()
     return records.filter((r) => {
       if (
         filter === 'needs' &&
@@ -138,7 +165,26 @@ export function ValidationView({
       }
       return true
     })
-  }, [records, filter, query])
+  }, [records, filter, deferredQuery])
+
+  const visible = filtered.slice(0, visibleCount)
+  const hasMore = filtered.length > visible.length
+
+  // Mount the next page as the champion scrolls near the bottom of the table.
+  useEffect(() => {
+    const sentinel = sentinelRef.current
+    if (!sentinel || !hasMore) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setVisibleCount((c) => c + PAGE_SIZE)
+        }
+      },
+      { root: scrollRef.current, rootMargin: '400px 0px' },
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [hasMore, visibleCount])
 
   // Values already saved on these records, so a custom value one champion adds
   // becomes a normal dropdown option on every other row instead of having to be
@@ -328,7 +374,7 @@ export function ValidationView({
             ) : (
               <CheckCheck className="size-3.5" />
             )}
-            Validate all shown ({remainingIds.length})
+            Validate all matching ({remainingIds.length})
           </Button>
         </div>
       </div>
@@ -341,7 +387,10 @@ export function ValidationView({
 
       {/* Records table */}
       <Card className="overflow-hidden p-0">
-        <div className="scrollbar-always-x max-h-[65svh] overflow-x-scroll overflow-y-auto overscroll-contain">
+        <div
+          ref={scrollRef}
+          className="scrollbar-always-x max-h-[65svh] overflow-x-scroll overflow-y-auto overscroll-contain"
+        >
           <table className="w-full min-w-[1100px] border-collapse text-sm">
             <thead className="sticky top-0 z-10">
               <tr className="border-b border-border bg-muted text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -379,7 +428,7 @@ export function ValidationView({
                   </td>
                 </tr>
               )}
-              {filtered.map((r) => (
+              {visible.map((r) => (
                 <tr
                   key={r.purchaseId}
                   className={cn(
@@ -565,6 +614,26 @@ export function ValidationView({
                   </td>
                 </tr>
               ))}
+              {hasMore && (
+                <tr ref={sentinelRef}>
+                  <td
+                    colSpan={EDITABLE_COLUMNS.length + 6}
+                    className="px-3 py-3 text-center text-xs text-muted-foreground"
+                  >
+                    <span className="mr-2">
+                      Showing {visible.length} of {filtered.length}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7"
+                      onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+                    >
+                      Load more
+                    </Button>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -587,7 +656,7 @@ function AttrCell({
   savedValues,
 }: {
   record: ValidationRecord
-  attrKey: AttributeKey
+  attrKey: ValidationAttributeKey
   disabled: boolean
   onChange: (value: string | null) => void
   onAccept: () => void

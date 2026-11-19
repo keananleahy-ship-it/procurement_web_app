@@ -1,0 +1,446 @@
+// Pure helpers for reading purchase lines out of a mapped Snowflake view.
+// Kept free of server-only imports so the SQL they build can be unit-checked.
+
+export const SOURCE_FIELDS = [
+  { key: 'site', label: 'Warehouse / site', required: true },
+  { key: 'businessUnit', label: 'Business unit (rollup)', required: false },
+  { key: 'region', label: 'Region (rollup)', required: false },
+  { key: 'date', label: 'Purchase date', required: true },
+  { key: 'itemName', label: 'Item name', required: true },
+  { key: 'quantity', label: 'Quantity', required: true },
+  { key: 'sku', label: 'Part number (matched first)', required: false },
+  { key: 'vendorPartNumber', label: 'Vendor part number (fallback match)', required: false },
+  { key: 'vendor', label: 'Vendor', required: false },
+  { key: 'category', label: 'Product category (filter)', required: false },
+  { key: 'unit', label: 'Unit of measure', required: false },
+  { key: 'unitCost', label: 'Unit cost', required: false },
+  { key: 'extendedCost', label: 'Line total cost', required: false },
+] as const
+
+export type SourceFieldKey = (typeof SOURCE_FIELDS)[number]['key']
+export type ColumnMap = Partial<Record<SourceFieldKey, string>>
+
+const UNQUOTED_PART = /^[A-Za-z_][A-Za-z0-9_$]*$/
+const QUOTED_PART = /^"[^"]+"$/
+
+// Turns DB.SCHEMA.VIEW (any part optionally "quoted") into a safe identifier.
+// Rejects anything else, so the table name can never carry SQL.
+export function parseTableName(input: string): string {
+  const raw = input.trim()
+  const parts = raw.match(/"[^"]*"|[^.]+/g) ?? []
+  if (
+    parts.length === 0 ||
+    parts.length > 3 ||
+    parts.join('.') !== raw ||
+    !parts.every((p) => UNQUOTED_PART.test(p) || QUOTED_PART.test(p))
+  ) {
+    throw new Error(
+      'Enter the view as DATABASE.SCHEMA.VIEW (quote any part that has spaces or lowercase letters).',
+    )
+  }
+  return parts.join('.')
+}
+
+// Column names come from Snowflake's own metadata and are always quoted, so
+// they match exactly and cannot break out of the identifier.
+export function quoteColumn(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`
+}
+
+export function validateColumnMap(map: ColumnMap, liveColumns: string[]): string | null {
+  const live = new Set(liveColumns)
+  for (const f of SOURCE_FIELDS) {
+    const col = map[f.key]
+    if (f.required && !col) return `Choose a column for ${f.label}.`
+    if (col && !live.has(col)) {
+      return `Column ${col} is no longer in the view. Reload columns and remap.`
+    }
+  }
+  return null
+}
+
+// --- Location rollup ---------------------------------------------------------
+// Warehouses roll up to platform locations through four levels:
+// region -> platform group -> business unit -> warehouse. Regions and business
+// units come from the view; platform groups are defined in the app and collect
+// business units. The most specific rule wins, so a whole group can be
+// assigned once and single business units or warehouses overridden.
+
+export const EXCLUDE = 'exclude' as const
+export type RollupTarget = number | typeof EXCLUDE
+export type RollupLevel = 'region' | 'group' | 'businessUnit' | 'site'
+export type RuleMap = Record<string, RollupTarget>
+export type SiteRollup = Record<RollupLevel, RuleMap> & {
+  // Platform group name -> business unit names it collects.
+  groups: Record<string, string[]>
+}
+
+export const ROLLUP_LEVELS: { key: RollupLevel; label: string }[] = [
+  { key: 'site', label: 'Warehouse' },
+  { key: 'businessUnit', label: 'Business unit' },
+  { key: 'group', label: 'Platform group' },
+  { key: 'region', label: 'Region' },
+]
+
+export function emptyRollup(): SiteRollup {
+  return { region: {}, group: {}, businessUnit: {}, site: {}, groups: {} }
+}
+
+export function normalizeRollup(raw: Partial<SiteRollup> | null | undefined): SiteRollup {
+  const base = emptyRollup()
+  if (!raw) return base
+  return {
+    region: { ...(raw.region ?? {}) },
+    group: { ...(raw.group ?? {}) },
+    businessUnit: { ...(raw.businessUnit ?? {}) },
+    site: { ...(raw.site ?? {}) },
+    groups: { ...(raw.groups ?? {}) },
+  }
+}
+
+// Case, spacing and punctuation are ignored, so "AEG-AMARILLO",
+// "AEG-Amarillo" and "AEG - amarillo" are one warehouse.
+export function normalizeName(value: string | null | undefined): string {
+  return (value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+// Warehouses are only merged inside one business unit: the same town name can
+// be a different operation in another unit (e.g. AEG-Hugoton in AEG and in
+// Brown Dupree).
+export function siteRuleKey(businessUnit: string | null, site: string): string {
+  return `${normalizeName(businessUnit)}::${normalizeName(parentSite(site))}`
+}
+
+// "LW-East Chicago : GATX037884" is a railcar held at East Chicago, so
+// anything after " : " is a sub-location of the warehouse before it.
+export function parentSite(site: string): string {
+  return site.split(/\s+:\s+/)[0].trim()
+}
+
+export function groupOf(rollup: SiteRollup, businessUnit: string | null): string | null {
+  if (!businessUnit) return null
+  const unit = normalizeName(businessUnit)
+  for (const [name, units] of Object.entries(rollup.groups)) {
+    if (units.some((u) => normalizeName(u) === unit)) return name
+  }
+  return null
+}
+
+export type SiteKey = { region: string | null; businessUnit: string | null; site: string }
+
+export type Resolution = { target: RollupTarget | null; level: RollupLevel | null }
+
+// `from` skips the more specific levels, which is how a row shows what it
+// would inherit from its parent.
+export function resolveSite(
+  key: SiteKey,
+  rollup: SiteRollup,
+  from: RollupLevel = 'site',
+): Resolution {
+  const start = ROLLUP_LEVELS.findIndex((l) => l.key === from)
+  for (const { key: level } of ROLLUP_LEVELS.slice(start)) {
+    const ruleKey =
+      level === 'site'
+        ? siteRuleKey(key.businessUnit, key.site)
+        : level === 'group'
+          ? groupOf(rollup, key.businessUnit)
+          : key[level]
+    if (ruleKey === null) continue
+    const target = rollup[level]?.[ruleKey]
+    if (target !== undefined) return { target, level }
+  }
+  return { target: null, level: null }
+}
+
+// Every location id any rule points at.
+export function rollupLocationIds(rollup: SiteRollup): number[] {
+  const ids = new Set<number>()
+  for (const { key } of ROLLUP_LEVELS) {
+    for (const t of Object.values(rollup[key] ?? {})) if (typeof t === 'number') ids.add(t)
+  }
+  return [...ids]
+}
+
+export type HierarchyEntry = {
+  region: string | null
+  businessUnit: string | null
+  site: string
+  variants: string[]
+  lines: number
+  qty: number
+  lastDate: string | null
+}
+
+// Folds spelling and punctuation variants of one warehouse into a single
+// entry, labelled with the variant that carries the most lines.
+export function mergeSiteVariants(
+  rows: Omit<HierarchyEntry, 'variants'>[],
+): HierarchyEntry[] {
+  const merged = new Map<string, HierarchyEntry & { topLines: number }>()
+  for (const r of rows) {
+    const key = `${normalizeName(r.region)}|${siteRuleKey(r.businessUnit, r.site)}`
+    const prev = merged.get(key)
+    const label = parentSite(r.site)
+    if (!prev) {
+      merged.set(key, { ...r, site: label, variants: [r.site], topLines: r.lines })
+      continue
+    }
+    prev.variants.push(r.site)
+    if (r.lines > prev.topLines) {
+      prev.site = label
+      prev.topLines = r.lines
+    }
+    prev.lines += r.lines
+    prev.qty += r.qty
+    if (r.lastDate && (!prev.lastDate || r.lastDate > prev.lastDate)) prev.lastDate = r.lastDate
+  }
+  return [...merged.values()].map(({ topLines: _, ...e }) => ({
+    ...e,
+    variants: [...e.variants].sort((a, z) => (a === e.site ? -1 : z === e.site ? 1 : 0)),
+  }))
+}
+
+// --- Pull options ------------------------------------------------------------
+// Which product categories are left out of pulls (e.g. fuel) and which app
+// vendor each Snowflake vendor is, so part numbers are matched against that
+// vendor's price sheets first. Keys are normalized so case and punctuation
+// variants ("Oil lubricants" / "Oil Lubricants", "SOPUS" / "Sopus") agree.
+export type PullOptions = {
+  excludedCategories: string[]
+  vendorMap: Record<string, number>
+}
+
+export function normalizePullOptions(raw: Partial<PullOptions> | null | undefined): PullOptions {
+  return {
+    excludedCategories: [...new Set((raw?.excludedCategories ?? []).map(normalizeName))].filter(
+      Boolean,
+    ),
+    vendorMap: Object.fromEntries(
+      Object.entries(raw?.vendorMap ?? {})
+        .map(([k, v]) => [normalizeName(k), v] as const)
+        .filter(([k, v]) => k && Number.isInteger(v) && v > 0),
+    ),
+  }
+}
+
+const col = (map: ColumnMap, k: SourceFieldKey) => (map[k] ? quoteColumn(map[k]!) : null)
+const text = (c: string | null) => (c ? `to_varchar(${c})` : 'null')
+// Matches normalizeName() so the filter agrees with the keys saved in the app.
+const normalizedSql = (c: string) => `regexp_replace(lower(to_varchar(${c})), '[^a-z0-9]', '')`
+
+function categoryFilter(map: ColumnMap, excluded: string[]): { sql: string; binds: string[] } {
+  const cat = col(map, 'category')
+  if (!cat || excluded.length === 0) return { sql: '', binds: [] }
+  return {
+    sql: `\n  and (${cat} is null or ${normalizedSql(cat)} not in (${excluded.map(() => '?').join(', ')}))`,
+    binds: excluded,
+  }
+}
+
+export type FacetRow = { value: string | null; lines: number | string; qty: number | string | null }
+
+// Distinct categories or vendors with their volume over the window, so the
+// filter and vendor map can be set from what the view actually contains.
+// Vendors are listed after the category filter, so excluded fuel suppliers
+// don't crowd the list.
+export function buildFacetQuery(opts: {
+  table: string
+  map: ColumnMap
+  facet: 'category' | 'vendor'
+  excludedCategories: string[]
+}): { sql: string; binds: (string | number)[] } | null {
+  const { table, map, facet } = opts
+  const facetCol = col(map, facet)
+  if (!facetCol) return null
+  const date = col(map, 'date')!
+  const qty = col(map, 'quantity')!
+  const filter =
+    facet === 'vendor' ? categoryFilter(map, opts.excludedCategories) : { sql: '', binds: [] }
+  return {
+    sql: `select ${text(facetCol)} as "value", count(*) as "lines", sum(${qty}) as "qty"
+from ${table}
+where ${date} >= dateadd(month, -?, current_date())${filter.sql}
+group by 1
+order by 2 desc
+limit 500`,
+    binds: filter.binds,
+  }
+}
+
+// One row per region + business unit + warehouse with its volume in the
+// window, so the rollup screen can show what each assignment carries.
+export function buildHierarchyQuery(opts: { table: string; map: ColumnMap }): string {
+  const { table, map } = opts
+  const qty = col(map, 'quantity')!
+  const date = col(map, 'date')!
+  return `select ${text(col(map, 'region'))} as "region",
+       ${text(col(map, 'businessUnit'))} as "businessUnit",
+       ${text(col(map, 'site'))} as "site",
+       count_if(${date} >= dateadd(month, -?, current_date())) as "lines",
+       sum(iff(${date} >= dateadd(month, -?, current_date()), ${qty}, 0)) as "qty",
+       max(${date}) as "lastDate"
+from ${table}
+group by 1, 2, 3
+order by 1, 2, 3
+limit 5000`
+}
+
+export type HierarchyRow = {
+  region: string | null
+  businessUnit: string | null
+  site: string | null
+  lines: number | string
+  qty: number | string | null
+  lastDate: Date | string | null
+}
+
+// One aggregated row per warehouse + item + code + unit over the lookback
+// window. Rollup to locations happens in the app so rules stay editable.
+// Spend is weighted only over lines that carry a cost, so blank costs don't
+// pull the average toward zero.
+export function buildPullQuery(opts: {
+  table: string
+  map: ColumnMap
+  lookbackMonths: number
+  excludedCategories: string[]
+}): { sql: string; binds: (string | number)[] } {
+  const { table, map } = opts
+  const qty = col(map, 'quantity')!
+  const date = col(map, 'date')!
+  const unitCost = col(map, 'unitCost')
+  const spend = unitCost ? `${qty} * ${unitCost}` : col(map, 'extendedCost')
+  const costed = unitCost ?? col(map, 'extendedCost')
+  const extended = col(map, 'extendedCost')
+  const lineCost = unitCost ?? (extended ? `${extended} / nullif(${qty}, 0)` : null)
+  const filter = categoryFilter(map, opts.excludedCategories)
+  const lastCost = lineCost
+    ? `max_by(${lineCost}, iff(${lineCost} is not null, ${date}, null))`
+    : 'null'
+  const lastCostDate = lineCost ? `max(iff(${lineCost} is not null, ${date}, null))` : 'null'
+
+  const sql = `select ${text(col(map, 'region'))} as "region",
+       ${text(col(map, 'businessUnit'))} as "businessUnit",
+       ${text(col(map, 'site'))} as "site",
+       ${text(col(map, 'itemName'))} as "item",
+       ${text(col(map, 'sku'))} as "sku",
+       ${text(col(map, 'vendorPartNumber'))} as "vendorPartNumber",
+       ${text(col(map, 'vendor'))} as "vendor",
+       ${text(col(map, 'unit'))} as "unit",
+       sum(${qty}) as "qty",
+       ${spend ? `sum(${spend})` : 'null'} as "spend",
+       ${costed ? `sum(case when ${costed} is not null then ${qty} end)` : 'null'} as "costedQty",
+       count(*) as "lines",
+       min(${date}) as "firstDate",
+       max(${date}) as "lastDate",
+       ${lastCost} as "lastUnitCost",
+       ${lastCostDate} as "lastCostDate"
+from ${table}
+where ${date} >= dateadd(month, -?, current_date())
+  and ${qty} is not null${filter.sql}
+group by 1, 2, 3, 4, 5, 6, 7, 8`
+  return { sql, binds: [opts.lookbackMonths, ...filter.binds] }
+}
+
+// Several warehouses roll into one location, so the same item can arrive in
+// several rows; combine them before staging so each item appears once.
+export function mergePulledRows(rows: PulledRow[]): PulledRow[] {
+  const merged = new Map<string, PulledRow>()
+  const add = (a: PulledRow['qty'], b: PulledRow['qty']) =>
+    a === null && b === null ? null : Number(a ?? 0) + Number(b ?? 0)
+  const earliest = (a: PulledRow['firstDate'], b: PulledRow['firstDate']) =>
+    !a ? b : !b ? a : new Date(a) <= new Date(b) ? a : b
+  const latest = (a: PulledRow['lastDate'], b: PulledRow['lastDate']) =>
+    !a ? b : !b ? a : new Date(a) >= new Date(b) ? a : b
+  for (const row of rows) {
+    const key = JSON.stringify([
+      (row.item ?? '').trim().toLowerCase(),
+      (row.sku ?? '').trim().toLowerCase(),
+      (row.vendorPartNumber ?? '').trim().toLowerCase(),
+      normalizeName(row.vendor),
+      (row.unit ?? '').trim().toLowerCase(),
+    ])
+    const prev = merged.get(key)
+    if (!prev) {
+      merged.set(key, { ...row })
+      continue
+    }
+    prev.qty = add(prev.qty, row.qty)
+    prev.spend = add(prev.spend, row.spend)
+    prev.costedQty = add(prev.costedQty, row.costedQty)
+    prev.lines = Number(prev.lines) + Number(row.lines)
+    prev.firstDate = earliest(prev.firstDate, row.firstDate)
+    prev.lastDate = latest(prev.lastDate, row.lastDate)
+    if (row.lastCostDate && latest(prev.lastCostDate, row.lastCostDate) === row.lastCostDate) {
+      prev.lastCostDate = row.lastCostDate
+      prev.lastUnitCost = row.lastUnitCost
+    }
+  }
+  return [...merged.values()]
+}
+
+export type PulledRow = {
+  region: string | null
+  businessUnit: string | null
+  site: string | null
+  item: string | null
+  sku: string | null
+  vendorPartNumber: string | null
+  vendor: string | null
+  unit: string | null
+  qty: number | string | null
+  spend: number | string | null
+  costedQty: number | string | null
+  lines: number | string
+  firstDate: Date | string | null
+  lastDate: Date | string | null
+  lastUnitCost: number | string | null
+  lastCostDate: Date | string | null
+}
+
+export type StagedVolume = {
+  itemName: string
+  sku: string | null
+  baseUnit: string | null
+  annualVolume: string
+  baselineUnitCost: string | null
+  lastUnitCost: string | null
+  lastPurchaseDate: string | null
+}
+
+function toIsoDate(d: Date | string | null): string | null {
+  if (!d) return null
+  const t = new Date(d)
+  return Number.isFinite(t.getTime()) ? t.toISOString().slice(0, 10) : null
+}
+
+// Annualizes the window total and derives the volume-weighted unit cost.
+export function toStagedVolume(row: PulledRow, lookbackMonths: number): StagedVolume | null {
+  const qty = Number(row.qty)
+  const itemName = (row.item ?? '').trim()
+  if (!itemName || !Number.isFinite(qty) || qty <= 0) return null
+  const spend = row.spend === null ? NaN : Number(row.spend)
+  const costedQty = row.costedQty === null ? NaN : Number(row.costedQty)
+  const unitCost =
+    Number.isFinite(spend) && Number.isFinite(costedQty) && costedQty > 0
+      ? spend / costedQty
+      : null
+  return {
+    itemName,
+    sku: row.sku?.trim() || null,
+    baseUnit: row.unit?.trim() || null,
+    annualVolume: ((qty * 12) / lookbackMonths).toFixed(2),
+    baselineUnitCost: unitCost !== null ? unitCost.toFixed(4) : null,
+    ...lastPaid(row),
+  }
+}
+
+function lastPaid(row: PulledRow): Pick<StagedVolume, 'lastUnitCost' | 'lastPurchaseDate'> {
+  const cost = row.lastUnitCost === null ? NaN : Number(row.lastUnitCost)
+  const date = toIsoDate(row.lastCostDate)
+  if (!Number.isFinite(cost) || !date) return { lastUnitCost: null, lastPurchaseDate: null }
+  return { lastUnitCost: cost.toFixed(4), lastPurchaseDate: date }
+}
+
+export function periodLabel(lookbackMonths: number): string {
+  return lookbackMonths === 12 ? 'TTM' : `Last ${lookbackMonths} mo (annualized)`
+}

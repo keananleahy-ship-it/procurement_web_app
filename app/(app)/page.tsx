@@ -1,14 +1,12 @@
 import { redirect } from 'next/navigation'
 import { PageHeader } from '@/components/page-header'
 import { OverviewView } from '@/components/overview-view'
-import { RemovalRequestsAlert } from '@/components/removal-requests-alert'
 import { SavingsAssistant } from '@/components/savings-assistant'
 import {
   getDashboardStats,
   getLocationComparisons,
   getProductComparisons,
 } from '@/app/actions/comparisons'
-import { getPendingRemovalRequests } from '@/app/actions/removal-requests'
 import { getCurrentUser } from '@/lib/roles'
 
 export default async function OverviewPage() {
@@ -17,13 +15,11 @@ export default async function OverviewPage() {
   const currentUser = await getCurrentUser()
   if (!currentUser) redirect('/sign-in')
 
-  const [stats, comparisons, locationComparisons, removalRequests] =
-    await Promise.all([
-      getDashboardStats(),
-      getProductComparisons(),
-      getLocationComparisons(),
-      getPendingRemovalRequests(),
-    ])
+  const [stats, comparisons, locationComparisons] = await Promise.all([
+    getDashboardStats(),
+    getProductComparisons(),
+    getLocationComparisons(),
+  ])
 
   return (
     <>
@@ -32,7 +28,6 @@ export default async function OverviewPage() {
         description="Your sourcing snapshot — savings opportunities and cost by location."
       />
       <div className="flex flex-col gap-6 p-6 pb-0">
-        <RemovalRequestsAlert requests={removalRequests} />
         <SavingsAssistant />
       </div>
       <OverviewView

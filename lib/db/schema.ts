@@ -7,6 +7,8 @@ import {
   integer,
   numeric,
   date,
+  jsonb,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core'
 
 // --- Better Auth required tables -------------------------------------------
@@ -69,6 +71,62 @@ export const verification = pgTable('verification', {
 // and an account can only be created by accepting a valid invite. Only a hash
 // of the token is stored — the raw token exists solely in the link handed to
 // the admin, so a database leak can't be used to accept invites.
+// Single-row table holding the Snowflake key-pair connection. The private key
+// is stored AES-256-GCM sealed (see lib/secret-box.ts) and never sent to the
+// client; only its public-key fingerprint is displayed.
+export const snowflakeConnection = pgTable('snowflake_connection', {
+  id: integer('id').primaryKey().default(1),
+  account: text('account').notNull(),
+  username: text('username').notNull(),
+  role: text('role'),
+  warehouse: text('warehouse'),
+  database: text('database'),
+  schema: text('schema'),
+  privateKeySealed: text('private_key_sealed').notNull(),
+  publicKeyFingerprint: text('public_key_fingerprint').notNull(),
+  publicKeyPem: text('public_key_pem').notNull(),
+  updatedBy: text('updated_by'),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  lastTestedAt: timestamp('last_tested_at'),
+  lastTestOk: boolean('last_test_ok'),
+  lastTestMessage: text('last_test_message'),
+  // --- Purchasing source mapping -------------------------------------------
+  // The view/table purchase lines are read from, and which of its columns map
+  // to the fields a volume row needs. Column names are stored exactly as
+  // Snowflake reports them and are re-validated against the live column list
+  // before every query.
+  sourceTable: text('source_table'),
+  columnMap: jsonb('column_map').$type<Record<string, string>>(),
+  // Rollup rules per level (region / business unit / warehouse value) ->
+  // app location id or 'exclude'. The most specific level wins; warehouses
+  // with no rule at any level are left out of pulls.
+  // Platform groups (name -> business units) sit between region and business
+  // unit. Warehouse rules are keyed by normalized business unit + name.
+  siteRollup: jsonb('site_rollup').$type<
+    Record<'region' | 'group' | 'businessUnit' | 'site', Record<string, number | 'exclude'>> & {
+      groups?: Record<string, string[]>
+    }
+  >(),
+  // Normalized product categories left out of pulls (e.g. fuel), and
+  // normalized Snowflake vendor name -> app vendor id for part-number matching.
+  pullOptions: jsonb('pull_options').$type<{
+    excludedCategories?: string[]
+    vendorMap?: Record<string, number>
+  }>(),
+  lookbackMonths: integer('lookback_months').notNull().default(12),
+  lastPulledAt: timestamp('last_pulled_at'),
+  // Scheduled pull: 'off' | 'daily' | 'weekly' | 'monthly'. Weekday is 0=Sun.
+  autoPullFrequency: text('auto_pull_frequency').notNull().default('off'),
+  autoPullWeekday: integer('auto_pull_weekday').notNull().default(1),
+  autoPullMonthDay: integer('auto_pull_month_day').notNull().default(1),
+  // Admin whose catalog and crosswalk scheduled pulls run against.
+  autoPullUserId: text('auto_pull_user_id'),
+  autoPullStartedAt: timestamp('auto_pull_started_at'),
+  lastAutoPullAt: timestamp('last_auto_pull_at'),
+  lastAutoPullOk: boolean('last_auto_pull_ok'),
+  lastAutoPullMessage: text('last_auto_pull_message'),
+  })
+
 export const invitations = pgTable('invitations', {
   id: text('id').primaryKey(),
   // The email the invite is locked to (lowercased). The recipient must
@@ -157,6 +215,10 @@ export const purchaseVolumes = pgTable('purchase_volumes', {
   // (baselineUnitCost - best available price) instead of the vendor-to-vendor
   // price-sheet spread, so savings reflect what you pay today vs. the best quote.
   baselineUnitCost: numeric('baselineUnitCost', { precision: 12, scale: 4 }),
+  // Unit cost (per base unit) and invoice date of the most recent costed
+  // purchase. Only line-level sources (Snowflake) can supply these.
+  lastUnitCost: numeric('lastUnitCost', { precision: 12, scale: 4 }),
+  lastPurchaseDate: date('lastPurchaseDate'),
   // human label for the period the volume covers, e.g. 'TTM' or '2025'
   period: text('period'),
   // 'manual' | 'import' | 'snowflake'
@@ -250,6 +312,9 @@ export const products = pgTable('products', {
   subcategory: text('subcategory'),
   viscosity: text('viscosity'),
   packageType: text('packageType'),
+  // Normalized performance spec set parsed from the name (e.g. "CK-4 / SN",
+  // "GL-5", "AW"). Null when the name states no recognizable spec.
+  performanceSpec: text('performanceSpec'),
   supplier: text('supplier'),
   attributesEdited: boolean('attributesEdited').notNull().default(false),
   sku: text('sku'),
@@ -408,7 +473,8 @@ export const volumeImports = pgTable('volume_imports', {
   locationId: integer('locationId').notNull(),
   fileName: text('fileName').notNull(),
   blobPathname: text('blobPathname').notNull(),
-  // 'xls' | 'pdf'
+  // 'xls' | 'pdf' | 'snowflake' (a Snowflake pull; blobPathname is empty
+  // because there is no uploaded file)
   fileType: text('fileType').notNull(),
   // Default period label applied to rows that don't specify their own, e.g.
   // 'TTM' or '2025'. Editable per row in review since periods can be mixed.
@@ -433,11 +499,16 @@ export const volumeImportRows = pgTable('volume_import_rows', {
   // The item name exactly as printed in the uploaded sheet.
   itemName: text('itemName').notNull(),
   sku: text('sku'),
+  // Vendor as the source system names it (Snowflake VENDOR_ID). Together with
+  // sku it keys item_crosswalk, so a reviewer's match is reused next pull.
+  sourceVendor: text('sourceVendor'),
   // Annual quantity in base units (e.g. gallons/year).
   annualVolume: numeric('annualVolume', { precision: 14, scale: 2 }),
   baseUnit: text('baseUnit'),
   // Average unit cost paid, per base unit (e.g. $/gallon). Null if not present.
   baselineUnitCost: numeric('baselineUnitCost', { precision: 12, scale: 4 }),
+  lastUnitCost: numeric('lastUnitCost', { precision: 12, scale: 4 }),
+  lastPurchaseDate: date('lastPurchaseDate'),
   // Period this row's volume covers; falls back to the import's defaultPeriod.
   period: text('period'),
   // Resolved match target. Exactly one of these is set once confirmed.
@@ -451,3 +522,23 @@ export const volumeImportRows = pgTable('volume_import_rows', {
   include: boolean('include').notNull().default(true),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
+
+// Reviewer-confirmed mapping from a purchasing system's (vendor, part number)
+// to a catalog product. Purchasing codes often differ from price-sheet SKUs
+// (e.g. LW's mnemonics vs P66 material numbers), so once a person links one,
+// every later pull matches it automatically. Keys are stored normalized.
+export const itemCrosswalk = pgTable(
+  'item_crosswalk',
+  {
+    id: serial('id').primaryKey(),
+    userId: text('userId').notNull(),
+    vendorKey: text('vendorKey').notNull(),
+    codeKey: text('codeKey').notNull(),
+    productId: integer('productId').notNull(),
+    vendorLabel: text('vendorLabel'),
+    code: text('code'),
+    createdBy: text('createdBy'),
+    updatedAt: timestamp('updatedAt').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('item_crosswalk_key').on(t.userId, t.vendorKey, t.codeKey)],
+)

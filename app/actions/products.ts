@@ -7,9 +7,9 @@ import { asc, eq } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import {
   PRODUCT_ATTRIBUTES,
-  CANONICAL_ATTRIBUTES,
   type AttributeKey,
 } from '@/lib/attributes'
+import { canonicalViscosityOrThrow } from '@/lib/viscosity'
 
 export async function getProducts() {
   await requireUser()
@@ -43,9 +43,6 @@ export async function deleteProduct(id: number) {
 const PRODUCT_ATTR_KEYS = new Set<AttributeKey>(
   PRODUCT_ATTRIBUTES.map((a) => a.key),
 )
-const CANONICAL_ATTR_KEYS = new Set<AttributeKey>(
-  CANONICAL_ATTRIBUTES.map((a) => a.key),
-)
 
 export async function updateProductAttribute(
   id: number,
@@ -56,31 +53,14 @@ export async function updateProductAttribute(
   if (!PRODUCT_ATTR_KEYS.has(key)) {
     throw new Error(`Attribute "${key}" is not editable on products`)
   }
-  const clean = value?.trim() ? value.trim() : null
+  const trimmed = value?.trim() ? value.trim() : null
+  const clean =
+    key === 'viscosity' ? canonicalViscosityOrThrow(trimmed) : trimmed
   await db
     .update(products)
     .set({ [key]: clean, attributesEdited: true })
     .where(eq(products.id, id))
   revalidatePath('/products')
-  revalidatePath('/compare')
-  revalidatePath('/')
-}
-
-export async function updateCanonicalAttribute(
-  id: number,
-  key: AttributeKey,
-  value: string | null,
-) {
-  await requireEditor()
-  if (!CANONICAL_ATTR_KEYS.has(key)) {
-    throw new Error(`Attribute "${key}" is not editable on canonical items`)
-  }
-  const clean = value?.trim() ? value.trim() : null
-  await db
-    .update(canonicalItems)
-    .set({ [key]: clean, attributesEdited: true })
-    .where(eq(canonicalItems.id, id))
-  revalidatePath('/canonical')
   revalidatePath('/compare')
   revalidatePath('/')
 }

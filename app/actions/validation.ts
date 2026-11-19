@@ -28,6 +28,7 @@ import {
   ATTRIBUTE_FILL_MODEL,
   type AttributeFillInput,
 } from '@/lib/attributes-ai'
+import { canonicalViscosityOrThrow, normalizeViscosity } from '@/lib/viscosity'
 import { isMeasureUom } from '@/lib/uom'
 import { resolveOrCreateVendor } from '@/lib/vendors-registry'
 
@@ -178,26 +179,7 @@ export async function getValidationRecords(locationId: number): Promise<{
       validatedByName: purchaseVolumes.validatedByName,
       productId: products.id,
       vendorCode: products.sku,
-      // The part number this specific site used in its own purchase file, read
-      // back from the raw import rows. Sites label the same product
-      // differently (vendor code 01055929 is "PMFAW46BLK" in Chicago), so this
-      // is what a champion recognizes — unlike our internal record ID.
-      // Prefer a productId match; fall back to canonicalItemId for records
-      // whose product link was resolved later. Null when the site's upload had
-      // no part-number column at all.
-      locationPartNumber: sql<string | null>`(
-        select vir."sku"
-        from ${volumeImportRows} vir
-        join ${volumeImports} vi on vi."id" = vir."volumeImportId"
-        where vi."locationId" = ${purchaseVolumes.locationId}
-          and vir."sku" is not null
-          and (
-            vir."productId" = ${purchaseVolumes.productId}
-            or vir."canonicalItemId" = ${purchaseVolumes.canonicalItemId}
-          )
-        order by (vir."productId" is not distinct from ${purchaseVolumes.productId}) desc
-        limit 1
-      )`,
+      canonicalItemId: purchaseVolumes.canonicalItemId,
       description: products.name,
       category: products.category,
       application: products.application,
@@ -218,6 +200,42 @@ export async function getValidationRecords(locationId: number): Promise<{
       sql`${purchaseVolumes.annualVolume} desc nulls last`,
       asc(products.name),
     )
+
+  // The part number this specific site used in its own purchase file, read back
+  // from the raw import rows. Sites label the same product differently (vendor
+  // code 01055929 is "PMFAW46BLK" in Chicago), so this is what a champion
+  // recognizes — unlike our internal record ID. Prefer a productId match; fall
+  // back to canonicalItemId for records whose product link was resolved later.
+  // Null when the site's upload had no part-number column at all.
+  // Fetched in one query for the whole site and matched in memory: a per-row
+  // correlated subquery here cost ~0.9s on a 1,800-record site.
+  const partRows = await db
+    .select({
+      sku: volumeImportRows.sku,
+      productId: volumeImportRows.productId,
+      canonicalItemId: volumeImportRows.canonicalItemId,
+    })
+    .from(volumeImportRows)
+    .innerJoin(volumeImports, eq(volumeImports.id, volumeImportRows.volumeImportId))
+    .where(
+      and(
+        eq(volumeImports.locationId, locationId),
+        sql`${volumeImportRows.sku} is not null`,
+      ),
+    )
+    .orderBy(desc(volumeImportRows.id))
+  const partByProduct = new Map<number, string>()
+  const partByCanonical = new Map<string, string>()
+  for (const p of partRows) {
+    if (!p.sku) continue
+    if (p.productId != null && !partByProduct.has(p.productId)) {
+      partByProduct.set(p.productId, p.sku)
+    }
+    if (p.canonicalItemId != null) {
+      const key = String(p.canonicalItemId)
+      if (!partByCanonical.has(key)) partByCanonical.set(key, p.sku)
+    }
+  }
 
   // Pending AI suggestions for the products shown here, grouped by productId.
   const productIds = Array.from(new Set(rows.map((r) => r.productId)))
@@ -249,7 +267,7 @@ export async function getValidationRecords(locationId: number): Promise<{
       !r.category ||
       !r.application ||
       !r.subcategory ||
-      !r.viscosity ||
+      !normalizeViscosity(r.viscosity) ||
       !r.packageType
     const unitIssue = detectUnitIssue(r.baseUnit, r.packageType)
     return {
@@ -263,7 +281,12 @@ export async function getValidationRecords(locationId: number): Promise<{
       validatedByName: r.validatedByName,
       productId: r.productId,
     vendorCode: r.vendorCode,
-    locationPartNumber: r.locationPartNumber,
+    locationPartNumber:
+      partByProduct.get(r.productId) ??
+      (r.canonicalItemId != null
+        ? partByCanonical.get(String(r.canonicalItemId))
+        : undefined) ??
+      null,
     description: r.description,
       category: r.category,
       application: r.application,
@@ -312,7 +335,7 @@ export async function updateValidationAttribute(input: {
   // vendors are matched ignoring case and punctuation, and the canonical name
   // is what gets stored, so "PHILLIPS 66" resolves to the existing
   // "Phillips66" instead of introducing a third spelling.
-  let stored = clean
+  let stored = input.key === 'viscosity' ? canonicalViscosityOrThrow(clean) : clean
   if (input.key === 'supplier' && clean) {
     const resolved = await resolveOrCreateVendor(u.id, clean)
     if (resolved) stored = resolved.name
@@ -459,6 +482,7 @@ export async function suggestAttributesForLocation(
       subcategory: r.subcategory,
       viscosity: r.viscosity,
       packageType: r.packageType,
+      performanceSpec: null,
     }
     const missing = VALIDATION_ATTRIBUTE_KEYS.filter((k) => !current[k])
     if (missing.length === 0) continue
@@ -550,7 +574,8 @@ export async function acceptSuggestion(input: {
 
   // Accepting an AI-suggested supplier registers a vendor too, so the two
   // write paths can't disagree about what counts as a known vendor.
-  let suggested = sugg.value
+  let suggested =
+    input.key === 'viscosity' ? canonicalViscosityOrThrow(sugg.value) : sugg.value
   if (input.key === 'supplier' && suggested) {
     const resolved = await resolveOrCreateVendor(u.id, suggested)
     if (resolved) suggested = resolved.name

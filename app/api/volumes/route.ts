@@ -7,7 +7,6 @@ import { db } from '@/lib/db'
 import {
   volumeImports,
   volumeImportRows,
-  canonicalItems,
   products,
   locations,
 } from '@/lib/db/schema'
@@ -186,16 +185,7 @@ export async function POST(req: NextRequest) {
   const fileType = isPdf ? 'pdf' : 'xls'
 
   // Load this user's match targets once, then auto-match every row in memory.
-  const [canon, prods] = await Promise.all([
-    db
-      .select({
-        id: canonicalItems.id,
-        name: canonicalItems.name,
-        category: canonicalItems.category,
-      })
-      .from(canonicalItems)
-      .where(eq(canonicalItems.userId, userId)),
-    db
+  const prods = await db
       .select({
         id: products.id,
         name: products.name,
@@ -204,11 +194,10 @@ export async function POST(req: NextRequest) {
         canonicalItemId: products.canonicalItemId,
       })
       .from(products)
-      .where(eq(products.userId, userId)),
-  ])
+      .where(eq(products.userId, userId))
 
   // Build lookup structures once, then auto-match every row in memory.
-  const matchIndex = buildMatchIndex(canon, prods)
+  const matchIndex = buildMatchIndex(prods)
 
   const [created] = await db
     .insert(volumeImports)

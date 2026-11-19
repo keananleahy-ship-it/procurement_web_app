@@ -2,23 +2,18 @@ import { Download } from 'lucide-react'
 import { PageHeader } from '@/components/page-header'
 import { buttonVariants } from '@/components/ui/button'
 import { ProductsView } from '@/components/products-view'
-import { getProducts } from '@/app/actions/products'
-import { getMatchRows, getCanonicalItems } from '@/app/actions/canonical'
+import { requireUser } from '@/lib/roles'
+import { buildProductList } from '@/lib/product-list'
 
 export default async function ProductsPage() {
-  const [products, matchRows, canonicalItems] = await Promise.all([
-    getProducts(),
-    getMatchRows(),
-    getCanonicalItems(),
-  ])
-
-  const matchByProduct = new Map(matchRows.map((m) => [m.productId, m]))
+  await requireUser()
+  const rows = await buildProductList()
 
   return (
     <>
       <PageHeader
         title="Products"
-        description="Vendor-specific items you collect prices for. Match them to canonical items to compare across vendors."
+        description="Vendor-specific items you collect prices for. Their characteristics decide which products are compared against each other."
         action={
           <a
             href="/api/export/items"
@@ -30,32 +25,7 @@ export default async function ProductsPage() {
           </a>
         }
       />
-      <ProductsView
-        canonicalItems={canonicalItems.map((c) => ({
-          id: c.id,
-          name: c.name,
-        }))}
-        products={products.map((p) => {
-          const m = matchByProduct.get(p.id)
-          return {
-            id: p.id,
-            name: p.name,
-            brand: p.brand,
-            category: p.category,
-            application: p.application,
-            subcategory: p.subcategory,
-            viscosity: p.viscosity,
-            packageType: p.packageType,
-            supplier: p.supplier,
-            sku: p.sku,
-            unit: p.unit,
-            matchStatus: m?.matchStatus ?? 'unmatched',
-            canonicalItemId: m?.canonicalItemId ?? null,
-            canonicalItemName:
-              m?.matchStatus === 'confirmed' ? m.canonicalItemName : null,
-          }
-        })}
-      />
+      <ProductsView rows={rows} />
     </>
   )
 }
