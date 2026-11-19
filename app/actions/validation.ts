@@ -1,6 +1,6 @@
 'use server'
 
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { db } from '@/lib/db'
 import {
@@ -195,7 +195,7 @@ export async function getValidationRecords(locationId: number): Promise<{
     })
     .from(purchaseVolumes)
     .innerJoin(products, eq(products.id, purchaseVolumes.productId))
-    .where(eq(purchaseVolumes.locationId, locationId))
+    .where(and(eq(purchaseVolumes.locationId, locationId), ne(products.matchStatus, 'excluded')))
     // Highest-volume records first so champions spend their attention where it
     // moves the most spend. Records with no captured volume sort last rather
     // than leading the table (Postgres sorts NULLs first on DESC by default).
@@ -556,7 +556,7 @@ export async function suggestAttributesForLocation(
     })
     .from(purchaseVolumes)
     .innerJoin(products, eq(products.id, purchaseVolumes.productId))
-    .where(eq(purchaseVolumes.locationId, locationId))
+    .where(and(eq(purchaseVolumes.locationId, locationId), ne(products.matchStatus, 'excluded')))
     .orderBy(desc(purchaseVolumes.annualVolume))
 
   const inputs: AttributeFillInput[] = []
