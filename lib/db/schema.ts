@@ -317,6 +317,10 @@ export const products = pgTable('products', {
   performanceSpec: text('performanceSpec'),
   supplier: text('supplier'),
   attributesEdited: boolean('attributesEdited').notNull().default(false),
+  // Attribute keys a reviewer marked "not applicable" for this item (e.g. no
+  // viscosity on a grease or DEF). The attribute itself stays null; this list
+  // only stops Catalog Validation flagging the blank as a gap.
+  naAttributes: text('naAttributes').array().notNull().default([]),
   sku: text('sku'),
   unit: text('unit'),
   // Fuzzy-matching to a canonical item. matchStatus is one of:
