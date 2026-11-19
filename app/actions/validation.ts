@@ -103,6 +103,9 @@ export type ValidationRecord = {
   // true when a catalog attribute is missing (drives the "needs attention"
   // filter so champions can target incomplete rows first)
   hasGaps: boolean
+  // attributes a reviewer marked "not applicable" for this item; a blank value
+  // for one of these is intentional and not counted as a gap
+  notApplicable: AttributeKey[]
   // short reason when the captured unit looks wrong (pack size or count on a
   // bulk item); null when the unit looks fine
   unitIssue: string | null
@@ -188,6 +191,7 @@ export async function getValidationRecords(locationId: number): Promise<{
       packageType: products.packageType,
       supplier: products.supplier,
       brand: products.brand,
+      naAttributes: products.naAttributes,
     })
     .from(purchaseVolumes)
     .innerJoin(products, eq(products.id, purchaseVolumes.productId))
@@ -263,12 +267,14 @@ export async function getValidationRecords(locationId: number): Promise<{
   }
 
   const records: ValidationRecord[] = rows.map((r) => {
+    const na = new Set(r.naAttributes as AttributeKey[])
+    const gap = (key: AttributeKey, present: boolean) => !present && !na.has(key)
     const hasGaps =
-      !r.category ||
-      !r.application ||
-      !r.subcategory ||
-      !normalizeViscosity(r.viscosity) ||
-      !r.packageType
+      gap('category', !!r.category) ||
+      gap('application', !!r.application) ||
+      gap('subcategory', !!r.subcategory) ||
+      gap('viscosity', !!normalizeViscosity(r.viscosity)) ||
+      gap('packageType', !!r.packageType)
     const unitIssue = detectUnitIssue(r.baseUnit, r.packageType)
     return {
       purchaseId: r.purchaseId,
@@ -296,6 +302,7 @@ export async function getValidationRecords(locationId: number): Promise<{
       supplier: r.supplier,
       brand: r.brand,
       hasGaps,
+      notApplicable: [...na].filter((k) => VALIDATION_ATTR_SET.has(k)),
       unitIssue,
       suggestions: suggestionsByProduct.get(r.productId) ?? {},
     }
@@ -341,9 +348,16 @@ export async function updateValidationAttribute(input: {
     if (resolved) stored = resolved.name
   }
 
+  // Entering a real value means the attribute does apply after all.
   await db
     .update(products)
-    .set({ [input.key]: stored, attributesEdited: true })
+    .set({
+      [input.key]: stored,
+      attributesEdited: true,
+      ...(stored
+        ? { naAttributes: sql`array_remove(${products.naAttributes}, ${input.key})` }
+        : {}),
+    })
     .where(eq(products.id, input.productId))
 
   // Clear sign-off everywhere this product is purchased (re-confirm required).
@@ -364,6 +378,80 @@ export async function updateValidationAttribute(input: {
   revalidatePath('/vendors')
   revalidatePath('/')
   return { clearedSignOffs: cleared.length }
+}
+
+// Mark an attribute as not applicable to this item (or undo that). Like an
+// edit, it's global to the shared product. Marking clears any value and any
+// pending AI suggestion for the attribute. Sign-offs are cleared only when a
+// value was actually removed, since a blank staying blank changes nothing the
+// other sites signed off on.
+export async function setAttributeNotApplicable(input: {
+  productId: number
+  locationId: number
+  key: AttributeKey
+  notApplicable: boolean
+}): Promise<{ clearedSignOffs: number }> {
+  const u = await requireUser()
+  await assertLocationAccess(u, input.locationId)
+  if (!VALIDATION_ATTR_SET.has(input.key) || !PRODUCT_ATTR_KEYS.has(input.key)) {
+    throw new Error(`Attribute "${input.key}" is not editable here`)
+  }
+
+  const [before] = await db
+    .select({ value: products[input.key] })
+    .from(products)
+    .where(eq(products.id, input.productId))
+    .limit(1)
+  if (!before) throw new Error('Product not found')
+
+  await db
+    .update(products)
+    .set(
+      input.notApplicable
+        ? {
+            [input.key]: null,
+            attributesEdited: true,
+            naAttributes: sql`array_append(array_remove(${products.naAttributes}, ${input.key}), ${input.key})`,
+          }
+        : {
+            naAttributes: sql`array_remove(${products.naAttributes}, ${input.key})`,
+          },
+    )
+    .where(eq(products.id, input.productId))
+
+  let clearedSignOffs = 0
+  if (input.notApplicable) {
+    await db
+      .delete(attributeSuggestions)
+      .where(
+        and(
+          eq(attributeSuggestions.productId, input.productId),
+          eq(attributeSuggestions.attribute, input.key),
+        ),
+      )
+    if (before.value) {
+      const cleared = await db
+        .update(purchaseVolumes)
+        .set({ validatedAt: null, validatedByUserId: null, validatedByName: null })
+        .where(
+          and(
+            eq(purchaseVolumes.productId, input.productId),
+            sql`${purchaseVolumes.validatedAt} is not null`,
+          ),
+        )
+        .returning({ id: purchaseVolumes.id })
+      clearedSignOffs = cleared.length
+    }
+  }
+
+  revalidatePath('/validation')
+  if (before.value) {
+    revalidatePath('/products')
+    revalidatePath('/compare')
+    revalidatePath('/vendors')
+    revalidatePath('/')
+  }
+  return { clearedSignOffs }
 }
 
 // Sign off (or reopen) a single purchase record for the champion's location.
@@ -463,6 +551,7 @@ export async function suggestAttributesForLocation(
       packageType: products.packageType,
       supplier: products.supplier,
       brand: products.brand,
+      naAttributes: products.naAttributes,
       annualVolume: purchaseVolumes.annualVolume,
     })
     .from(purchaseVolumes)
@@ -484,7 +573,10 @@ export async function suggestAttributesForLocation(
       packageType: r.packageType,
       performanceSpec: null,
     }
-    const missing = VALIDATION_ATTRIBUTE_KEYS.filter((k) => !current[k])
+    const na = new Set(r.naAttributes)
+    const missing = VALIDATION_ATTRIBUTE_KEYS.filter(
+      (k) => !current[k] && !na.has(k),
+    )
     if (missing.length === 0) continue
     seen.add(r.productId)
     inputs.push({
@@ -583,7 +675,11 @@ export async function acceptSuggestion(input: {
 
   await db
     .update(products)
-    .set({ [input.key]: suggested, attributesEdited: true })
+    .set({
+      [input.key]: suggested,
+      attributesEdited: true,
+      naAttributes: sql`array_remove(${products.naAttributes}, ${input.key})`,
+    })
     .where(eq(products.id, input.productId))
 
   const cleared = await db

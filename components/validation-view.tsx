@@ -22,6 +22,7 @@ import {
   X,
   ArrowDown,
   Plus,
+  Ban,
 } from 'lucide-react'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -57,6 +58,7 @@ import {
   suggestAttributesForLocation,
   acceptSuggestion,
   dismissSuggestion,
+  setAttributeNotApplicable,
   type AccessibleLocation,
   type ValidationRecord,
   type ValidationProgress,
@@ -67,6 +69,9 @@ const NONE = '__none__'
 // in vocabularies are heuristic starting points, not an exhaustive list, so a
 // champion must be able to enter a value the derivation rules never predicted.
 const ADD_NEW = '__add_new__'
+// Sentinel for "Not applicable": the attribute doesn't apply to this item, so
+// its blank value is intentional and shouldn't be flagged as a gap.
+const NOT_APPLICABLE = '__not_applicable__'
 
 // Bucket key for collecting values already in use. Formulation ("subcategory")
 // draws from a different vocabulary depending on the item's category — base-oil
@@ -481,6 +486,18 @@ export function ValidationView({
                           })
                         })
                       }
+                      onNotApplicable={(notApplicable) =>
+                        run(async () => {
+                          if (!activeLocationId) return
+                          const res = await setAttributeNotApplicable({
+                            productId: r.productId,
+                            locationId: activeLocationId,
+                            key: 'supplier',
+                            notApplicable,
+                          })
+                          setStatus(notApplicableStatus(notApplicable, res.clearedSignOffs))
+                        })
+                      }
                     />
                   </td>
                   <td className="max-w-[220px] px-3 py-2">
@@ -535,6 +552,18 @@ export function ValidationView({
                               locationId: activeLocationId,
                               key: c.key,
                             })
+                          })
+                        }
+                        onNotApplicable={(notApplicable) =>
+                          run(async () => {
+                            if (!activeLocationId) return
+                            const res = await setAttributeNotApplicable({
+                              productId: r.productId,
+                              locationId: activeLocationId,
+                              key: c.key,
+                              notApplicable,
+                            })
+                            setStatus(notApplicableStatus(notApplicable, res.clearedSignOffs))
                           })
                         }
                       />
@@ -646,6 +675,13 @@ export function ValidationView({
 // controlled vocabulary (or a free-text input for viscosity). Missing values
 // are highlighted so gaps stand out. Committing calls the parent's onChange,
 // which applies the fix globally to the product.
+function notApplicableStatus(notApplicable: boolean, clearedSignOffs: number) {
+  if (!notApplicable) return 'Marked as applicable again across all sites.'
+  return clearedSignOffs > 0
+    ? `Marked not applicable globally · cleared ${clearedSignOffs} prior sign-off(s) for re-confirmation.`
+    : 'Marked not applicable globally across all sites.'
+}
+
 function AttrCell({
   record,
   attrKey,
@@ -653,6 +689,7 @@ function AttrCell({
   onChange,
   onAccept,
   onDismiss,
+  onNotApplicable,
   savedValues,
 }: {
   record: ValidationRecord
@@ -661,6 +698,7 @@ function AttrCell({
   onChange: (value: string | null) => void
   onAccept: () => void
   onDismiss: () => void
+  onNotApplicable: (notApplicable: boolean) => void
   savedValues?: Map<string, Set<string>>
 }) {
   const current = (record[attrKey] as string | null) ?? null
@@ -676,10 +714,29 @@ function AttrCell({
       .sort((a, b) => a.localeCompare(b))
     return extras.length > 0 ? [...builtInVocab, ...extras] : builtInVocab
   }, [builtInVocab, savedValues, attrKey, record.category])
-  const missing = !current
+  const notApplicable = !current && record.notApplicable.includes(attrKey)
+  const missing = !current && !notApplicable
   // A pending AI suggestion only shows when the value is still missing — once a
   // champion sets a value, the suggestion for that cell is moot.
   const suggestion = missing ? record.suggestions[attrKey] : undefined
+
+  if (notApplicable) {
+    return (
+      <div className="flex h-8 w-fit items-center gap-1 rounded-md border border-dashed border-border px-2 text-xs text-muted-foreground">
+        <span title="Not applicable to this item">N/A</span>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onNotApplicable(false)}
+          aria-label="Undo not applicable"
+          title="Undo not applicable"
+          className="grid size-5 place-items-center rounded transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+        >
+          <X className="size-3" />
+        </button>
+      </div>
+    )
+  }
 
   // When there's a pending suggestion for an empty cell, surface it as a
   // reviewable chip (accept / dismiss) sitting above the normal editor, so the
@@ -700,6 +757,7 @@ function AttrCell({
             value={current}
             disabled={disabled}
             onCommit={onChange}
+            onNotApplicable={() => onNotApplicable(true)}
             widthClass={attrKey === 'supplier' ? 'w-40' : 'w-24'}
           />
         ) : (
@@ -708,6 +766,7 @@ function AttrCell({
             vocab={vocab}
             missing={missing}
             onChange={onChange}
+            onNotApplicable={() => onNotApplicable(true)}
           />
         )}
       </div>
@@ -723,6 +782,7 @@ function AttrCell({
         value={current}
         disabled={disabled}
         onCommit={onChange}
+        onNotApplicable={() => onNotApplicable(true)}
         widthClass={attrKey === 'supplier' ? 'w-40' : 'w-24'}
       />
     )
@@ -734,6 +794,7 @@ function AttrCell({
       vocab={vocab}
       missing={missing}
       onChange={onChange}
+      onNotApplicable={() => onNotApplicable(true)}
     />
   )
 }
@@ -745,17 +806,20 @@ function VocabSelect({
   vocab,
   missing,
   onChange,
+  onNotApplicable,
 }: {
   current: string | null
   vocab: string[]
   missing: boolean
   onChange: (value: string | null) => void
+  onNotApplicable: () => void
 }) {
   // Merge an out-of-vocab current value so it still displays and is selectable.
   const options = current && !vocab.includes(current) ? [current, ...vocab] : vocab
   const items: Record<string, string> = { [NONE]: 'Not set' }
   for (const o of options) items[o] = o
   items[ADD_NEW] = 'Add new…'
+  items[NOT_APPLICABLE] = 'Not applicable'
 
   // Choosing "Add new…" opens a small dialog. An earlier version swapped the
   // select for an inline autofocused input, but that depended on winning a focus
@@ -773,6 +837,10 @@ function VocabSelect({
             // Let the select finish closing (and restoring focus) before the
             // dialog takes over, so the two don't fight over the focus target.
             setTimeout(() => setAdding(true), 0)
+            return
+          }
+          if (v === NOT_APPLICABLE) {
+            onNotApplicable()
             return
           }
           const next = !v || v === NONE ? null : v
@@ -802,6 +870,12 @@ function VocabSelect({
             <span className="flex items-center gap-1.5 text-primary">
               <Plus className="size-3" />
               Add new…
+            </span>
+          </SelectItem>
+          <SelectItem value={NOT_APPLICABLE}>
+            <span className="flex items-center gap-1.5 text-muted-foreground">
+              <Ban className="size-3" />
+              Not applicable
             </span>
           </SelectItem>
         </SelectContent>
@@ -959,11 +1033,13 @@ function TextAttr({
   value,
   disabled,
   onCommit,
+  onNotApplicable,
   widthClass = 'w-24',
 }: {
   value: string | null
   disabled: boolean
   onCommit: (value: string | null) => void
+  onNotApplicable: () => void
   widthClass?: string
 }) {
   const [draft, setDraft] = useState(value ?? '')
@@ -973,22 +1049,36 @@ function TextAttr({
     if (next !== (value ?? null)) onCommit(next)
   }
   return (
-    <Input
-      value={draft}
-      disabled={disabled}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-          e.currentTarget.blur()
-        }
-      }}
-      placeholder="Set…"
-      className={cn(
-        'h-8',
-        widthClass,
-        missing && 'border-amber-500/60 placeholder:text-amber-600/70',
+    <div className="flex items-center gap-1">
+      <Input
+        value={draft}
+        disabled={disabled}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+            e.currentTarget.blur()
+          }
+        }}
+        placeholder="Set…"
+        className={cn(
+          'h-8',
+          widthClass,
+          missing && 'border-amber-500/60 placeholder:text-amber-600/70',
+        )}
+      />
+      {missing && !draft.trim() && (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onNotApplicable}
+          aria-label="Mark not applicable"
+          title="Mark not applicable"
+          className="grid size-6 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+        >
+          <Ban className="size-3.5" />
+        </button>
       )}
-    />
+    </div>
   )
 }
