@@ -11,6 +11,7 @@ import {
   resolveExactIdentity,
 } from '@/lib/volume-match'
 import { normalizeUom } from '@/lib/uom'
+import { type UnitShare, mergeUnitShares } from '@/lib/unit-breakdown'
 import { deriveAttributes } from '@/lib/attributes'
 
 // Writing a reviewed volume import into purchase_volumes, free of session
@@ -67,6 +68,7 @@ export type AggregatableRow = {
   period: string | null
   lastUnitCost: string | null
   lastPurchaseDate: string | null
+  unitBreakdown?: UnitShare[] | null
 }
 
 type AggregatedVolume = {
@@ -78,6 +80,7 @@ type AggregatedVolume = {
   period: string | null
   lastUnitCost: string | null
   lastPurchaseDate: string | null
+  unitBreakdown: UnitShare[] | null
   // How many detailed rows collapsed into this summary.
   sourceRowCount: number
 }
@@ -111,6 +114,7 @@ export function aggregateVolumeRows(
       count: number
       lastUnitCost: string | null
       lastPurchaseDate: string | null
+      unitBreakdown: UnitShare[] | null
     }
   >()
 
@@ -148,9 +152,11 @@ export function aggregateVolumeRows(
         count: 0,
         lastUnitCost: null,
         lastPurchaseDate: null,
+        unitBreakdown: null,
       }
       groups.set(key, g)
     }
+    g.unitBreakdown = mergeUnitShares(g.unitBreakdown, r.unitBreakdown)
     if (
       r.lastUnitCost !== null &&
       r.lastPurchaseDate &&
@@ -185,6 +191,7 @@ export function aggregateVolumeRows(
     period: g.period,
     lastUnitCost: g.lastUnitCost,
     lastPurchaseDate: g.lastPurchaseDate,
+    unitBreakdown: g.unitBreakdown,
     sourceRowCount: g.count,
   }))
 }
@@ -369,6 +376,7 @@ export async function collectEligibleRows(volumeImportId: number): Promise<{
       period: r.period,
       lastUnitCost: r.lastUnitCost,
       lastPurchaseDate: r.lastPurchaseDate,
+      unitBreakdown: r.unitBreakdown,
     })
   }
 
@@ -528,6 +536,7 @@ async function writeSnowflakeVolumes(opts: {
       period: s.period,
       lastUnitCost: s.lastUnitCost,
       lastPurchaseDate: s.lastPurchaseDate,
+      unitBreakdown: s.unitBreakdown,
       source: 'snowflake',
           ...signoff,
         }

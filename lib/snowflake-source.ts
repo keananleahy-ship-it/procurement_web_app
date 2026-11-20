@@ -1,6 +1,13 @@
 // Pure helpers for reading purchase lines out of a mapped Snowflake view.
 // Kept free of server-only imports so the SQL they build can be unit-checked.
 
+import {
+  type UnitShare,
+  UNASSIGNED_UNIT,
+  mergeUnitShares,
+  scaleUnitShares,
+} from '@/lib/unit-breakdown'
+
 export const SOURCE_FIELDS = [
   { key: 'site', label: 'Warehouse / site', required: true },
   { key: 'businessUnit', label: 'Business unit (rollup)', required: false },
@@ -351,6 +358,15 @@ export function mergePulledRows(rows: PulledRow[]): PulledRow[] {
     !a ? b : !b ? a : new Date(a) <= new Date(b) ? a : b
   const latest = (a: PulledRow['lastDate'], b: PulledRow['lastDate']) =>
     !a ? b : !b ? a : new Date(a) >= new Date(b) ? a : b
+  const share = (row: PulledRow): UnitShare => {
+    const spend = row.spend === null ? NaN : Number(row.spend)
+    return {
+      unit: row.businessUnit?.trim() || UNASSIGNED_UNIT,
+      volume: Number(row.qty ?? 0) || 0,
+      spend: Number.isFinite(spend) ? spend : null,
+      costedVolume: Number(row.costedQty ?? 0) || 0,
+    }
+  }
   for (const row of rows) {
     const key = JSON.stringify([
       (row.item ?? '').trim().toLowerCase(),
@@ -361,9 +377,10 @@ export function mergePulledRows(rows: PulledRow[]): PulledRow[] {
     ])
     const prev = merged.get(key)
     if (!prev) {
-      merged.set(key, { ...row })
+      merged.set(key, { ...row, units: [share(row)] })
       continue
     }
+    prev.units = mergeUnitShares(prev.units, [share(row)]) ?? undefined
     prev.qty = add(prev.qty, row.qty)
     prev.spend = add(prev.spend, row.spend)
     prev.costedQty = add(prev.costedQty, row.costedQty)
@@ -395,6 +412,8 @@ export type PulledRow = {
   lastDate: Date | string | null
   lastUnitCost: number | string | null
   lastCostDate: Date | string | null
+  // Set by mergePulledRows: raw window totals per business unit.
+  units?: UnitShare[]
 }
 
 export type StagedVolume = {
@@ -405,6 +424,7 @@ export type StagedVolume = {
   baselineUnitCost: string | null
   lastUnitCost: string | null
   lastPurchaseDate: string | null
+  unitBreakdown: UnitShare[] | null
 }
 
 function toIsoDate(d: Date | string | null): string | null {
@@ -431,6 +451,7 @@ export function toStagedVolume(row: PulledRow, lookbackMonths: number): StagedVo
     annualVolume: ((qty * 12) / lookbackMonths).toFixed(2),
     baselineUnitCost: unitCost !== null ? unitCost.toFixed(4) : null,
     ...lastPaid(row),
+    unitBreakdown: scaleUnitShares(row.units ?? null, 12 / lookbackMonths),
   }
 }
 

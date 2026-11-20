@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { locations, products, purchaseVolumes } from '@/lib/db/schema'
 import { getAllRows } from '@/lib/comparison'
+import { type UnitShare, mergeUnitShares } from '@/lib/unit-breakdown'
 
 // One row per product at each location it is priced or purchased at. A
 // product with neither appears once with no location.
@@ -31,10 +32,13 @@ export type ProductListRow = {
   price: number | null
   pricePerBaseUnit: number | null
   priceDate: string | null
+  // Business-unit split of this location's volume (Snowflake pulls only).
+  units: UnitShare[] | null
 }
 
 type LocAgg = {
   name: string | null
+  units: UnitShare[] | null
   volume: number
   paidWeighted: number
   paidVolume: number
@@ -59,6 +63,7 @@ export async function buildProductList(): Promise<ProductListRow[]> {
         period: purchaseVolumes.period,
         lastUnitCost: purchaseVolumes.lastUnitCost,
         lastPurchaseDate: purchaseVolumes.lastPurchaseDate,
+        unitBreakdown: purchaseVolumes.unitBreakdown,
       })
       .from(purchaseVolumes)
       .leftJoin(locations, eq(locations.id, purchaseVolumes.locationId)),
@@ -72,6 +77,7 @@ export async function buildProductList(): Promise<ProductListRow[]> {
     if (!agg) {
       agg = {
         name,
+        units: null,
         volume: 0,
         paidWeighted: 0,
         paidVolume: 0,
@@ -91,6 +97,7 @@ export async function buildProductList(): Promise<ProductListRow[]> {
     if (!Number.isFinite(vol) || vol <= 0) continue
     const agg = slot(v.productId, v.locationId, v.locationName)
     agg.volume += vol
+    agg.units = mergeUnitShares(agg.units, v.unitBreakdown)
     agg.volumeUnit ??= v.baseUnit
     if (v.period) agg.periods.add(v.period)
     const paid = v.baselineUnitCost != null ? Number(v.baselineUnitCost) : NaN
@@ -151,6 +158,7 @@ export async function buildProductList(): Promise<ProductListRow[]> {
         price: null,
         pricePerBaseUnit: null,
         priceDate: null,
+        units: null,
       })
       continue
     }
@@ -168,6 +176,7 @@ export async function buildProductList(): Promise<ProductListRow[]> {
         price: a.price?.landed ?? null,
         pricePerBaseUnit: a.price?.perBase ?? null,
         priceDate: a.price?.date ?? null,
+        units: a.units,
       })
     }
   }
