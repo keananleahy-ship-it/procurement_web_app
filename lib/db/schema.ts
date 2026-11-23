@@ -10,6 +10,7 @@ import {
   jsonb,
   uniqueIndex,
 } from 'drizzle-orm/pg-core'
+import type { UnitShare } from '@/lib/unit-breakdown'
 
 // --- Better Auth required tables -------------------------------------------
 // Column names are camelCase to match Better Auth's defaults. Do not rename.
@@ -223,6 +224,8 @@ export const purchaseVolumes = pgTable('purchase_volumes', {
   period: text('period'),
   // 'manual' | 'import' | 'snowflake'
   source: text('source').notNull().default('manual'),
+  // Snowflake only: how this regional volume splits across business units.
+  unitBreakdown: jsonb('unitBreakdown').$type<UnitShare[]>(),
   // --- Catalog validation sign-off ------------------------------------------
   // A site champion reviews each purchase record for their location and signs
   // off that its resolved product's catalog attributes are correct. Sign-off is
@@ -515,6 +518,7 @@ export const volumeImportRows = pgTable('volume_import_rows', {
   lastPurchaseDate: date('lastPurchaseDate'),
   // Period this row's volume covers; falls back to the import's defaultPeriod.
   period: text('period'),
+  unitBreakdown: jsonb('unitBreakdown').$type<UnitShare[]>(),
   // Resolved match target. Exactly one of these is set once confirmed.
   canonicalItemId: integer('canonicalItemId'),
   productId: integer('productId'),

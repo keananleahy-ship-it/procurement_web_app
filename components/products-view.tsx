@@ -30,6 +30,7 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  ChevronRight,
   Package,
   Plus,
   Search,
@@ -341,8 +342,12 @@ function ProductRow({ row: r, canEdit }: { row: ProductListRow; canEdit: boolean
   const [isPending, startTransition] = useTransition()
   const tags = [r.category, r.viscosity, r.subcategory, r.packageType, r.supplier].filter(Boolean)
   const unit = r.baseUnit ?? r.volumeUnit
+  const [expanded, setExpanded] = useState(false)
+  const units = r.units ?? []
+  const subRowsId = `units-${r.key}`
 
   return (
+    <>
     <TableRow>
       <TableCell className="max-w-md whitespace-normal">
         <div className="font-medium text-foreground">{r.name}</div>
@@ -351,7 +356,28 @@ function ProductRow({ row: r, canEdit }: { row: ProductListRow; canEdit: boolean
         )}
       </TableCell>
       <TableCell>
-        {r.location ?? <span className="text-muted-foreground">—</span>}
+        {units.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => setExpanded((e) => !e)}
+            aria-expanded={expanded}
+            aria-controls={subRowsId}
+            className="inline-flex items-center gap-1 text-left hover:text-foreground"
+          >
+            <ChevronRight
+              className={cn('size-3.5 shrink-0 transition-transform', expanded && 'rotate-90')}
+              aria-hidden="true"
+            />
+            <span>
+              {r.location ?? '—'}
+              <span className="block text-xs text-muted-foreground">
+                {units.length} {units.length === 1 ? 'unit' : 'units'}
+              </span>
+            </span>
+          </button>
+        ) : (
+          r.location ?? <span className="text-muted-foreground">—</span>
+        )}
       </TableCell>
       <TableCell className="text-right tabular-nums" title={r.volumePeriod ? `Source period: ${r.volumePeriod}` : undefined}>
         {r.volume != null ? (
@@ -432,6 +458,46 @@ function ProductRow({ row: r, canEdit }: { row: ProductListRow; canEdit: boolean
         </TableCell>
       )}
     </TableRow>
+    {expanded &&
+      units.map((u, i) => {
+        const paid = u.costedVolume > 0 && u.spend != null ? u.spend / u.costedVolume : null
+        const share = r.volume ? u.volume / r.volume : null
+        return (
+          <TableRow
+            key={u.unit}
+            id={i === 0 ? subRowsId : undefined}
+            className="bg-muted/40 hover:bg-muted/60"
+          >
+            <TableCell />
+            <TableCell className="pl-8 text-sm">
+              {u.unit}
+              {share != null && (
+                <span className="ml-1.5 text-xs text-muted-foreground">
+                  {Math.round(share * 100)}%
+                </span>
+              )}
+            </TableCell>
+            <TableCell className="text-right text-sm tabular-nums">
+              {qty.format(u.volume)}
+              {r.volumeUnit && <span className="ml-1 text-xs text-muted-foreground">{r.volumeUnit}</span>}
+            </TableCell>
+            <TableCell />
+            <TableCell className="text-right text-sm tabular-nums">
+              {paid != null ? (
+                <span title="Average paid across this unit's costed purchases">
+                  {money.format(paid)}
+                  {unit && <span className="text-xs text-muted-foreground">/{unit}</span>}
+                  <span className="block text-xs text-muted-foreground">avg</span>
+                </span>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              )}
+            </TableCell>
+            {canEdit && <TableCell />}
+          </TableRow>
+        )
+      })}
+    </>
   )
 }
 
