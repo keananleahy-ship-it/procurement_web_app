@@ -51,7 +51,9 @@ export const auth = betterAuth({
           // v0 preview iframes can also be served from rotating hostnames on
           // these domains. Dev-only, so deployed builds never trust them.
           'https://*.vusercontent.net',
-          'https://*.vercel.run',
+              'https://*.vercel.run',
+              'https://*.v0.build',
+              'https://*.v0.app',
         ]
       : []),
   ],
